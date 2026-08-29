@@ -5,8 +5,9 @@ import re
 import shutil
 from pathlib import Path
 
+from gitconvoy import versions
 from gitconvoy.errors import GitConvoyError
-from gitconvoy.state import State
+from gitconvoy.state import State, TrainRepo
 
 
 def find_bom_repo(workspace: Path, explicit: str | None = None) -> Path:
@@ -127,6 +128,136 @@ def point(
         "production_enabled": production,
         "note": "commit and push this repo to deploy. git-convoy does not push *-bom.",
     }
+
+
+def take(
+    workspace: Path,
+    state: State,
+    bom: str | None = None,
+    train: str | None = None,
+    from_version: str | None = None,
+    to_version: str | None = None,
+    description: str | None = None,
+) -> dict:
+    train_obj = state.require_train(train)
+    if not train_obj.repos:
+        raise GitConvoyError(f"train {train_obj.name} has no repos")
+    missing = [repo.id for repo in train_obj.repos if not repo.to]
+    if missing:
+        raise GitConvoyError(
+            f"train {train_obj.name} has no versions to pin for: {', '.join(missing)}; "
+            "run train tag-rc or train publish first"
+        )
+    root = find_bom_repo(workspace, bom)
+    src = from_version or _pointed_version(root)
+    dest = to_version or versions.bump(_strip_v(src), "patch")
+    drafted = draft(
+        workspace,
+        state,
+        src,
+        dest,
+        bom=bom,
+        train=train_obj.name,
+        description=description,
+    )
+    bom_data = json.loads(_bom_file(root, dest).read_text())
+    pinned: list[dict] = []
+    for repo in train_obj.repos:
+        pep, npm = _pep_and_npm(repo.to)
+        for section, package in _package_targets(repo, bom_data, workspace):
+            value = pep if section == "python" else npm
+            pin(workspace, dest, package, value, bom=bom, ecosystem=section)
+            bom_data.setdefault(section, {})[package] = value
+            pinned.append(
+                {
+                    "id": repo.id,
+                    "section": section,
+                    "package": package,
+                    "pin": value,
+                }
+            )
+    pointed = point(workspace, dest, bom=bom, production=False)
+    return {
+        "ok": True,
+        "train": train_obj.name,
+        "from": drafted["from"],
+        "to": drafted["to"],
+        "version": drafted["version"],
+        "pins": pinned,
+        "point": pointed,
+        "note": pointed["note"],
+    }
+
+
+def promote(workspace: Path, bom: str | None = None) -> dict:
+    root = find_bom_repo(workspace, bom)
+    version = _pointed_version(root)
+    pointed = point(workspace, version, bom=bom, production=True)
+    return {
+        "ok": True,
+        "version": _v(version),
+        "point": pointed,
+        "note": pointed["note"],
+    }
+
+
+def _pointed_version(root: Path) -> str:
+    targets = root / "deploy_targets.yml"
+    if not targets.exists():
+        raise GitConvoyError(f"missing {targets}")
+    match = re.search(r"(?m)^bom:\s+(\S+)", targets.read_text())
+    if not match:
+        raise GitConvoyError("could not read bom: in deploy_targets.yml")
+    return match.group(1).strip().strip("'\"")
+
+
+def _strip_v(version: str) -> str:
+    return version[1:] if version.startswith("v") else version
+
+
+def _pep_and_npm(version: str) -> tuple[str, str]:
+    _major, _minor, _patch, rc = versions.parse(version)
+    if rc is None:
+        return versions.drop_rc(version)
+    return versions.with_rc(version, rc)
+
+
+def _package_targets(
+    repo: TrainRepo,
+    bom: dict,
+    workspace: Path,
+) -> list[tuple[str, str]]:
+    short = repo.id.removeprefix("renglo-")
+    python_names = (
+        []
+        if repo.id == "console"
+        else [repo.id if repo.id.startswith("renglo-") else f"renglo-{short}"]
+    )
+    npm_names = (
+        ["@renglo/console"] if repo.id == "console" else [f"@renglo/{short}"]
+    )
+    existing: list[tuple[str, str]] = []
+    for name in python_names:
+        if name in (bom.get("python") or {}):
+            existing.append(("python", name))
+    for name in npm_names:
+        if name in (bom.get("npm") or {}):
+            existing.append(("npm", name))
+    for section in ("python", "npm"):
+        if repo.id in (bom.get(section) or {}) and (section, repo.id) not in existing:
+            existing.append((section, repo.id))
+    if existing:
+        return existing
+    repo_root = workspace / repo.path
+    info = versions.read_version(repo_root) if repo_root.is_dir() else {}
+    if repo.id == "console":
+        return [("npm", "@renglo/console")]
+    targets: list[tuple[str, str]] = []
+    if info.get("python") or not info.get("npm"):
+        targets.append(("python", python_names[0]))
+    if info.get("npm"):
+        targets.append(("npm", npm_names[0]))
+    return targets
 
 
 def _bom_file(root: Path, version: str) -> Path:

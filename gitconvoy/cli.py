@@ -125,6 +125,33 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
 
 def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
     sub = args.adopt_cmd
+    production = getattr(args, "production", False)
+    if production and sub == "take":
+        raise GitConvoyError(
+            "adopt --production promotes the current BOM; omit take / --train / --from / --to"
+        )
+    if sub == "production" or (sub is None and production):
+        if any(
+            getattr(args, name, None)
+            for name in ("train", "from_version", "to_version")
+        ):
+            raise GitConvoyError(
+                "adopt --production promotes the current BOM; omit --train, --from, and --to"
+            )
+        data = adopt_cmd.promote(workspace, bom=args.bom)
+        return data, f"deploy_targets bom={data['point']['bom']} (production)"
+    if sub in (None, "take"):
+        data = adopt_cmd.take(
+            workspace,
+            state,
+            bom=args.bom,
+            train=args.train,
+            from_version=args.from_version,
+            to_version=args.to_version,
+            description=args.description,
+        )
+        pins = ", ".join(f"{row['package']}={row['pin']}" for row in data["pins"]) or "(none)"
+        return data, f"adopted {data['version']} from train {data['train']}: {pins}"
     if sub == "draft":
         data = adopt_cmd.draft(
             workspace,
@@ -156,6 +183,22 @@ def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
         stage = "production" if data["production_enabled"] else "staging only"
         return data, f"deploy_targets bom={data['bom']} ({stage})"
     raise GitConvoyError(f"unknown adopt command: {sub}")
+
+
+def _add_take_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--bom", help="Path to *-bom repo")
+    parser.add_argument("--train", help="Train to pin (default: current)")
+    parser.add_argument(
+        "--from",
+        dest="from_version",
+        help="System version to copy (default: bom: in deploy_targets.yml)",
+    )
+    parser.add_argument(
+        "--to",
+        dest="to_version",
+        help="New system version (default: patch bump of --from)",
+    )
+    parser.add_argument("--description")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -238,8 +281,27 @@ def _parser() -> argparse.ArgumentParser:
     tshow = tsub.add_parser("show", help="Print the train sheet")
     tshow.add_argument("name", nargs="?")
 
-    adopt = sub.add_parser("adopt", help="Draft and point a <name>-bom repo")
-    asub = adopt.add_subparsers(dest="adopt_cmd", required=True)
+    adopt = sub.add_parser(
+        "adopt",
+        help="Write a release BOM from the current train, or promote it to production",
+    )
+    _add_take_flags(adopt)
+    adopt.add_argument(
+        "--production",
+        action="store_true",
+        help="Promote the current BOM to production",
+    )
+    asub = adopt.add_subparsers(dest="adopt_cmd", required=False)
+    take = asub.add_parser(
+        "take",
+        help="Write a release BOM from the current train (staging)",
+    )
+    _add_take_flags(take)
+    production = asub.add_parser(
+        "production",
+        help="Promote the current BOM to production",
+    )
+    production.add_argument("--bom", help="Path to *-bom repo")
     draft = asub.add_parser("draft", help="Copy last version object to a new draft")
     draft.add_argument("--from", dest="from_version", required=True)
     draft.add_argument("--to", dest="to_version", required=True)

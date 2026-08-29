@@ -17,7 +17,7 @@ Prefer `git convoy` over raw git for any step that spans more than one repo.
 
 ## Ask the CLI first
 
-Run from the Stanley workspace root (or pass `--workspace`). Always add `--json` when you need to answer a question.
+Run from the workspace root (or pass `--workspace`). Always add `--json` when you need to answer a question.
 
 ```bash
 git convoy --json status
@@ -80,6 +80,20 @@ Opens PRs (or prints compare URLs). Approve and merge in the GitHub UI. Merge or
 - Do not create `feature/<name>` in every repo.
 - Do not abandon a feature unless the user wants that work discarded.
 - Do not approve or merge PRs through git-convoy.
-- Do not query CodeArtifact or invent pins that are not published.
+- Do not query CodeArtifact or invent unpublished pins.
 - Do not increment semver again at publish; drop the rc suffix only.
+
+To put a train onto a running system, two golden paths:
+
+```bash
+git convoy --json adopt --bom ops/<system>-bom
+```
+
+That is the **release** path. Run it after each `train tag-rc`. If staging fails, go back to cycle 2, tag-rc again, and adopt again. Many attempts are fine.
+
+```bash
+git convoy --json adopt --production --bom ops/<system>-bom
+```
+
+That is the **production** path. Run it only after `train publish`. Do not invent pins; do not push the BOM (the operator commits and pushes).
 """
