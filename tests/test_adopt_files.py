@@ -213,3 +213,49 @@ def test_promote_named_subcommand(tmp_path: Path) -> None:
     )
     text = (bom_repo / "deploy_targets.yml").read_text()
     assert "enabled: true" in text
+
+
+def test_discovers_bom_outside_ops(tmp_path: Path) -> None:
+    bom = tmp_path / "tenants" / "acme-bom"
+    bom.mkdir(parents=True)
+    found = adopt_cmd.find_bom_repo(tmp_path)
+    assert found.resolve() == bom.resolve()
+
+
+def test_discovers_nested_bom_and_skips_vendor_dirs(tmp_path: Path) -> None:
+    real = tmp_path / "customers" / "west" / "acme-bom"
+    real.mkdir(parents=True)
+    decoy = tmp_path / "node_modules" / "other-bom"
+    decoy.mkdir(parents=True)
+    found = adopt_cmd.find_bom_repo(tmp_path)
+    assert found.resolve() == real.resolve()
+
+
+def test_refuses_when_several_bom_repos(tmp_path: Path) -> None:
+    (tmp_path / "ops" / "acme-bom").mkdir(parents=True)
+    (tmp_path / "other-bom").mkdir()
+    with pytest.raises(GitConvoyError, match="multiple \\*-bom repos"):
+        adopt_cmd.find_bom_repo(tmp_path)
+
+
+def test_discovers_bom_outside_ops(tmp_path: Path) -> None:
+    bom = tmp_path / "tenants" / "acme-bom"
+    bom.mkdir(parents=True)
+    found = adopt_cmd.find_bom_repo(tmp_path)
+    assert found.resolve() == bom.resolve()
+
+
+def test_discovers_nested_bom_and_skips_vendor_dirs(tmp_path: Path) -> None:
+    real = tmp_path / "customers" / "west" / "acme-bom"
+    real.mkdir(parents=True)
+    decoy = tmp_path / "node_modules" / "other-bom"
+    decoy.mkdir(parents=True)
+    found = adopt_cmd.find_bom_repo(tmp_path)
+    assert found.resolve() == real.resolve()
+
+
+def test_refuses_when_several_bom_repos(tmp_path: Path) -> None:
+    (tmp_path / "ops" / "acme-bom").mkdir(parents=True)
+    (tmp_path / "other-bom").mkdir()
+    with pytest.raises(GitConvoyError, match="multiple \\*-bom repos"):
+        adopt_cmd.find_bom_repo(tmp_path)

@@ -309,7 +309,9 @@ Cycle 2 is done when the stable tags are in the registry. A running system is un
 
 After a train ships, the registry has new versions across many repositories. Those packages are not yet in a testing or production system. Adoption is the step that puts them there.
 
-Every target system has its own repository, named `ops/<system>-bom`, that holds the list of dependencies it installs. That list is the **BOM** (bill of materials). git-convoy looks for the `-bom` suffix.
+Every target system has its own **BOM** repository (bill of materials) that holds the list of dependencies it installs. That repo can be named anything and live anywhere. Pass `--bom` with a path relative to the workspace, or an absolute path. The examples below use `ops/acme-bom` because that is where this instance keeps it.
+
+If you omit `--bom`, git-convoy scans the workspace for a folder whose name ends in `-bom` (any depth; it skips `node_modules`, venvs, and similar). One match is enough. Several matches (or none) refuse until you pass `--bom`.
 
 The BOM holds:
 
@@ -392,7 +394,7 @@ git convoy adopt pin 1.4.1 renglo-lib 1.2.5 --bom ops/acme-bom
 git convoy adopt point 1.4.1 --bom ops/acme-bom
 ```
 
-`--bom` is required when `ops/` has more than one `*-bom` folder (or none). One match is enough. Pass `--train NAME` to `adopt` if the train you want is not the current one. `--from` / `--to` override the automatic system-version bump.
+Pass `--train NAME` to `adopt` if the train you want is not the current one. `--from` / `--to` override the automatic system-version bump.
 
 Rollback is `adopt point` at the previous system version, then commit and push. The newer file stays on disk.
 

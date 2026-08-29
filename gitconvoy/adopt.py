@@ -8,6 +8,9 @@ from pathlib import Path
 from gitconvoy import versions
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, TrainRepo
+from gitconvoy.workspace import SKIP_DIR_NAMES
+
+_BOM_SKIP = SKIP_DIR_NAMES | {"gitconvoy", "git-convoy"}
 
 
 def find_bom_repo(workspace: Path, explicit: str | None = None) -> Path:
@@ -18,21 +21,40 @@ def find_bom_repo(workspace: Path, explicit: str | None = None) -> Path:
         if not path.is_dir():
             raise GitConvoyError(f"BOM repo not found: {path}")
         return path
-    ops = workspace / "ops"
-    if ops.is_dir():
-        matches = sorted(
-            child
-            for child in ops.iterdir()
-            if child.is_dir() and child.name.endswith("-bom")
-        )
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            names = ", ".join(child.name for child in matches)
-            raise GitConvoyError(
-                f"multiple *-bom repos ({names}); pass --bom"
-            )
+    matches = _discover_bom_repos(workspace)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = ", ".join(_bom_label(workspace, path) for path in matches)
+        raise GitConvoyError(f"multiple *-bom repos ({names}); pass --bom")
     raise GitConvoyError("no *-bom repo found; pass --bom")
+
+
+def _discover_bom_repos(workspace: Path) -> list[Path]:
+    found: list[Path] = []
+
+    def walk(root: Path) -> None:
+        try:
+            children = sorted(root.iterdir(), key=lambda item: item.name)
+        except OSError:
+            return
+        for child in children:
+            if not child.is_dir() or child.name in _BOM_SKIP:
+                continue
+            if child.name.endswith("-bom"):
+                found.append(child)
+                continue
+            walk(child)
+
+    walk(workspace)
+    return found
+
+
+def _bom_label(workspace: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(workspace))
+    except ValueError:
+        return str(path)
 
 
 def draft(
