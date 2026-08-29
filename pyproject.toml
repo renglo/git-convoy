@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "git-convoy"
+version = "0.1.0"
+description = "Keep a convoy of git repositories together through features, release trains, and BOM adoption"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Renglo Team" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0"]
+
+[project.scripts]
+git-convoy = "gitconvoy.cli:main"
+gitconvoy = "gitconvoy.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gitconvoy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
