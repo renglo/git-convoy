@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from gitconvoy import ghutil
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import Feature, State, save
@@ -385,11 +386,140 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
         "feature": feature.name,
         "merge_order": merge_sort(feature.repo_ids()),
         "note": (
-            "Approve every sibling PR in the GitHub UI. Merge only when all "
-            "are approved, in merge_order. git-convoy does not approve or merge."
+            "Approve with: git convoy feature approve (Full mode). Merge only when all "
+            "sibling PRs are approved, in merge_order. git-convoy does not merge."
         ),
         "repos": opened,
     }
+
+
+def approve(
+    workspace: Path,
+    state: State,
+    name: str | None = None,
+    *,
+    force: bool = False,
+) -> dict:
+    feature = state.require_feature(name)
+    if not feature.repos:
+        raise GitConvoyError("feature has no participant repos; run feature adopt")
+    ghutil.require_gh()
+    order = merge_sort(feature.repo_ids())
+    by_id = {repo.id: repo for repo in feature.repos}
+    rows: list[dict] = []
+    blocked: list[str] = []
+    for repo_id in order:
+        repo_row = by_id.get(repo_id)
+        if not repo_row:
+            continue
+        repo_path = workspace / repo_row.path
+        slug = gitutil.github_slug(repo_path)
+        if not slug:
+            blocked.append(f"{repo_id} (no github remote)")
+            rows.append(
+                {
+                    "id": repo_id,
+                    "path": repo_row.path,
+                    "slug": None,
+                    "pr": repo_row.pr,
+                    "status": "no-remote",
+                }
+            )
+            continue
+        merge_status = gitutil.pr_merge_status(repo_path, feature.branch, repo_row.pr)
+        if merge_status == "merged":
+            rows.append(
+                {
+                    "id": repo_id,
+                    "path": repo_row.path,
+                    "slug": slug,
+                    "pr": repo_row.pr,
+                    "status": "merged",
+                }
+            )
+            continue
+        pr_url = repo_row.pr or ghutil.find_pr_url(slug, feature.branch, cwd=repo_path)
+        if pr_url and not repo_row.pr:
+            repo_row.pr = pr_url
+        number = gitutil.pr_number(pr_url)
+        if not number:
+            blocked.append(f"{repo_id} (no open PR)")
+            rows.append(
+                {
+                    "id": repo_id,
+                    "path": repo_row.path,
+                    "slug": slug,
+                    "pr": pr_url,
+                    "status": "no-pr",
+                }
+            )
+            continue
+        details = ghutil.pr_details(slug, number, cwd=repo_path)
+        checks = ghutil.checks_state(details)
+        review = (details.get("reviewDecision") or "").upper() if details else ""
+        if review == "APPROVED":
+            rows.append(
+                {
+                    "id": repo_id,
+                    "path": repo_row.path,
+                    "slug": slug,
+                    "pr": pr_url,
+                    "status": "already-approved",
+                    "checks": checks,
+                }
+            )
+            continue
+        if not force and checks in {"pending", "failure", "error", "action_required"}:
+            blocked.append(f"{repo_id} (checks {checks})")
+            rows.append(
+                {
+                    "id": repo_id,
+                    "path": repo_row.path,
+                    "slug": slug,
+                    "pr": pr_url,
+                    "status": "blocked",
+                    "checks": checks,
+                }
+            )
+            continue
+        ok, message = ghutil.approve_pr(slug, number, cwd=repo_path)
+        if not ok:
+            blocked.append(f"{repo_id} ({message})")
+        rows.append(
+            {
+                "id": repo_id,
+                "path": repo_row.path,
+                "slug": slug,
+                "pr": pr_url,
+                "status": "approved" if ok else "failed",
+                "checks": checks,
+                "error": None if ok else message,
+            }
+        )
+    save(workspace, state)
+    approved_count = sum(
+        1 for row in rows if row["status"] in {"approved", "already-approved", "merged"}
+    )
+    payload = {
+        "ok": not blocked,
+        "feature": feature.name,
+        "branch": feature.branch,
+        "merge_order": order,
+        "approved_count": approved_count,
+        "repo_count": len(rows),
+        "repos": rows,
+        "note": (
+            "Merge only when every sibling PR is approved, in merge_order. "
+            "git-convoy does not merge."
+        ),
+    }
+    if blocked:
+        raise GitConvoyError(
+            "could not approve all PRs: "
+            + ", ".join(blocked)
+            + ("" if force else "; pass --force to approve despite failing checks")
+        )
+    return payload
 
 
 def show(workspace: Path, state: State, name: str | None = None) -> dict:

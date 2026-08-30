@@ -8,6 +8,8 @@ from pathlib import Path
 from gitconvoy import gitutil, versions
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo
+from gitconvoy import ghutil
+from gitconvoy.workflows import repo_registry_ready
 from gitconvoy.workspace import SKIP_DIR_NAMES
 
 _BOM_SKIP = SKIP_DIR_NAMES | {"gitconvoy", "git-convoy"}
@@ -160,8 +162,17 @@ def take(
     from_version: str | None = None,
     to_version: str | None = None,
     description: str | None = None,
+    require_verify: bool = False,
+    no_verify: bool = False,
 ) -> dict:
     train_obj = state.require_train(train)
+    verify_by_repo, verify_summary = _adopt_verify_context(
+        workspace,
+        state,
+        train_obj.name,
+        require_verify=require_verify,
+        no_verify=no_verify,
+    )
     if not train_obj.repos:
         raise GitConvoyError(f"train {train_obj.name} has no repos")
     missing = [repo.id for repo in train_obj.repos if not repo.to]
@@ -171,60 +182,206 @@ def take(
             "run train tag-rc or train publish first"
         )
     root = find_bom_repo(workspace, bom)
-    src = from_version or _pointed_version(root)
-    dest = to_version or versions.bump(_strip_v(src), "patch")
-    drafted = draft(
-        workspace,
-        state,
-        src,
-        dest,
-        bom=bom,
-        train=train_obj.name,
-        description=description,
+    src, dest, refresh = _resolve_take_target(
+        root,
+        train_obj,
+        from_version=from_version,
+        to_version=to_version,
     )
+    if refresh:
+        bom_path = _bom_file(root, dest)
+        existing = json.loads(bom_path.read_text())
+        _update_draft_metadata(
+            root,
+            dest,
+            train_obj,
+            description,
+            existing=existing,
+            refresh=True,
+        )
+        drafted = {
+            "from": str(bom_path),
+            "to": str(bom_path),
+            "version": existing.get("version") or _v(dest),
+        }
+        mode = "refresh"
+    else:
+        drafted = draft(
+            workspace,
+            state,
+            src,
+            dest,
+            bom=bom,
+            train=train_obj.name,
+            description=description
+            or f"Draft. Taking {train_obj.name}. Not production.",
+        )
+        mode = "draft"
     bom_data = json.loads(_bom_file(root, dest).read_text())
     pinned: list[dict] = []
     for repo in train_obj.repos:
-        pep, npm = _pep_and_npm(repo.to)
-        for section, package in _package_targets(repo, bom_data, workspace):
-            value = pep if section == "python" else npm
-            pin(workspace, dest, package, value, bom=bom, ecosystem=section)
-            bom_data.setdefault(section, {})[package] = value
-            pinned.append(
-                {
-                    "id": repo.id,
-                    "section": section,
-                    "package": package,
-                    "pin": value,
-                }
+        use_registry, pin_kind = _resolve_pin_strategy(
+            repo, workspace, verify_by_repo
+        )
+        if not use_registry:
+            pinned.extend(
+                _clear_package_pins(root, dest, repo, workspace, bom_data)
             )
-        for row in _pin_repo_shas(
-            workspace, dest, bom_data, repo, train_obj, bom=bom, root=root
-        ):
-            pinned.append(row)
-    pointed = point(workspace, dest, bom=bom, production=False)
-    return {
+        repo_package_pins: list[tuple[str, str]] = []
+        if use_registry:
+            pep, npm = _pep_and_npm(repo.to)
+            for section, package in _package_targets(repo, bom_data, workspace):
+                value = pep if section == "python" else npm
+                pin(workspace, dest, package, value, bom=bom, ecosystem=section)
+                bom_data.setdefault(section, {})[package] = value
+                repo_package_pins.append((section, package))
+                pinned.append(
+                    {
+                        "id": repo.id,
+                        "section": section,
+                        "package": package,
+                        "pin": value,
+                        "kind": pin_kind,
+                    }
+                )
+        git_kind = "fallback" if pin_kind == "fallback" else "git"
+        if not use_registry or _needs_repo_sha(repo, repo_package_pins):
+            for row in _pin_repo_shas(
+                workspace,
+                dest,
+                bom_data,
+                repo,
+                train_obj,
+                bom=bom,
+                root=root,
+                create=not use_registry,
+            ):
+                row["kind"] = git_kind
+                pinned.append(row)
+        elif repo_package_pins:
+            pinned.extend(
+                _clear_repo_shas(root, dest, repo, workspace, bom_data)
+            )
+    staging_only = not refresh
+    pointed = point(
+        workspace,
+        dest,
+        bom=bom,
+        production=False if staging_only else _production_enabled(root),
+    )
+    note = pointed["note"]
+    if mode == "refresh":
+        note = (
+            f"Updated bom/{_v(dest).lstrip('v')}.json in place for train {train_obj.name}. "
+            + note
+        )
+    payload = {
         "ok": True,
+        "mode": mode,
         "train": train_obj.name,
         "from": drafted["from"],
         "to": drafted["to"],
         "version": drafted["version"],
         "pins": pinned,
         "point": pointed,
-        "note": pointed["note"],
+        "note": note,
     }
+    if verify_summary is not None:
+        payload["verify"] = verify_summary
+    return payload
 
 
-def promote(workspace: Path, bom: str | None = None) -> dict:
+def promote(
+    workspace: Path,
+    state: State,
+    bom: str | None = None,
+    *,
+    require_verify: bool = False,
+    no_verify: bool = False,
+) -> dict:
+    train_obj = state.require_train()
+    if train_obj.status != "published":
+        raise GitConvoyError(
+            f"train {train_obj.name} is {train_obj.status}; "
+            "run train publish before adopt --production"
+        )
+    taken = take(
+        workspace,
+        state,
+        bom=bom,
+        train=train_obj.name,
+        require_verify=require_verify,
+        no_verify=no_verify,
+    )
     root = find_bom_repo(workspace, bom)
-    version = _pointed_version(root)
+    version = _strip_v(taken["version"])
+    train = _validate_production_promotion(root, state, version)
     pointed = point(workspace, version, bom=bom, production=True)
+    description = _production_description(train.name)
+    _set_bom_description(root, version, description)
     return {
         "ok": True,
-        "version": _v(version),
+        "mode": taken["mode"],
+        "train": train.name,
+        "version": taken["version"],
+        "description": description,
+        "pins": taken["pins"],
+        "take": {"from": taken["from"], "to": taken["to"]},
         "point": pointed,
-        "note": pointed["note"],
+        "note": (
+            pointed["note"]
+            + " CI deploys staging, verifies it, then production; "
+            "production is blocked if staging fails."
+        ),
     }
+
+
+def _validate_production_promotion(root: Path, state: State, version: str) -> Train:
+    bom_path = _bom_file(root, version)
+    if not bom_path.exists():
+        raise GitConvoyError(f"missing {bom_path}")
+    data = json.loads(bom_path.read_text())
+    train_name = data.get("train")
+    if not train_name:
+        raise GitConvoyError(
+            f"bom/{_strip_v(_v(version))}.json has no train; run adopt first"
+        )
+    if train_name not in state.trains:
+        raise GitConvoyError(
+            f"bom train {train_name} is not in git-convoy state; run adopt from that train"
+        )
+    train = state.trains[train_name]
+    if train.status != "published":
+        raise GitConvoyError(
+            f"train {train_name} is {train.status}; run train publish before adopt --production"
+        )
+    rc_pins = _rc_pins_in_bom(data)
+    if rc_pins:
+        raise GitConvoyError(
+            "BOM still has release-candidate pins; run adopt after train publish: "
+            + ", ".join(rc_pins)
+        )
+    return train
+
+
+def _rc_pins_in_bom(data: dict) -> list[str]:
+    found: list[str] = []
+    for section in ("python", "npm"):
+        packages = data.get(section)
+        if not isinstance(packages, dict):
+            continue
+        for name, pin in packages.items():
+            if _pin_is_rc(str(pin)):
+                found.append(f"{section}/{name}={pin}")
+    return found
+
+
+def _pin_is_rc(pin: str) -> bool:
+    try:
+        _major, _minor, _patch, rc = versions.parse(pin)
+        return rc is not None
+    except GitConvoyError:
+        return bool(re.search(r"(?:rc\d|-rc\.)", pin, re.I))
 
 
 def _pointed_version(root: Path) -> str:
@@ -235,6 +392,107 @@ def _pointed_version(root: Path) -> str:
     if not match:
         raise GitConvoyError("could not read bom: in deploy_targets.yml")
     return match.group(1).strip().strip("'\"")
+
+
+def _resolve_take_target(
+    root: Path,
+    train: Train,
+    *,
+    from_version: str | None,
+    to_version: str | None,
+) -> tuple[str, str, bool]:
+    pointed = _pointed_version(root)
+    if to_version:
+        src = from_version or pointed
+        return src, _strip_v(to_version), False
+    if from_version:
+        return from_version, versions.bump(_strip_v(from_version), "patch"), False
+    pointed_path = _bom_file(root, pointed)
+    if pointed_path.exists():
+        data = json.loads(pointed_path.read_text())
+        if data.get("train") == train.name:
+            return pointed, _strip_v(pointed), True
+    return pointed, versions.bump(_strip_v(pointed), "patch"), False
+
+
+def _production_enabled(root: Path) -> bool:
+    targets = root / "deploy_targets.yml"
+    if not targets.exists():
+        return False
+    match = re.search(
+        r"(?m)^(\s+)production:\n\s+enabled:\s+(\S+)",
+        targets.read_text(),
+    )
+    return bool(match and match.group(2).lower() == "true")
+
+
+def _production_description(train: str) -> str:
+    return f"Production. Release {train}."
+
+
+def _set_bom_description(root: Path, version: str, description: str) -> None:
+    path = _bom_file(root, version)
+    data = json.loads(path.read_text())
+    data["description"] = description
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _update_draft_metadata(
+    root: Path,
+    version: str,
+    train: Train,
+    description: str | None,
+    *,
+    existing: dict,
+    refresh: bool,
+) -> None:
+    path = _bom_file(root, version)
+    data = dict(existing)
+    data["train"] = train.name
+    data["description"] = _description_for_take(
+        existing.get("description"),
+        train,
+        description,
+        refresh=refresh,
+        production_enabled=_production_enabled(root),
+    )
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _description_for_take(
+    existing: str | None,
+    train: Train,
+    override: str | None,
+    *,
+    refresh: bool,
+    production_enabled: bool,
+) -> str:
+    if override:
+        return override
+    if refresh:
+        if production_enabled or (existing or "").strip().startswith("Production."):
+            return existing or _production_description(train.name)
+        if train.status == "published":
+            return f"Staging. Release {train.name}."
+        return _increment_release_description(existing or "", train.name)
+    return f"Draft. Taking {train.name}. Not production."
+
+
+def _increment_release_description(description: str, train: str) -> str:
+    match = re.search(r"Release ([A-Z])", description, re.I)
+    if match:
+        next_ord = min(ord(match.group(1).upper()) + 1, ord("Z"))
+        letter = chr(next_ord)
+        return re.sub(
+            r"Release [A-Z]",
+            f"Release {letter}",
+            description,
+            count=1,
+            flags=re.I,
+        )
+    if description.strip():
+        return description.rstrip().removesuffix(".") + ". Release B."
+    return f"Draft. Taking {train}. Release B. Not production."
 
 
 def _strip_v(version: str) -> str:
@@ -253,6 +511,10 @@ def _package_targets(
     bom: dict,
     workspace: Path,
 ) -> list[tuple[str, str]]:
+    repo_root = workspace / repo.path
+    registry = repo_registry_ready(repo_root, repo.id)
+    if registry is False or (repo.id == "console" and registry is not True):
+        return []
     short = repo.id.removeprefix("renglo-")
     python_names = (
         []
@@ -274,7 +536,6 @@ def _package_targets(
             existing.append((section, repo.id))
     if existing:
         return existing
-    repo_root = workspace / repo.path
     info = versions.read_version(repo_root) if repo_root.is_dir() else {}
     if repo.id == "console":
         return [("npm", "@renglo/console")]
@@ -284,6 +545,169 @@ def _package_targets(
     if info.get("npm"):
         targets.append(("npm", npm_names[0]))
     return targets
+
+
+def _candidate_package_pins(
+    repo: TrainRepo,
+    workspace: Path,
+) -> list[tuple[str, str]]:
+    short = repo.id.removeprefix("renglo-")
+    pins: list[tuple[str, str]] = []
+    if repo.id == "console":
+        pins.append(("npm", "@renglo/console"))
+        return pins
+    py_name = repo.id if repo.id.startswith("renglo-") else f"renglo-{short}"
+    pins.append(("python", py_name))
+    pins.append(("npm", f"@renglo/{short}"))
+    return pins
+
+
+def _clear_package_pins(
+    root: Path,
+    version: str,
+    repo: TrainRepo,
+    workspace: Path,
+    bom_data: dict,
+) -> list[dict]:
+    path = _bom_file(root, version)
+    data = json.loads(path.read_text())
+    cleared: list[dict] = []
+    for section, package in _candidate_package_pins(repo, workspace):
+        section_data = data.get(section)
+        if not isinstance(section_data, dict) or package not in section_data:
+            continue
+        del section_data[package]
+        if not section_data:
+            data.pop(section, None)
+        bom_section = bom_data.get(section)
+        if isinstance(bom_section, dict):
+            bom_section.pop(package, None)
+            if not bom_section:
+                bom_data.pop(section, None)
+        cleared.append(
+            {
+                "id": repo.id,
+                "section": section,
+                "package": package,
+                "pin": "(removed)",
+                "action": "cleared",
+            }
+        )
+    if cleared:
+        path.write_text(json.dumps(data, indent=2) + "\n")
+    return cleared
+
+
+def _adopt_verify_context(
+    workspace: Path,
+    state: State,
+    train_name: str,
+    *,
+    require_verify: bool,
+    no_verify: bool,
+) -> tuple[dict[str, str] | None, dict | None]:
+    if no_verify or not ghutil.gh_available():
+        return None, None
+    from gitconvoy import train as train_cmd
+
+    result = train_cmd.verify(workspace, state, train_name)
+    if require_verify and not result["ok"]:
+        raise GitConvoyError(train_cmd.format_verify_text(result))
+    by_repo = {
+        row["id"]: row.get("status") or "unknown"
+        for row in result.get("repos") or []
+    }
+    summary = {
+        "ran": True,
+        "verified_count": result.get("verified_count", 0),
+        "skipped_count": result.get("skipped_count", 0),
+        "failed_count": result.get("failed_count", 0),
+        "repo_count": result.get("repo_count", 0),
+    }
+    return by_repo, summary
+
+
+def _resolve_pin_strategy(
+    repo: TrainRepo,
+    workspace: Path,
+    verify_by_repo: dict[str, str] | None,
+) -> tuple[bool, str]:
+    """Return (use_registry_pins, kind label for registry rows)."""
+    if verify_by_repo is None:
+        return _heuristic_pin_strategy(repo, workspace)
+    status = verify_by_repo.get(repo.id, "unknown")
+    if status == "success":
+        return True, "registry"
+    if status == "skip":
+        return _heuristic_pin_strategy(repo, workspace)
+    return False, "fallback"
+
+
+def _heuristic_pin_strategy(
+    repo: TrainRepo,
+    workspace: Path,
+) -> tuple[bool, str]:
+    registry = repo_registry_ready(workspace / repo.path, repo.id)
+    if registry is False or (repo.id == "console" and registry is not True):
+        return False, "git"
+    return True, "registry"
+
+
+def _needs_repo_sha(
+    repo: TrainRepo,
+    package_pins: list[tuple[str, str]],
+) -> bool:
+    """Git commit pins are the fallback when registry pins do not cover deploy."""
+    sections = {section for section, _ in package_pins}
+    if "npm" in sections:
+        return False
+    if not package_pins:
+        return True
+    if "python" in sections:
+        return repo.path.startswith("extensions/") or repo.id == "console"
+    return True
+
+
+def _clear_repo_shas(
+    root: Path,
+    version: str,
+    repo: TrainRepo,
+    workspace: Path,
+    bom_data: dict,
+) -> list[dict]:
+    keys = _bom_repo_keys(workspace, repo, bom_data)
+    if not keys:
+        return []
+    path = _bom_file(root, version)
+    data = json.loads(path.read_text())
+    repos_section = data.get("repos")
+    if not isinstance(repos_section, dict):
+        return []
+    cleared: list[dict] = []
+    for key in keys:
+        if key not in repos_section:
+            continue
+        del repos_section[key]
+        bom_repos = bom_data.get("repos")
+        if isinstance(bom_repos, dict):
+            bom_repos.pop(key, None)
+        cleared.append(
+            {
+                "id": repo.id,
+                "section": "repos",
+                "package": key,
+                "pin": "(removed)",
+                "action": "cleared",
+                "kind": "git",
+            }
+        )
+    if not repos_section:
+        data.pop("repos", None)
+        if isinstance(bom_data.get("repos"), dict) and not bom_data["repos"]:
+            bom_data.pop("repos", None)
+    if cleared:
+        path.write_text(json.dumps(data, indent=2) + "\n")
+    return cleared
 
 
 def _bom_repo_keys(workspace: Path, repo: TrainRepo, bom: dict) -> list[str]:
@@ -324,8 +748,14 @@ def _pin_repo_shas(
     *,
     bom: str | None,
     root: Path,
+    create: bool = False,
 ) -> list[dict]:
     keys = _bom_repo_keys(workspace, repo, bom_data)
+    repo_path = workspace / repo.path
+    if not keys and create:
+        slug = gitutil.github_slug(repo_path)
+        if slug:
+            keys = [slug]
     if not keys:
         return []
     commit = _train_repo_commit(workspace, repo, train)
@@ -338,7 +768,12 @@ def _pin_repo_shas(
     for key in keys:
         entry = repos_section.get(key)
         if not isinstance(entry, dict):
-            continue
+            if not create:
+                continue
+            url = gitutil.origin_url(repo_path)
+            if not url:
+                continue
+            entry = {"url": url, "branch": "main"}
         updated = dict(entry)
         updated["commit"] = commit
         repos_section[key] = updated

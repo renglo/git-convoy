@@ -26,6 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     except GitConvoyError as exc:
         return fail(exc.message, as_json)
     emit(payload, as_json, text)
+    if payload.get("ok") is False:
+        return 1
     return 0
 
 
@@ -103,6 +105,9 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
     if sub == "prs":
         data = feature_cmd.prs(workspace, state, use_gh=not args.no_gh)
         return data, _prs_text(data)
+    if sub == "approve":
+        data = feature_cmd.approve(workspace, state, args.name, force=args.force)
+        return data, _approve_text(data)
     if sub == "show":
         data = feature_cmd.show(workspace, state, args.name)
         return data, _feature_show_text(data)
@@ -141,6 +146,18 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
             as_json=args.json,
         )
         return data, _delete_train_text(data)
+    if sub == "verify":
+        stable = True if args.stable else False if args.rc else None
+        data = train_cmd.verify(
+            workspace,
+            state,
+            args.name,
+            wait=args.wait,
+            timeout_sec=args.timeout * 60,
+            poll_sec=args.poll,
+            stable=stable,
+        )
+        return data, train_cmd.format_verify_text(data)
     raise GitConvoyError(f"unknown train command: {sub}")
 
 
@@ -159,8 +176,15 @@ def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
             raise GitConvoyError(
                 "adopt --production promotes the current BOM; omit --train, --from, and --to"
             )
-        data = adopt_cmd.promote(workspace, bom=args.bom)
-        return data, f"deploy_targets bom={data['point']['bom']} (production)"
+        data = adopt_cmd.promote(
+            workspace,
+            state,
+            bom=args.bom,
+            require_verify=args.require_verify,
+            no_verify=args.no_verify,
+        )
+        mode = data.get("mode") or "take"
+        return data, _adopt_text(data, production=True)
     if sub in (None, "take"):
         data = adopt_cmd.take(
             workspace,
@@ -170,9 +194,10 @@ def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
             from_version=args.from_version,
             to_version=args.to_version,
             description=args.description,
+            require_verify=args.require_verify,
+            no_verify=args.no_verify,
         )
-        pins = ", ".join(f"{row['package']}={row['pin']}" for row in data["pins"]) or "(none)"
-        return data, f"adopted {data['version']} from train {data['train']}: {pins}"
+        return data, _adopt_text(data)
     if sub == "draft":
         data = adopt_cmd.draft(
             workspace,
@@ -220,6 +245,17 @@ def _add_take_flags(parser: argparse.ArgumentParser) -> None:
         help="New system version (default: patch bump of --from)",
     )
     parser.add_argument("--description")
+    verify = parser.add_mutually_exclusive_group()
+    verify.add_argument(
+        "--require-verify",
+        action="store_true",
+        help="Refuse adopt when any publish workflow failed (strict)",
+    )
+    verify.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Skip train verify; use local workflow heuristic only",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -305,6 +341,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     prs = fsub.add_parser("prs", help="Push branches and open PRs (gh if available)")
     prs.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
+    approve = fsub.add_parser(
+        "approve",
+        help="Approve sibling PRs via gh (Full mode)",
+    )
+    approve.add_argument("name", nargs="?")
+    approve.add_argument(
+        "--force",
+        action="store_true",
+        help="Approve even when CI checks are failing or pending",
+    )
     show = fsub.add_parser("show", help="Print the feature sheet")
     show.add_argument("name", nargs="?")
 
@@ -335,6 +381,40 @@ def _parser() -> argparse.ArgumentParser:
         "--remote",
         action="store_true",
         help="Also delete origin/release/<train>",
+    )
+    verify = tsub.add_parser(
+        "verify",
+        help="Check publish workflow status via gh (Full mode)",
+    )
+    verify.add_argument("name", nargs="?")
+    verify.add_argument(
+        "--wait",
+        action="store_true",
+        help="Poll until all workflows succeed or timeout",
+    )
+    verify.add_argument(
+        "--timeout",
+        type=int,
+        default=30,
+        metavar="MIN",
+        help="Max wait time in minutes (default: 30)",
+    )
+    verify.add_argument(
+        "--poll",
+        type=int,
+        default=30,
+        metavar="SEC",
+        help="Seconds between polls when using --wait (default: 30)",
+    )
+    verify.add_argument(
+        "--rc",
+        action="store_true",
+        help="Verify rc tags even when train is published",
+    )
+    verify.add_argument(
+        "--stable",
+        action="store_true",
+        help="Verify stable tags even when train is still stabilizing",
     )
 
     adopt = sub.add_parser(
@@ -568,6 +648,78 @@ def _prs_text(data: dict) -> str:
         target = repo["pr"] or repo["compare"] or ""
         lines.append(f"  {repo['id']:20} {target}")
     return "\n".join(lines)
+
+
+def _approve_text(data: dict) -> str:
+    lines = [
+        f"{data['feature']}  approved {data['approved_count']}/{data['repo_count']} PRs",
+        "merge order: " + " → ".join(data["merge_order"]),
+        data["note"],
+    ]
+    for repo in data["repos"]:
+        pr = f"  {repo['pr']}" if repo.get("pr") else ""
+        extra = ""
+        if repo.get("checks"):
+            extra = f"  checks={repo['checks']}"
+        lines.append(f"  {repo['id']:20} {repo['status']:18}{extra}{pr}")
+    return "\n".join(lines)
+
+
+def _adopt_text(data: dict, *, production: bool = False) -> str:
+    mode = data.get("mode") or "draft"
+    if production:
+        lines = [
+            f"production adopt ({mode}): bom={data['point']['bom']}  {data.get('description', '')}",
+        ]
+    else:
+        lines = [
+            f"adopted {data['version']} from train {data['train']} ({mode}):",
+        ]
+    verify = data.get("verify")
+    if isinstance(verify, dict) and verify.get("ran"):
+        lines.append(
+            f"  verify: {verify.get('verified_count', 0)}/{verify.get('repo_count', 0)} "
+            f"succeeded, {verify.get('skipped_count', 0)} skipped, "
+            f"{verify.get('failed_count', 0)} fallback to git"
+        )
+    by_repo: dict[str, list[dict]] = {}
+    for row in data.get("pins") or []:
+        by_repo.setdefault(row.get("id") or "?", []).append(row)
+    if not by_repo:
+        lines.append("  (no pins changed)")
+    for repo_id, rows in by_repo.items():
+        lines.append(f"  {repo_id}")
+        for row in rows:
+            action = row.get("action")
+            section = row.get("section") or "?"
+            package = row.get("package") or "?"
+            pin = row.get("pin") or "?"
+            if action == "cleared":
+                lines.append(f"    cleared {section} {package}")
+                continue
+            kind = row.get("kind")
+            if kind == "registry":
+                label = "registry"
+            elif kind == "fallback":
+                label = "fallback"
+            elif kind == "git":
+                label = "git"
+            else:
+                label = section
+            short_pin = pin if pin.startswith("(") else (
+                pin[:12] + "…" if len(pin) > 12 and section == "repos" else pin
+            )
+            lines.append(f"    {label:8} {package}={short_pin}")
+    note = (data.get("note") or "").strip()
+    if note:
+        lines.append(note)
+    return "\n".join(lines)
+
+
+def _verify_text(data: dict) -> str:
+    from gitconvoy import train as train_cmd
+
+    return train_cmd.format_verify_text(data)
 
 
 if __name__ == "__main__":

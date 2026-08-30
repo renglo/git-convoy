@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
+from gitconvoy import ghutil
 from gitconvoy import gitutil, versions
+from gitconvoy.workflows import repo_publishes_on_tag, tag_push_workflows
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo, save
 from gitconvoy.workspace import Repo, merge_sort, product_repos, require_repo
@@ -196,6 +199,180 @@ def publish(workspace: Path, state: State, push: bool = True) -> dict:
         "merge_order": [row.id for row in _ordered(train)],
         "repos": published,
     }
+
+
+def verify(
+    workspace: Path,
+    state: State,
+    name: str | None = None,
+    *,
+    wait: bool = False,
+    timeout_sec: int = 1800,
+    poll_sec: int = 30,
+    stable: bool | None = None,
+) -> dict:
+    train = state.require_train(name)
+    ghutil.require_gh()
+    use_stable = stable if stable is not None else train.status == "published"
+
+    def _verify_repo(repo_row: TrainRepo) -> dict:
+        repo_path = workspace / repo_row.path
+        tag = (
+            (repo_row.stable_tag if use_stable else repo_row.rc_tag)
+            or repo_row.stable_tag
+            or repo_row.rc_tag
+        )
+        slug = gitutil.github_slug(repo_path)
+        row: dict = {
+            "id": repo_row.id,
+            "path": repo_row.path,
+            "tag": tag,
+            "slug": slug,
+        }
+        publish_wfs = tag_push_workflows(repo_path) if repo_path.is_dir() else []
+        row["workflows"] = publish_wfs
+        if not publish_wfs:
+            row["status"] = "skip"
+            row["detail"] = "no workflow triggers on v* tag push (git-clone participant)"
+            return row
+        if not tag:
+            row["status"] = "no-tag"
+            row["detail"] = "no tag on train sheet"
+            return row
+        if not slug:
+            row["status"] = "no-remote"
+            row["detail"] = "no github.com origin remote"
+            return row
+        commit = ghutil.tag_sha(repo_path, tag)
+        if not commit:
+            row["status"] = "no-tag-on-remote"
+            row["detail"] = f"tag {tag} not found on origin"
+            return row
+        wf_rows = ghutil.publish_runs_for_commit(
+            slug, commit, publish_wfs, cwd=repo_path
+        )
+        row["commit"] = commit[:7]
+        row["workflow_runs"] = wf_rows
+        row["status"] = ghutil.aggregate_workflow_status(wf_rows)
+        row["detail"] = _verify_detail(tag, publish_wfs, wf_rows, row["status"])
+        success_run = next(
+            (w for w in wf_rows if w.get("status") == "success" and w.get("run_url")),
+            None,
+        )
+        if success_run:
+            row["run_url"] = success_run["run_url"]
+        elif row["status"] == "failure":
+            failed = next(
+                (w for w in wf_rows if w.get("status") == "failure" and w.get("run_url")),
+                None,
+            )
+            if failed:
+                row["run_url"] = failed["run_url"]
+        return row
+
+    def _check_once() -> list[dict]:
+        return [_verify_repo(repo_row) for repo_row in _ordered(train)]
+
+    def _waiting(rows: list[dict]) -> bool:
+        return any(row.get("status") in {"pending", "missing"} for row in rows)
+
+    rows = _check_once()
+    deadline = time.monotonic() + timeout_sec if wait else None
+    while wait and _waiting(rows) and deadline is not None:
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll_sec)
+        rows = _check_once()
+
+    verified = [row for row in rows if row.get("status") == "success"]
+    skipped = [row for row in rows if row.get("status") == "skip"]
+    failed = [row for row in rows if row.get("status") not in {"success", "skip"}]
+    payload = {
+        "ok": not failed,
+        "train": train.name,
+        "status": train.status,
+        "tag_kind": "stable" if use_stable else "rc",
+        "verified_count": len(verified),
+        "skipped_count": len(skipped),
+        "failed_count": len(failed),
+        "repo_count": len(rows),
+        "repos": rows,
+    }
+    if failed:
+        payload["note"] = (
+            " Re-run with --wait to poll for in-progress workflows."
+            if not wait
+            else ""
+        )
+    return payload
+
+
+def format_verify_text(data: dict) -> str:
+    lines = [
+        f"{data['train']}  verified {data['verified_count']}/{data['repo_count']} "
+        f"({data['tag_kind']} tags; {data.get('skipped_count', 0)} skipped)",
+    ]
+    groups = [
+        ("succeeded", "success"),
+        ("skipped", "skip"),
+        ("failed", None),
+    ]
+    for label, status in groups:
+        if status is None:
+            bucket = [
+                row
+                for row in data.get("repos") or []
+                if row.get("status") not in {"success", "skip"}
+            ]
+        else:
+            bucket = [
+                row for row in data.get("repos") or [] if row.get("status") == status
+            ]
+        if not bucket:
+            continue
+        lines.append(f"{label} ({len(bucket)}):")
+        for repo in bucket:
+            wf = ", ".join(repo.get("workflows") or []) or "-"
+            tag = repo.get("tag") or "-"
+            url = f"  {repo['run_url']}" if repo.get("run_url") else ""
+            lines.append(
+                f"  {repo['id']:20} {tag:16} [{wf}]{url}"
+            )
+            detail = repo.get("detail")
+            if detail and repo.get("status") != "success":
+                lines.append(f"    {detail}")
+            elif detail and repo.get("status") == "success" and url == "":
+                lines.append(f"    {detail}")
+    note = (data.get("note") or "").strip()
+    if note:
+        lines.append(note)
+    return "\n".join(lines)
+
+
+def _verify_detail(
+    tag: str,
+    workflow_files: list[str],
+    wf_rows: list[dict],
+    status: str,
+) -> str:
+    wf_list = ", ".join(workflow_files)
+    if status == "success":
+        return f"{tag} — {wf_list} succeeded"
+    if status == "pending":
+        return f"{tag} — {wf_list} still running"
+    if status == "failure":
+        parts = []
+        for row in wf_rows:
+            if row.get("status") == "failure":
+                url = row.get("run_url") or row.get("file")
+                parts.append(f"{row['file']} failed ({url})")
+        return f"{tag} — " + "; ".join(parts or [f"{wf_list} failed"])
+    if status == "missing":
+        return (
+            f"{tag} @ commit — no Actions run yet for workflows [{wf_list}] "
+            "(tag push should trigger these)"
+        )
+    return status
 
 
 def delete(

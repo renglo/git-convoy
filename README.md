@@ -2,9 +2,79 @@
 
 ## Cross Repository Feature LifeCycle Management
 
-`git-convoy` is a CLI that runs the [cross-repo feature manual](cross-repo-feature-manual.md) for you. It only uses `git` (and optionally `gh` if you already have it). Approvals stay in the GitHub UI.
+`git-convoy` is a CLI that runs the [cross-repo feature manual](cross-repo-feature-manual.md) for you. It works in two modes — **Simple** (git only) or **Full** (git + GitHub via `gh`) — see below. Cycles 3 and 4 also need your tenant’s **publisher** (CodeArtifact) and **BOM** repos configured.
 
 State lives in `.gitconvoy/state.json` at the workspace root. That directory is gitignored. It is local to your machine.
+
+---
+
+## Simple vs Full mode
+
+| | **Simple** | **Full** |
+| --- | --- | --- |
+| **Requires** | `git` on `PATH` | `git` + [`gh`](https://cli.github.com/) logged in (or `GH_TOKEN`) |
+| **Cycle 1 — push feature branch** | `feature push` | same |
+| **Cycle 1 — open PRs** | `feature prs --no-gh` prints compare URLs; you open PRs in the browser | `feature prs` opens PRs and stores URLs on the feature sheet |
+| **Cycle 1 — merge status** | `feature show` uses git (branch tip contained in `develop`) | `feature show` uses `gh` — accurate with squash merges |
+| **Cycle 1 — approve PRs** | GitHub UI | `feature approve` (Full; uses the same `gh` connection) |
+| **Cycles 3–4 — publish CI** | Watch Actions on each repo manually | `train verify` checks publish workflow status per participant (Full) |
+
+**Simple mode** is enough for cycles 1–2 (features and local release trains). No GitHub token, no `gh` install.
+
+**Full mode** is for release managers who live in GitHub: open and approve sibling PRs from the terminal, and confirm publish workflows succeeded after `tag-rc` / `train publish` before adopting. Full mode does **not** require an AWS profile — publish verification goes through GitHub Actions (the same path CI uses to reach CodeArtifact). That scales to trains with repos from many publishers: each repo’s workflow is on GitHub; AWS stays inside each publish job.
+
+Cycles 1–2 never need CodeArtifact or a BOM. Full mode is optional there too — it only adds convenience.
+
+### Setting up Full mode
+
+1. **Install `gh`** — [cli.github.com](https://cli.github.com/) or `brew install gh` on macOS.
+
+2. **Log in** (interactive, on your laptop):
+
+   ```bash
+   gh auth login
+   ```
+
+   Choose GitHub.com, HTTPS, and authenticate in the browser. Pick the account that can reach every org on your trains (e.g. `renglo/*` plus extension vendors).
+
+3. **Verify**:
+
+   ```bash
+   gh auth status
+   ```
+
+   You should see `Logged in to github.com`. Optionally smoke-test a train repo:
+
+   ```bash
+   gh run list --repo renglo/renglo-lib --limit 3
+   ```
+
+4. **Non-interactive use** (agents, scripts, CI) — set a token `gh` will pick up:
+
+   ```bash
+   export GH_TOKEN=ghp_...   # or GITHUB_TOKEN
+   ```
+
+   Use a [fine-grained PAT](https://github.com/settings/tokens?type=beta) or classic PAT with access to every participant repo. Suggested scopes:
+
+   | Scope | Used for |
+   | ----- | -------- |
+   | **Contents** (read) | clone metadata, tags |
+   | **Pull requests** (read + write) | open PRs, approve (`feature approve`) |
+   | **Actions** (read) | `train verify` — workflow conclusions after tag push |
+   | **Metadata** (read) | always required on fine-grained tokens |
+
+   For classic PATs, `repo` covers private repos (broader than ideal but common for release managers).
+
+5. **Multi-org trains** — one login must see **all** participant repos (core, console, extensions, vendor orgs). If `gh run list --repo vendor/acme-ext` fails with “Not Found”, fix org membership or token scope before relying on Full mode.
+
+6. **Force Simple behavior** even when `gh` is installed:
+
+   ```bash
+   git convoy feature prs --no-gh
+   ```
+
+Merge stays in GitHub (or your policy): Full mode approves and verifies CI; it does **not** merge PRs.
 
 ---
 
@@ -37,13 +107,11 @@ Alternatively, install globally with pipx (no venv to activate):
 pipx install --pip-args '--isolated --index-url https://pypi.org/simple' -e /path/to/git-convoy
 ```
 
-You need `git` on `PATH`. `gh` is optional (used only by `feature prs`).
+You need `git` on `PATH`. For **Full mode**, install and log in to `gh` (see [Simple vs Full mode](#simple-vs-full-mode)).
 
 ---
 
-
-
-## One-time setup
+## One-time setup (Cycle 1)
 
 Run this once per workspace (root, or your own multi-repo folder):
 
@@ -66,35 +134,32 @@ git convoy --json status
 
 `--workspace` overrides discovery if you are not in the workspace root.
 
----
-
-
-
-## Three cycles
-
-git-convoy is three cycles. They run at different times and they do not substitute for each other.
-
-
-| Cycle                     | What you move                                         | What you get                 | What you do not get        |
-| ------------------------- | ----------------------------------------------------- | ---------------------------- | -------------------------- |
-| **1. Daily feature work** | Code on `feature/<name>` → `develop`                  | Merged features on `develop` | Packages, a running system |
-| **2. Release trains**     | That `develop` → git tags that the registry publishes | Packages you can install     | A running system           |
-| **3. Adoption**           | Those package pins → a BOM (release, then production) | A running system             | New package versions       |
-
-
-Same shape twice, on purpose. Cycle 2 publishes to the **registry** first as a candidate (`tag-rc`), then as stable (`train publish`). Cycle 3 writes a BOM so a running system can install those packages — a release train onto staging, as many times as you try, and a production train only after the train is stable. Neither one deploys by tagging, and neither one publishes by editing the BOM.
-
-Cycle 3 is not the epilogue of cycle 2. You leave cycle 2 to adopt an rc, go back to cut the next rc, adopt again, and only then — after `train publish` — take the production path. It is its own cycle because the same packages can be pointed at different BOMs, and you can be managing more than one train.
-
-`publish` in this tool always means **the package registry**, never `main` and never production. Merging `main` during `train publish` is bookkeeping so the stable tag has a home. Production is only cycle 3.
+No AWS, CodeArtifact, or BOM setup is required for Cycles 1–2.
 
 ---
 
+## Four cycles
 
+git-convoy is four cycles. They run at different times and they do not substitute for each other. **Stop when you have what you need** — you do not have to run all four.
+
+
+| Cycle | What you move | What you get | Requires registry / BOM? |
+| ----- | ------------- | ------------ | ------------------------ |
+| **1. Daily feature work** | Code on `feature/<name>` → `develop` | Merged features on `develop` | No |
+| **2. Release trains (local)** | `develop` → `release/<name>` branches; stabilize in git | A coherent release branch set, rc versions in git | No |
+| **3. Staging adoption** | Pushed rc tags → registry; train → staging BOM | Packages in CodeArtifact; staging runs the train | Yes |
+| **4. Production release** | Stable tags → registry; BOM → production | Production runs the stable train | Yes |
+
+**Boundaries**
+
+- **Cycle 2 → 3:** the first **`train tag-rc` that pushes** tags to origin. That triggers CI publish workflows. In **Simple** mode, watch GitHub Actions manually before adopting. In **Full** mode, run `train verify` (same `gh` connection as PRs).
+- **Cycle 3 → 4:** **`train publish`** (stable registry) then **`adopt --production`**. Production is never enabled by `adopt` alone until you run the production adopt path in cycle 4.
+
+`train publish` in this tool means **stable packages in the registry** (git merge to `main` + stable tag + CI). It is **not** the same as enabling production on the BOM — that is cycle 4.
+
+---
 
 ## Cycle 1 — Daily feature work
-
-
 
 ### 1. Start a feature
 
@@ -187,18 +252,29 @@ Merges `origin/develop` into each participant. Stops if a conflict appears; you 
 ### 8. Open PRs
 
 ```bash
-git convoy feature prs
+git convoy feature prs          # Full: opens PRs via gh
+git convoy feature prs --no-gh  # Simple: compare URLs only
 ```
 
-Pushes each participant branch (same as `feature push`). If `gh` is logged in, opens PRs onto `develop` and stores the URLs. Otherwise it prints compare links.
+Pushes each participant branch (same as `feature push`). With **Full** mode (`gh` logged in, no `--no-gh`), opens PRs onto `develop` and stores the URLs. In **Simple** mode, prints compare links for you to open in the browser.
 
-Approve and merge **in GitHub**. Merge only when every sibling PR is approved, in this order: `renglo-lib` → `renglo-api` → console and extensions. `git-convoy` does not approve or merge.
+### 8b. Approve PRs (Full mode)
+
+When every sibling PR is ready and CI is green, approve the whole set from the terminal:
+
+```bash
+git convoy feature approve
+```
+
+Uses the same `gh` login as `feature prs`. Merge only when **every** sibling PR is approved, in this order: `renglo-lib` → `renglo-api` → console and extensions. `git-convoy` does not merge — merge in GitHub (or your org’s policy) after approval.
+
+In **Simple** mode, approve in the GitHub UI instead.
 
 ```bash
 git convoy feature show
 ```
 
-Each participant shows `pending` or `merged`. When every PR is merged, status becomes `merged` (`N/N merged` in the header). Detection uses `gh` when logged in (works with squash merges); otherwise git checks whether the feature branch tip is contained in `develop`.
+Each participant shows `pending` or `merged`. When every PR is merged, status becomes `merged` (`N/N merged` in the header). **Full** mode uses `gh` (works with squash merges). **Simple** mode checks whether the feature branch tip is contained in `develop`.
 
 ### 9. Close the feature
 
@@ -213,47 +289,35 @@ Checks out `develop`, pulls `origin/develop`, deletes local `feature/<name>`, an
 
 To throw away unmerged work instead, use `feature abandon` (lossy).
 
-When those PRs merge, the feature is on `develop`. Cycle 1 is done. Cycle 2 is what turns that `develop` into packages in the registry. Cycle 3 is what points a running system at those packages.
+When those PRs merge, the feature is on `develop`. Cycle 2 turns that `develop` into release branches.
 
 ---
 
+## Cycle 2 — Release trains (local)
 
+A **release train** is a coordinated cut of several repositories at the same moment. Features land on `develop` one at a time (cycle 1). Cycle 2 freezes whatever is on `develop` in each repo onto **`release/<name>`** and lets the release manager stabilize **in git only**.
 
-## Cycle 2 — Release trains
+Until you cut, merged features only exist on `develop`. Nothing is in a registry or a running system.
 
-A **release train** is a coordinated cut of several repositories at the same moment. Features land on `develop` one at a time (cycle 1). A train is the later step that says: take whatever is already on `develop` in each repo, freeze it together, and publish packages to the registry. Repos that did not move since the last stable release stay off the train.
-
-Until you cut, merged features only exist on `develop`. They are not in the registry, and they are not in production.
+**This cycle is universal.** It does not need CodeArtifact, a BOM, or Full mode. You can repeat cut → fix → recut many times before you ever enter cycle 3.
 
 ### Naming a train
 
 The name is yours. git-convoy does not parse it and does not require a date format. It becomes the branch `release/<name>` and the label on the train sheet.
 
-Pick something unique and sortable so humans can tell trains apart. Common choices:
+Pick something unique and sortable. Common choices: `2026-W34`, `2026-08-21`, `q3-cutover`. Avoid a bare `week-34` (no year). The train name is **not** any package’s semver.
 
-- An ISO week, such as `2026-W34`
-- A cutoff date, such as `2026-08-21`
-- A milestone you already use, such as `q3-cutover`
-
-Avoid a bare `week-34` (no year) and avoid using a package semver as the train name. The train name is **not** the version of any package. Each repo on the train keeps its own semver (`1.2.4`, `0.0.3`, …). The train name is only the shared trip those versions took together.
-
-The examples below use `2026-W34` because ACME cuts weekly. You could call the same train `august-train` and the commands would work the same.
+The examples below use `2026-W34`.
 
 ### Example — ACME, Friday of week 34
 
-ACME used git-convoy all week. Three features, same commands as above:
+| Feature | Repos on the feature sheet | Friday afternoon |
+| ------- | -------------------------- | ---------------- |
+| **X** invoice rounding | `renglo-lib`, `breakdown` | Merged to `develop` |
+| **Y** login timeout | `renglo-api`, `console` | Merged to `develop` |
+| **Z** export CSV | `schd` | Still on `feature/export-csv` |
 
-
-| Feature                | How they started it                         | Repos on the feature sheet | Friday afternoon                                   |
-| ---------------------- | ------------------------------------------- | -------------------------- | -------------------------------------------------- |
-| **X** invoice rounding | `git convoy feature start invoice-rounding` | `renglo-lib`, `breakdown`  | Merged to `develop` on Tuesday                     |
-| **Y** login timeout    | `git convoy feature start login-timeout`    | `renglo-api`, `console`    | Merged to `develop` on Thursday                    |
-| **Z** export CSV       | `git convoy feature start export-csv`       | `schd`                     | Still on `feature/export-csv`. PR open, not merged |
-
-
-`payload` and `blast-radius` from the earlier examples would look the same: after `feature prs` and a GitHub merge, they sit on `develop` until a train cut picks them up.
-
-Nothing on `develop` this week in `wss`, `data`, or `schd` (Z has not merged). Those repos sit this train out. Their last stable pins stay in the BOM.
+Nothing on `develop` for `schd` (Z has not merged). That repo sits this train out.
 
 ### 1. Cut the train
 
@@ -261,158 +325,282 @@ Nothing on `develop` this week in `wss`, `data`, or `schd` (Z has not merged). T
 git convoy train cut 2026-W34
 ```
 
-git-convoy looks at every product repo and asks: is `develop` ahead of the last stable `vX.Y.Z` tag? Repos without a version file (`pyproject.toml`, `package.json`, …) are **skipped** automatically — dev services like `webhook` or `wss` that are not packages yet. Pass `--repos` to force a specific set (each must have a version file).
-
-For the ACME example, that means:
-
-- **On the train:** `renglo-lib` and `breakdown` (feature X), `renglo-api` and `console` (feature Y)
-- **Not on the train:** `schd` (feature Z is still on `feature/export-csv`), and every other repo that did not move
-
-In each repo that is on the train it creates a`release/2026-W34 branch`, bumps the package one **patch** (override with `--bump minor|major` or `--no-bump`), and writes the rc version (`1.2.4rc1` in Python, `1.2.4-rc.1` in npm). One bump per repo for the whole train — not one bump per feature.
-
-If you need to force a set instead of discovery:
+For each product repo ahead of its last stable tag, creates `release/2026-W34`, bumps one **patch** (override with `--bump minor|major` or `--no-bump`), and writes rc versions (`1.2.4rc1` / `1.2.4-rc.1`). Repos without `pyproject.toml` or `package.json` are skipped automatically.
 
 ```bash
 git convoy train cut 2026-W34 --repos renglo-lib,breakdown
 ```
 
-Monday, ACME merges feature Z. Too late for `2026-W34`. `schd` will have to wait for the next train (e.g: `2026-W35)`.
+### 2. Stabilize on the release branch
 
-### 2. Publish release candidates to the registry
+Fix bugs on `release/<name>`. Bugfixes only — no new features. Commit in each participant repo as usual (`git commit`). Merge fixes back to `develop` when appropriate so the next train does not lose them.
 
-In a single repo you would usually run `git tag`, then `git push origin <tag>`. `tag-rc` does both, in every train participant:
+Repeat **`train cut`** only after **`train delete`** if you need to abandon the cut entirely.
 
-```bash
-git convoy train tag-rc
-```
-
-For each repo on the train it creates the candidate tag (`v1.2.4-rc.1`, each repo its own number), then pushes the `release/<name>` branch **and** that tag to origin. The pushed tag is what CI publishes to the registry. There is no separate “now push the tags” step.
-
-`--no-push` tags locally and does not push. Use that only if you want to inspect first.
-
-On the release branch after this: bugfixes only. No new features.
-
-This is the candidate half of cycle 2. To try those rcs on a running system, leave this cycle and take the **release** golden path in cycle 3. If staging is wrong, come back here: fix on the release branch, merge the fix back to `develop`, run `tag-rc` again (`v1.2.4-rc.2`), and adopt again. That loop can run as many times as you need. Feature Z is not in these packages.
-
-### Looking at the train sheet
+You can inspect the sheet at any time:
 
 ```bash
 git convoy train show
 ```
 
-Read-only. It prints the current train sheet (or `train show NAME`). It does not tag, push, or publish. Run it whenever you want — before `tag-rc`, after, or after `train publish`. After `tag-rc` you should see an `rc_tag` per repo; after `train publish` you should see a `stable_tag`.
-
-To throw away a botched or abandoned cut and start over:
+To throw away a botched or abandoned cut:
 
 ```bash
 git convoy train delete
 git convoy train delete 2026-08-29 --yes
 ```
 
-Deletes local `release/<name>` in every participant (and any other product repo that still has that branch), checks out the integration branch, and removes the train sheet. Pass `--remote` to delete `origin/release/<name>` too. `--json` requires `--yes`. Then run `train cut` again.
+Deletes local `release/<name>` branches, checks out the integration branch, and removes the train sheet. Pass `--remote` to delete `origin/release/<name>` too. `--json` requires `--yes`.
 
-### 3. Publish stable packages to the registry
+### 3. Optional — git-only tags (stay in cycle 2)
 
-When the last rc of every participant is acceptable, publish the **same numbers** without the rc suffix. This is still the registry, not production.
+If you want version tags and even a local merge to `main` **without** touching the registry:
 
 ```bash
-git convoy train publish
+git convoy train tag-rc --no-push
+git convoy train publish --no-push
 ```
 
-For each participant it drops the rc (`1.2.4rc1` → `1.2.4`), merges `release/<name>` into `main` (so the stable line has a home), tags `v1.2.4`, and pushes `main` plus that tag. The pushed **stable tag** is what CI publishes to the registry as the installable release.
+These update git and the train sheet locally. They do **not** push tags or trigger CI. Use them when you never plan to run cycles 3–4.
 
-`--no-push` does the local commits, merge, and tag, and does not push.
+### End of cycle 2
 
-Both “publishes” in cycle 2 are registry publishes. Production is cycle 3, and only after this command.
-
-Cycle 2 is done when the stable tags are in the registry. A running system is unchanged until you take cycle 3’s **production** golden path.
+When the release branch set is ready, stop here — or continue to **cycle 3** to push rc tags, publish to CodeArtifact, and test on staging.
 
 ---
 
+## Setup for cycles 3 and 4 (tenant)
 
+Cycles 3 and 4 need infrastructure git-convoy does not configure. Do this once per installation (or extend it when a **new repo** joins the train).
 
-## Cycle 3 — Adoption
+Full detail: [`ops/publisher/README.md`](../publisher/README.md) and your `*-bom` repo README (example: `ops/stanley-bom/README.md`).
 
-After a train ships, the registry has new versions across many repositories. Those packages are not yet in a testing or production system. Adoption is the step that puts them there.
+### A. Publisher stack (CodeArtifact + OIDC publish role)
 
-Every target system has its own **BOM** repository (bill of materials) that holds the list of dependencies it installs. That repo can be named anything and live anywhere. Pass `--bom` with a path relative to the workspace, or an absolute path. The examples below use `ops/acme-bom` because that is where this instance keeps it.
+Deploy the publisher CDK stack once in the publisher AWS account:
 
-If you omit `--bom`, git-convoy scans the workspace for a folder whose name ends in `-bom` (any depth; it skips `node_modules`, venvs, and similar). One match is enough. Several matches (or none) refuse until you pass `--bom`.
+```bash
+cd ops/publisher/cdk
+# Edit publisher-config.json — see below
+cdk deploy renglo-publisher --app "python app.py" --profile <aws-profile>
+```
 
-The BOM holds:
+In `ops/publisher/cdk/publisher-config.json`:
 
-- One JSON file per **system version** under `bom/` (example: `bom/v1.4.0.json`). That file lists every dependency the system installs: package versions under `python` / `npm`, and (today) git commit SHAs under `repos`. Packages that did not move keep the version they already had. During `adopt take`, train participants that are SHA-pinned under `repos` get their commit updated to the train tag or release branch tip.
-- `deploy_targets.yml`, which says which of those JSON files staging and production should use.
+- **`github_publish_repos`** — list every GitHub repo **by short name** that may publish when a tag is pushed (e.g. `claw`, `pes`, `console`, `stanley-wl`). Add a new name here whenever a new package repo joins the train, then **redeploy** the stack. Do not use `["*"]` unless you intentionally trust the whole org.
+- **`reader_aws_accounts`** — AWS account IDs allowed to **read** from CodeArtifact (your tenant deploy account).
 
-Example: The system version (`1.4.1`) is not any package’s semver. `renglo-lib` can be `1.2.4` and `schd` can be `2.3.4` inside the same system `1.4.1`.
+Verify the live OIDC trust (repo names must match):
 
-Without this cycle you would open the current BOM, copy it, and type every new version and SHA from the train into the copy. Miss one and the system installs a mix that never rode the train together. That is a defective release. Cycle 3 writes the BOM so you do not do that by hand.
+```bash
+aws iam get-role \
+  --role-name GitHubActionsPublishRole-renglo \
+  --profile <aws-profile> \
+  --query 'Role.AssumeRolePolicyDocument' \
+  --output json
+```
 
-git-convoy only edits those files. It does not publish packages and it does not `git push` the BOM. After each command, commit and push the BOM repo yourself so CI deploys.
+Look for `repo:renglo/<name>:*` entries under `token.actions.githubusercontent.com:sub`.
 
-This is its own cycle, not the last page of cycle 2. The same train can be adopted onto more than one BOM, and you can be managing more than one train. You will also leave cycle 3 and go back to cycle 2 more than once.
+### B. Each train participant repo (GitHub)
 
-There are two golden paths. They are not two steps of the same sitting.
+For **every repo** on the train that publishes packages, on **that GitHub repo**:
 
-### Golden path — Adopt a release train
+**1. Publish workflow** (copy from `ops/publisher/workflows/`):
 
-1. Run this after `git convoy train tag-rc`. The registry has candidates. They are not on any running system until you adopt them.
+| Repo layout | Workflow file |
+| ----------- | ------------- |
+| Python only (`pyproject.toml` at root) | `publish-python.yml` → `.github/workflows/publish.yml` |
+| npm only (`package.json` at root, e.g. `stanley-wl`) | `publish-npm.yml` → `.github/workflows/publish.yml` |
+| Extension (`package/` and/or `ui/`) | `publish-extension.yml` → `.github/workflows/publish.yml` (skips a missing tree) |
+
+Workflows run on **`v*` tag push** (what `train tag-rc` and `train publish` push).
+
+**2. Repository variables** (Settings → Actions → Variables):
+
+| Variable | Value |
+| -------- | ----- |
+| `AWS_PUBLISH_ROLE_ARN` | `OidcPublishRoleArn` from the publisher stack output |
+| `PUBLISHER_NAME` | e.g. `renglo` |
+| `AWS_REGION` | Region where the publisher stack was deployed |
+
+**3. Confirm publish succeeded** after each `tag-rc` / `publish` push — GitHub Actions on that repo must succeed. git-convoy only pushes tags. In **Full** mode, `train verify` polls workflow conclusions via `gh`. In **Simple** mode, watch Actions manually. A failed publish workflow means the BOM must not assume that version exists.
+
+Optional: pin by package in the BOM (`python` / `npm` sections) instead of cloning private git SHAs — see your BOM README for `@stanley/wl` and extension packages.
+
+**Console** is special today: it is a Vite app deployed from a **git clone** (`repos.renglo/console`), not from CodeArtifact. Until console has a working tag-publish workflow, `adopt` keeps **repos-only** pins and **removes** any stale `npm.@renglo/console` entry. A starter workflow lives at `console/.github/workflows/publish-npm.yml`; enabling it requires renaming the package to `@renglo/console`, adding `console` to `github_publish_repos`, redeploying the publisher stack, and setting the repo Actions variables above. After the first green `train verify`, `adopt` will write the npm pin instead.
+
+Do not leave `npm` pins in the BOM for packages that failed publish CI — deploy will try CodeArtifact and fail. In **Full** mode, `git convoy adopt` runs `train verify` automatically and **self-heals**: failed publishes drop registry pins and fall back to `repos.*.commit` git SHAs. Use `--require-verify` when you want adopt to **refuse** instead of self-heal (no BOM written until every publishable repo is green). Use `--no-verify` to skip gh and use the local workflow heuristic only (Simple-mode behavior).
+
+### C. BOM repo (staging / production deploy)
+
+Your tenant BOM repo (e.g. `ops/stanley-bom`) needs:
+
+- `bom/vX.Y.Z.json` — system versions and pins
+- `deploy_targets.yml` — which BOM file staging and production use (`production.enabled: false` until cycle 4)
+- GitHub Actions workflows that deploy when `bom/` or `deploy_targets.yml` changes on `main`
+- CodeArtifact **read** access from the deploy account (via publisher `reader_aws_accounts` + IAM on the tenant side)
+
+git-convoy edits the BOM files locally; **you** commit and push the BOM repo so CI deploys.
+
+---
+
+## Cycle 3 — Staging adoption (registry + cloud test)
+
+Cycle 3 starts when you push **rc** tags and adopt onto staging. Prerequisites: **Setup for cycles 3 and 4** (sections A–C).
+
+### Golden path — Adopt a release train to staging
+
+**1. Publish release candidates to the registry**
+
+```bash
+git convoy train tag-rc
+```
+
+For each train participant: candidate tag (`v1.2.4-rc.1`), push `release/<name>` and the tag. **CI publishes rc packages to CodeArtifact.**
+
+Use `--no-push` to stay in cycle 2 (local tags only).
+
+Before adopting, confirm publish CI:
+
+```bash
+git convoy train verify              # Full: check publish workflows now
+git convoy train verify --wait       # poll until success or timeout
+git convoy adopt --bom ops/acme-bom  # Full: verify + self-heal (default)
+git convoy adopt --require-verify --bom ops/acme-bom   # strict: refuse if any publish failed
+git convoy adopt --no-verify --bom ops/acme-bom        # Simple: local heuristic only
+```
+
+`train verify` scans each repo’s `.github/workflows/` for files that trigger on **`v*` tag push** (same trigger publisher templates use). It does not guess a single workflow filename — `publish-python.yml`, `publish-extension.yml`, and `publish-npm.yml` all work. Repos with **no** tag-publish workflow (e.g. **console**, which deploys via git clone today) are **skipped**, not failed. If a repo has **multiple** tag-publish workflows, **all** must succeed.
+
+### Adopt pin strategy (Full mode, default)
+
+When `gh` is logged in, **`adopt` runs verify automatically** and picks pins per repo:
+
+| Verify result | BOM pins |
+| ------------- | -------- |
+| **success** | `python` / `npm` registry versions; redundant `repos` SHAs removed |
+| **skip** (git-clone participant) | `repos.*.commit` only — same as console today |
+| **failure** (or pending / no tag) | **Self-heal:** clear registry pins, fall back to `repos.*.commit` |
+
+CLI output groups pins by repo and labels each line `registry`, `git`, or `fallback`. A summary line shows how many repos verified vs fell back.
+
+**Simple mode** (no `gh`, or `--no-verify`): uses a local heuristic — workflow file present → registry pin; otherwise git SHA only. Optimistic; use Full mode for real trains.
+
+`--require-verify` is the strict gate: adopt **aborts** if any publishable repo is not green (no self-heal). Use before production when you refuse any git-clone fallbacks.
+
+`adopt` only writes **`python` / `npm` pins** for repos whose publish CI succeeded (or heuristic says they publish). Others get **`repos.*.commit` only**.
+
+In **Simple** mode, watch Actions on each participant instead. If OIDC or publish failed, fix setup (section B) and re-tag (`tag-rc` again bumps rc suffix).
+
+**2. Write the staging BOM**
 
 ```bash
 git convoy adopt --bom ops/acme-bom
 ```
 
-Takes the current train and writes the next system version. Staging will install it. Production stays on the previous BOM.
+First adopt for a train: new system version (patch bump), rc pins, staging pointed, `production.enabled: false`. CLI prints `(draft)`. Later adopts for the **same train** refresh the same file — `(refresh)`.
 
-2. Commit and push the BOM repo. CI deploys staging.
+**3. Deploy staging**
 
 ```bash
 cd ops/acme-bom
 git add bom/ deploy_targets.yml
-git commit -m "Adopt release train"
+git commit -m "Adopt release train (staging)"
 git push origin HEAD
 ```
 
-3. Test staging, look for errors and repeat if needed. If staging shows an error or a bug, go back to cycle 2: fix on the release branch, run `train tag-rc` again, then come back here and `adopt` again. Many attempts are fine. Each adopt writes a new system version from whatever the train sheet now has.
+CI deploys **staging** from the new BOM.
 
-### Golden path — Adopt a production train
+**4. Test and iterate**
 
-1. Run this only after `git convoy train publish` (the release branch is stable). That command is what makes the train stable. Do not use `--production` on a release train (rc).
+If staging fails, go back to **cycle 2** (fix on `release/<name>`), then **cycle 3** again:
+
+```bash
+git convoy train tag-rc
+git convoy adopt --bom ops/acme-bom
+# commit and push BOM
+```
+
+Many attempts are fine. Train stays **`stabilizing`** until cycle 4’s `train publish`.
+
+| When | Command | System version | Pins |
+| ---- | ------- | -------------- | ---- |
+| First adopt after `tag-rc` | `git convoy adopt` | New file (e.g. `v0.1.4` → `v0.1.5`) | rc from train |
+| Later adopt, same train | `git convoy adopt` | **Same file** (refresh) | Updated from train sheet |
+
+**End of cycle 3:** staging runs the train; production is unchanged (`production.enabled: false`). Stop here if you do not want production yet.
+
+---
+
+## Cycle 4 — Production release
+
+Cycle 4 ships **stable** packages to the registry and enables production on the same BOM file staging already uses.
+
+Prerequisites: cycle 3 complete and staging acceptable; setup sections A–C still apply.
+
+### Golden path — Production
+
+**1. Publish stable packages to the registry**
+
+```bash
+git convoy train publish
+```
+
+Drops rc suffix (`1.2.4rc1` → `1.2.4`), merges `release/<name>` into `main`, tags `v1.2.4`, pushes. **CI publishes stable packages.** Train status → **`published`**.
+
+Again:
+
+```bash
+git convoy train verify
+git convoy train verify --wait
+```
+
+In **Simple** mode, confirm publish workflows succeeded in GitHub before adopting.
+
+**2. Enable production on the BOM**
+
+Fast path (one command):
 
 ```bash
 git convoy adopt --production --bom ops/acme-bom
 ```
 
-Aims production at the **same** BOM staging is already running. It does not write a new file and it does not take the train again.
-
-2. Commit and push the BOM again.
+Refreshes **stable** pins in the current BOM file, sets `Production. Release <train>.`, and sets `production.enabled: true`. Refuses if the train is not **published** or pins are still rc.
 
 ```bash
 cd ops/acme-bom
-git add deploy_targets.yml
+git add bom/ deploy_targets.yml
 git commit -m "Adopt production train"
 git push origin HEAD
 ```
 
-3. Test production, look for errors and open a fix branch if there is something wrong. 
+CI runs **staging deploy → smoke check → production deploy** in one workflow. Production is blocked if staging fails. Watch GitHub Actions (or failure notifications).
+
+#### Optional safe path
+
+A manual staging check on **stable** pins before enabling production is recommended, not required:
+
+1. `git convoy adopt` — refresh stable pins; description `Staging. Release <train>.`
+2. Commit and push — staging runs stable build
+3. `git convoy adopt --production` — enable production on the same file
+4. Commit and push
+
+---
+
+## Optional reading — Adoption internals
+
+You do not need these words to adopt. `adopt` and `adopt --production` run them for you.
 
 
+| Word | What it changes | What it means |
+| ---- | --------------- | ------------- |
+| **Draft** | A new `bom/vX.Y.Z.json` | Copy the current BOM to a new system version. CLI: `(draft)`. |
+| **Refresh** | Same `bom/vX.Y.Z.json` | Re-pin from the train sheet in place. CLI: `(refresh)`. |
+| **Pin** | Entries inside that JSON | Exact package or repo SHA versions from the train. |
+| **Point** | `deploy_targets.yml` | Which BOM file staging / production install. |
 
-### Optional reading : Internals — draft, pin, and point
-
-You do not need these words to adopt a train. `adopt` and `adopt --production` run them for you.
-
-
-| Word      | What it changes          | What it means                                                                                           |
-| --------- | ------------------------ | ------------------------------------------------------------------------------------------------------- |
-| **Draft** | A new `bom/vX.Y.Z.json`  | Copy the current BOM to a new system version. Nothing is deployed. Every version starts as a copy.      |
-| **Pin**   | Entries inside that JSON | Set a package to an exact version. “Install this, not latest.” `adopt` pins every package on the train. |
-| **Point** | `deploy_targets.yml`     | Tell staging (then production) which BOM file to install. This is what aims the running system.         |
-
-
-The release path drafts the next system version (patch bump of whatever `deploy_targets.yml` already points at), pins every repo on the current train, and points staging at the new file. The production path points production at that same file — only after `train publish`.
-
-The primitives stay available when you are not taking a whole train — one package, a pin-back, or a system version you want to name yourself:
+Manual primitives:
 
 ```bash
 git convoy adopt draft --from 1.4.0 --to 1.4.1 --bom ops/acme-bom
@@ -420,48 +608,44 @@ git convoy adopt pin 1.4.1 renglo-lib 1.2.5 --bom ops/acme-bom
 git convoy adopt point 1.4.1 --bom ops/acme-bom
 ```
 
-Pass `--train NAME` to `adopt` if the train you want is not the current one. `--from` / `--to` override the automatic system-version bump.
-
-Rollback is `adopt point` at the previous system version, then commit and push. The newer file stays on disk.
+Pass `--train NAME` if the train you want is not current. Rollback: `adopt point` at the previous system version, commit and push.
 
 ---
 
-
-
 ## Commands
 
-
-| Command                          | What it does                               |
-| -------------------------------- | ------------------------------------------ |
-| `git convoy init`                | State file, gitignore, Cursor skill        |
-| `git convoy status`              | Current feature, train, dirty repos        |
-| `git convoy feature start NAME`  | Empty sheet; checkout `develop`            |
-| `git convoy feature adopt`       | Branch changed repos onto `feature/NAME`   |
-| `git convoy feature abandon`     | Delete local `feature/<name>` (lossy)      |
-| `git convoy feature commit`      | Commit dirty participants                  |
-| `git convoy feature push`        | Push `feature/<name>` to origin (no PRs)   |
-| `git convoy feature switch NAME` | Checkout that feature’s repos              |
-| `git convoy feature refresh`     | Merge `origin/develop` into participants   |
-| `git convoy feature prs`         | Push and open PRs                          |
-| `git convoy feature show [NAME]` | Feature sheet with per-repo merge status   |
-| `git convoy feature close`       | After all PRs merge: checkout develop      |
-| `git convoy train cut NAME`      | Cut `release/NAME` on changed repos        |
-| `git convoy train tag-rc`        | Tag `vX.Y.Z-rc.N` and push (registry rc)   |
-| `git convoy train publish`       | Stable tag + push (registry release)       |
-| `git convoy train show [NAME]`   | Read the train sheet (no git writes)       |
-| `git convoy train delete`        | Delete `release/<train>` branches          |
-| `git convoy adopt`               | Adopt a release train onto a BOM (staging) |
-| `git convoy adopt --production`  | Adopt a production train (after publish)   |
-| `git convoy adopt draft`         | Copy last good BOM to a new system version |
-| `git convoy adopt pin`           | Set one package version in that draft      |
-| `git convoy adopt point`         | Aim staging (or production) at a BOM file  |
-
+| Command | Cycle | What it does |
+| ------- | ----- | ------------ |
+| `git convoy init` | 1 | State file, gitignore, Cursor skill |
+| `git convoy status` | * | Current feature, train, dirty repos |
+| `git convoy feature start NAME` | 1 | Empty sheet; checkout `develop` |
+| `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME` |
+| `git convoy feature abandon` | 1 | Delete local `feature/<name>` (lossy) |
+| `git convoy feature commit` | 1 | Commit dirty participants |
+| `git convoy feature push` | 1 | Push `feature/<name>` (no PRs) |
+| `git convoy feature switch NAME` | 1 | Checkout that feature’s repos |
+| `git convoy feature refresh` | 1 | Merge `origin/develop` into participants |
+| `git convoy feature prs` | 1 | Push and open PRs (Full); `--no-gh` for compare URLs |
+| `git convoy feature approve` | 1 | Approve sibling PRs (Full; requires `gh`) |
+| `git convoy feature show [NAME]` | 1 | Feature sheet + merge status |
+| `git convoy feature close` | 1 | After all PRs merged |
+| `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
+| `git convoy train show [NAME]` | 2 | Read train sheet |
+| `git convoy train delete` | 2 | Delete `release/<train>` branches |
+| `git convoy train tag-rc` | 3 | Push rc tags → registry (use `--no-push` for cycle 2 only) |
+| `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
+| `git convoy adopt` | 3 | Staging BOM — `(draft)` or `(refresh)`; Full mode runs verify + self-heal by default |
+| `git convoy adopt --require-verify` | 3–4 | Strict: refuse adopt when any publish workflow failed |
+| `git convoy adopt --no-verify` | 3–4 | Skip verify; local workflow heuristic only (Simple mode) |
+| `git convoy train publish` | 4 | Stable tags → registry |
+| `git convoy adopt --production` | 4 | Stable pins + `production.enabled: true` |
+| `git convoy adopt draft` | * | Copy BOM to new system version |
+| `git convoy adopt pin` | * | Set one package version |
+| `git convoy adopt point` | * | Aim staging or production at a BOM file |
 
 Global flags: `--json`, `--workspace PATH`.
 
 ---
-
-
 
 ## For coding agents
 
@@ -473,21 +657,21 @@ git convoy --json feature show
 git convoy --json train show
 git convoy --json feature commit
 git convoy --json feature push
-git convoy --json adopt --bom ops/<system>-bom
-git convoy --json adopt --production --bom ops/<system>-bom
+git convoy --json adopt --bom ops/<system>-bom              # cycle 3: staging
+git convoy --json adopt --production --bom ops/<system>-bom  # cycle 4: production
 ```
 
-`init` installs a Cursor skill (`.cursor/skills/gitconvoy/SKILL.md`) that tells the agent to do this. After editing code, run `git convoy --json feature adopt`, then `git convoy --json feature commit` (plan) and `--from` (apply). Use `feature push` to back up branches without PRs. Do not commit feature work on `develop`.
+Cycles 1–2 only: no `--bom`, no registry. Do not invent package pins. In cycle 3–4 with Full mode, `adopt` verifies publish CI and self-heals failed repos to git SHAs. Use `--require-verify` when every publish must be green before writing the BOM.
+
+`init` installs a Cursor skill (`.cursor/skills/gitconvoy/SKILL.md`). After editing code: `feature adopt`, then `feature commit`. Do not commit feature work on `develop`.
 
 ---
 
-
-
 ## What this tool will not do
 
-- Approve or merge GitHub PRs
-- Talk to CodeArtifact or invent unpublished pins
+- **Merge** GitHub PRs (approve via `feature approve` in Full mode; merge stays in GitHub)
+- Query CodeArtifact directly (Full mode checks **publish workflow** outcome via `gh`)
 - Create a `feature/*` branch in every repo
-- Replace staging as the compatibility check
+- Push the BOM repo for you
 
-Those steps stay human (or a later tool). The process authority remains [cross-repo-feature-manual.md](cross-repo-feature-manual.md).
+In **Simple** mode, PR approval and publish verification stay manual in the GitHub UI. Process authority: [cross-repo-feature-manual.md](cross-repo-feature-manual.md).

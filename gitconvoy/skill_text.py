@@ -15,6 +15,13 @@ CLI manual: `ops/git-convoy/README.md`.
 
 Prefer `git convoy` over raw git for any step that spans more than one repo.
 
+## Simple vs Full mode
+
+- **Simple:** `git` only. `feature prs --no-gh` prints compare URLs; merge status via git; approve PRs and publish CI checks in the GitHub UI.
+- **Full:** `gh` logged in or `GH_TOKEN` set. Enables `feature prs`, `feature approve`, squash-safe `feature show`, and `train verify`. No AWS profile required for publish checks.
+
+Setup: install `gh`, run `gh auth login`, verify with `gh auth status`. Token needs pull-request and Actions read on every participant repo. See README “Simple vs Full mode”.
+
 ## Ask the CLI first
 
 Run from the workspace root (or pass `--workspace`). Always add `--json` when you need to answer a question.
@@ -70,10 +77,18 @@ Refuses if any product repo is dirty. Run `git convoy --json feature commit` fir
 ## PRs
 
 ```bash
-git convoy --json feature prs
+git convoy --json feature prs           # Full: opens PRs
+git convoy --json feature prs --no-gh   # Simple: compare URLs only
 ```
 
-Opens PRs (or prints compare URLs). Approve and merge in the GitHub UI. Merge order is `renglo-lib` → `renglo-api` → console/extensions. Do not merge a subset.
+Full mode — approve when CI is green (do not merge until every sibling is approved):
+
+```bash
+git convoy --json feature approve
+git convoy --json feature approve --force   # skip failing/pending checks
+```
+
+Merge order is `renglo-lib` → `renglo-api` → console/extensions. Do not merge a subset. Merge stays in GitHub.
 
 After merges, check status and close the feature:
 
@@ -84,12 +99,34 @@ git convoy --json feature close --yes
 
 `feature show` reports `pending` vs `merged` per repo. `feature close` checks out `develop` and removes feature branches once every participant is merged.
 
+## Publish verification (cycles 3–4, Full mode)
+
+```bash
+git convoy --json train verify
+git convoy --json train verify --wait
+git convoy --json adopt --bom ops/<system>-bom                    # verify + self-heal (default)
+git convoy --json adopt --require-verify --bom ops/<system>-bom    # strict: refuse on failure
+git convoy --json adopt --no-verify --bom ops/<system>-bom        # Simple heuristic only
+```
+
+Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trigger in `.github/workflows/` (any filename). Skips repos without such a workflow (console today). Default adopt clears registry pins for failed publishes and falls back to `repos.*.commit`. `--require-verify` refuses to write the BOM when verify fails.
+
+## Cycles (see README)
+
+- **1–2:** features and local release branches — git only (Full optional).
+- **3:** `train tag-rc` (push) → `train verify` (Full) or manual Actions → `adopt` → push BOM (staging).
+- **4:** `train publish` → `train verify` (Full) or manual Actions → `adopt --production` → push BOM.
+
+Do not run cycle 3/4 without tenant publisher + BOM setup (README: “Setup for cycles 3 and 4”).
+
 ## What not to do
 
 - Do not create `feature/<name>` in every repo.
 - Do not abandon a feature unless the user wants that work discarded.
-- Do not approve or merge PRs through git-convoy.
+- Do not merge PRs through git-convoy (approve is OK in Full mode).
 - Do not query CodeArtifact or invent unpublished pins.
+- In Full mode, default `adopt` self-heals failed publishes to git SHAs; use `--require-verify` when the BOM must not be written until CI is green.
+- Do not adopt with `--no-verify` on a real train unless you checked Actions manually.
 - Do not increment semver again at publish; drop the rc suffix only.
 
 To put a train onto a running system, two golden paths:
@@ -98,11 +135,13 @@ To put a train onto a running system, two golden paths:
 git convoy --json adopt --bom ops/<system>-bom
 ```
 
-That is the **release** path. Run it after each `train tag-rc`. If staging fails, go back to cycle 2, tag-rc again, and adopt again. Many attempts are fine.
+That is the **release** path. Run it after each `train tag-rc`. The first adopt for a train drafts a new system version (patch bump). Later adopts for the same train refresh pins in that same BOM file — the CLI prints `(refresh)`. If staging fails, go back to cycle 2, tag-rc again, and adopt again. Many attempts are fine.
+
+After `train publish`, either run `adopt` alone (optional staging smoke-test pause) or go straight to production adopt:
 
 ```bash
 git convoy --json adopt --production --bom ops/<system>-bom
 ```
 
-That is the **production** path. Run it only after `train publish`. Do not invent pins; do not push the BOM (the operator commits and pushes).
+That is the **production** path. Refreshes stable pins and enables production in one step. Refuses while the train is still stabilizing. After push, CI deploys staging, verifies it, then production — production is blocked if staging fails (watch GitHub Actions or failure notifications).
 """
