@@ -1,7 +1,12 @@
 #!/bin/bash
-# Setup script for the git-convoy virtual environment
+# Setup script for the git-convoy virtual environment.
+# Always installs from PyPI. git-convoy has no private packages; a machine
+# pip.conf pointed at CodeArtifact must not be used.
+set -euo pipefail
 
 cd "$(dirname "$0")"
+
+PYPI_INDEX="https://pypi.org/simple"
 
 # Create virtual environment if it doesn't exist
 if [ ! -d "gitconvoy-venv" ]; then
@@ -14,10 +19,10 @@ echo "Activating virtual environment..."
 # shellcheck disable=SC1091
 source gitconvoy-venv/bin/activate
 
-# Install dependencies
-echo "Installing dependencies..."
-pip install --upgrade pip
-pip install -e ".[dev]"
+# --isolated ignores user/env pip config (including a CodeArtifact index-url).
+echo "Installing dependencies from PyPI..."
+pip install --isolated --index-url "$PYPI_INDEX" --upgrade pip
+pip install --isolated --index-url "$PYPI_INDEX" -e ".[dev]"
 
 echo "Setup complete! To activate the virtual environment, run:"
 echo "  source ops/git-convoy/gitconvoy-venv/bin/activate"

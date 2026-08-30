@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from gitconvoy import gitutil, versions
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo, save
-from gitconvoy.workspace import merge_sort, product_repos, require_repo
+from gitconvoy.workspace import Repo, merge_sort, product_repos, require_repo
+
+
+def _has_version(repo: Path) -> bool:
+    info = versions.read_version(repo)
+    return bool(info.get("python") or info.get("npm"))
 
 
 def cut(
@@ -19,11 +25,36 @@ def cut(
     slug = _slug(name)
     branch = f"release/{slug}"
     repos = product_repos(workspace)
+    skipped: list[dict] = []
     if repo_ids:
         chosen = [require_repo(repos, repo_id) for repo_id in repo_ids]
+        for repo in chosen:
+            if not _has_version(repo.path):
+                raise GitConvoyError(
+                    f"{repo.id}: no version file; cannot cut a release train for this repo"
+                )
     else:
-        chosen = [repo for repo in repos if gitutil.develop_ahead_of_stable(repo.path)]
+        chosen = []
+        for repo in repos:
+            if not gitutil.develop_ahead_of_stable(repo.path):
+                continue
+            if not _has_version(repo.path):
+                skipped.append(
+                    {
+                        "id": repo.id,
+                        "path": repo.rel,
+                        "reason": "no-version-file",
+                    }
+                )
+                continue
+            chosen.append(repo)
     if not chosen:
+        if skipped:
+            ids = ", ".join(item["id"] for item in skipped)
+            raise GitConvoyError(
+                "no publishable repos are ahead of their last stable tag "
+                f"(skipped without version files: {ids})"
+            )
         raise GitConvoyError(
             "no repos are ahead of their last stable tag; pass --repos to force"
         )
@@ -80,6 +111,7 @@ def cut(
         "train": slug,
         "branch": branch,
         "repos": added,
+        "skipped": skipped,
     }
 
 
@@ -166,6 +198,101 @@ def publish(workspace: Path, state: State, push: bool = True) -> dict:
     }
 
 
+def delete(
+    workspace: Path,
+    state: State,
+    name: str | None = None,
+    *,
+    yes: bool = False,
+    remote: bool = False,
+    as_json: bool = False,
+    input_fn=None,
+    is_tty: bool | None = None,
+) -> dict:
+    train = state.require_train(name)
+    branch = train.branch
+    targets = _delete_targets(workspace, train)
+    if not yes:
+        if as_json or not (sys.stdin.isatty() if is_tty is None else is_tty):
+            raise GitConvoyError(
+                "train delete removes release branches; pass --yes to confirm"
+            )
+        ids = ", ".join(repo.id for repo in targets) or "(none)"
+        prompt = (
+            f"This will delete local {branch} in {len(targets)} repos ({ids})"
+            + (" and on origin" if remote else "")
+            + ", remove the train sheet, and check out the integration branch. "
+            "Continue? : "
+        )
+        answer = _confirm_yes(input_fn or input, prompt)
+        if not answer:
+            return {
+                "ok": True,
+                "deleted": False,
+                "train": train.name,
+                "branch": branch,
+                "repos": [],
+            }
+
+    removed: list[dict] = []
+    for repo in targets:
+        gitutil.fetch(repo.path)
+        current = gitutil.current_branch(repo.path)
+        dirty = gitutil.is_dirty(repo.path)
+        if dirty and current == branch:
+            raise GitConvoyError(
+                f"{repo.id} has uncommitted changes on {branch}; "
+                "commit or stash before train delete"
+            )
+        integration = gitutil.current_branch(repo.path)
+        if current == branch:
+            integration = gitutil.checkout_integration(repo.path)
+        on_origin = gitutil.has_remote_branch(repo.path, branch)
+        deleted_local = False
+        if gitutil.has_local_branch(repo.path, branch):
+            gitutil.delete_branch(repo.path, branch)
+            deleted_local = True
+        deleted_remote = False
+        if remote and on_origin:
+            gitutil.delete_remote_branch(repo.path, branch)
+            deleted_remote = True
+        removed.append(
+            {
+                "id": repo.id,
+                "path": repo.rel,
+                "branch": gitutil.current_branch(repo.path),
+                "integration_branch": integration,
+                "deleted_local": deleted_local,
+                "deleted_remote": deleted_remote,
+                "on_origin": on_origin and not deleted_remote,
+            }
+        )
+
+    if state.current_train == train.name:
+        state.current_train = None
+    state.trains.pop(train.name, None)
+    save(workspace, state)
+    still_on_origin = [row["id"] for row in removed if row["on_origin"]]
+    note = (
+        f"Removed train {train.name}. Local {branch} deleted where present. "
+        "Checked out the integration branch when needed."
+    )
+    if still_on_origin and not remote:
+        note += (
+            f" {branch} still on origin in: "
+            + ", ".join(still_on_origin)
+            + ". Re-run with --remote to delete there."
+        )
+    return {
+        "ok": True,
+        "deleted": True,
+        "train": train.name,
+        "branch": branch,
+        "note": note,
+        "repos": removed,
+    }
+
+
 def show(state: State, name: str | None = None) -> dict:
     train = state.require_train(name)
     return {
@@ -193,6 +320,34 @@ def _ordered(train: Train) -> list[TrainRepo]:
     order = merge_sort([repo.id for repo in train.repos])
     by_id = {repo.id: repo for repo in train.repos}
     return [by_id[name] for name in order]
+
+
+def _delete_targets(workspace: Path, train: Train) -> list[Repo]:
+    products = product_repos(workspace)
+    by_id = {repo.id: repo for repo in products}
+    seen: set[str] = set()
+    targets: list[Repo] = []
+    for row in train.repos:
+        repo = by_id.get(row.id)
+        if repo and repo.id not in seen:
+            seen.add(repo.id)
+            targets.append(repo)
+    for repo in products:
+        if repo.id in seen:
+            continue
+        if gitutil.has_local_branch(repo.path, train.branch):
+            seen.add(repo.id)
+            targets.append(repo)
+    return targets
+
+
+def _confirm_yes(input_fn, prompt: str) -> bool:
+    while True:
+        answer = input_fn(prompt).strip().lower()
+        if answer in {"yes", "y"}:
+            return True
+        if answer in {"no", "n"}:
+            return False
 
 
 def _ensure_rc(version: str) -> tuple[str, str]:

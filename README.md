@@ -28,13 +28,13 @@ Or manually:
 cd git-convoy   # or: cd ops/git-convoy
 python3 -m venv gitconvoy-venv
 source gitconvoy-venv/bin/activate
-pip install -e ".[dev]"
+pip install --isolated --index-url https://pypi.org/simple -e ".[dev]"
 ```
 
 Alternatively, install globally with pipx (no venv to activate):
 
 ```bash
-pipx install -e /path/to/git-convoy
+pipx install --pip-args '--isolated --index-url https://pypi.org/simple' -e /path/to/git-convoy
 ```
 
 You need `git` on `PATH`. `gh` is optional (used only by `feature prs`).
@@ -102,7 +102,9 @@ Cycle 3 is not the epilogue of cycle 2. You leave cycle 2 to adopt an rc, go bac
 git convoy feature start blast-radius
 ```
 
-Creates an empty feature sheet, sets it current, and checks out `develop` in every clean product repo. It does **not** create `feature/blast-radius` yet.
+Creates an empty feature sheet, sets it current, and checks out the integration branch (`develop`, or `main` when a repo has no `develop`) in every clean feature repo. It does **not** create `feature/blast-radius` yet.
+
+Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `stanley-bom`, `stanley-wl`, …). Platform tooling in `ops/` (`publisher`, `launcher`, `extensions-service`, `git-convoy`) is excluded. Release trains still only cut product repos.
 
 ### 2. Implement
 
@@ -114,7 +116,7 @@ Edit code (or let an agent edit). Work happens on `develop`. That is expected.
 git convoy feature adopt
 ```
 
-For each product repo that is dirty or has local commits on `develop` that are not on `origin/develop`:
+For each feature repo that is dirty or has local commits on its integration branch that are not on `origin/<integration>`:
 
 - Creates or checks out `feature/<name>`
 - If you committed on `develop` (and did not push it), resets local `develop` to `origin/develop`
@@ -196,6 +198,21 @@ Approve and merge **in GitHub**. Merge only when every sibling PR is approved, i
 git convoy feature show
 ```
 
+Each participant shows `pending` or `merged`. When every PR is merged, status becomes `merged` (`N/N merged` in the header). Detection uses `gh` when logged in (works with squash merges); otherwise git checks whether the feature branch tip is contained in `develop`.
+
+### 9. Close the feature
+
+After every PR is merged:
+
+```bash
+git convoy feature close
+git convoy feature close console-whitelabel-v1 --yes
+```
+
+Checks out `develop`, pulls `origin/develop`, deletes local `feature/<name>`, and removes the feature sheet. Refuses if any participant is still `pending`. Pass `--remote` to delete `origin/feature/<name>` too. `--keep-branch` leaves local feature branches in place. `--json` requires `--yes`.
+
+To throw away unmerged work instead, use `feature abandon` (lossy).
+
 When those PRs merge, the feature is on `develop`. Cycle 1 is done. Cycle 2 is what turns that `develop` into packages in the registry. Cycle 3 is what points a running system at those packages.
 
 ---
@@ -244,7 +261,7 @@ Nothing on `develop` this week in `wss`, `data`, or `schd` (Z has not merged). T
 git convoy train cut 2026-W34
 ```
 
-git-convoy looks at every product repo and asks: is `develop` ahead of the last stable `vX.Y.Z` tag?
+git-convoy looks at every product repo and asks: is `develop` ahead of the last stable `vX.Y.Z` tag? Repos without a version file (`pyproject.toml`, `package.json`, …) are **skipped** automatically — dev services like `webhook` or `wss` that are not packages yet. Pass `--repos` to force a specific set (each must have a version file).
 
 For the ACME example, that means:
 
@@ -285,6 +302,15 @@ git convoy train show
 
 Read-only. It prints the current train sheet (or `train show NAME`). It does not tag, push, or publish. Run it whenever you want — before `tag-rc`, after, or after `train publish`. After `tag-rc` you should see an `rc_tag` per repo; after `train publish` you should see a `stable_tag`.
 
+To throw away a botched or abandoned cut and start over:
+
+```bash
+git convoy train delete
+git convoy train delete 2026-08-29 --yes
+```
+
+Deletes local `release/<name>` in every participant (and any other product repo that still has that branch), checks out the integration branch, and removes the train sheet. Pass `--remote` to delete `origin/release/<name>` too. `--json` requires `--yes`. Then run `train cut` again.
+
 ### 3. Publish stable packages to the registry
 
 When the last rc of every participant is acceptable, publish the **same numbers** without the rc suffix. This is still the registry, not production.
@@ -315,7 +341,7 @@ If you omit `--bom`, git-convoy scans the workspace for a folder whose name ends
 
 The BOM holds:
 
-- One JSON file per **system version** under `bom/` (example: `bom/v1.4.0.json`). That file lists every dependency the system installs: package versions under `python` / `npm`, and (today) git commit SHAs under `repos`. Packages that did not move keep the version they already had.
+- One JSON file per **system version** under `bom/` (example: `bom/v1.4.0.json`). That file lists every dependency the system installs: package versions under `python` / `npm`, and (today) git commit SHAs under `repos`. Packages that did not move keep the version they already had. During `adopt take`, train participants that are SHA-pinned under `repos` get their commit updated to the train tag or release branch tip.
 - `deploy_targets.yml`, which says which of those JSON files staging and production should use.
 
 Example: The system version (`1.4.1`) is not any package’s semver. `renglo-lib` can be `1.2.4` and `schd` can be `2.3.4` inside the same system `1.4.1`.
@@ -417,11 +443,13 @@ Rollback is `adopt point` at the previous system version, then commit and push. 
 | `git convoy feature switch NAME` | Checkout that feature’s repos              |
 | `git convoy feature refresh`     | Merge `origin/develop` into participants   |
 | `git convoy feature prs`         | Push and open PRs                          |
-| `git convoy feature show [NAME]` | Feature sheet                              |
+| `git convoy feature show [NAME]` | Feature sheet with per-repo merge status   |
+| `git convoy feature close`       | After all PRs merge: checkout develop      |
 | `git convoy train cut NAME`      | Cut `release/NAME` on changed repos        |
 | `git convoy train tag-rc`        | Tag `vX.Y.Z-rc.N` and push (registry rc)   |
 | `git convoy train publish`       | Stable tag + push (registry release)       |
 | `git convoy train show [NAME]`   | Read the train sheet (no git writes)       |
+| `git convoy train delete`        | Delete `release/<train>` branches          |
 | `git convoy adopt`               | Adopt a release train onto a BOM (staging) |
 | `git convoy adopt --production`  | Adopt a production train (after publish)   |
 | `git convoy adopt draft`         | Copy last good BOM to a new system version |

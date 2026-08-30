@@ -7,7 +7,7 @@ from pathlib import Path
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import Feature, State, save
-from gitconvoy.workspace import Repo, merge_sort, product_repos
+from gitconvoy.workspace import Repo, feature_repos, merge_sort
 
 
 def start(workspace: Path, state: State, name: str) -> dict:
@@ -18,7 +18,7 @@ def start(workspace: Path, state: State, name: str) -> dict:
     state.current_feature = slug
     save(workspace, state)
     checked: list[dict] = []
-    for repo in product_repos(workspace):
+    for repo in feature_repos(workspace):
         if gitutil.is_dirty(repo.path):
             checked.append(
                 {
@@ -29,20 +29,13 @@ def start(workspace: Path, state: State, name: str) -> dict:
                 }
             )
             continue
-        gitutil.fetch(repo.path)
-        if gitutil.rev_parse(repo.path, "origin/develop") or gitutil.rev_parse(
-            repo.path, "develop"
-        ):
-            if gitutil.rev_parse(repo.path, "origin/develop"):
-                gitutil.checkout(repo.path, "develop")
-                gitutil.run(repo.path, "pull", "--ff-only", "origin", "develop", check=False)
-            else:
-                gitutil.checkout(repo.path, "develop")
+        integration = gitutil.checkout_integration(repo.path)
         checked.append(
             {
                 "id": repo.id,
                 "path": repo.rel,
                 "branch": gitutil.current_branch(repo.path),
+                "integration_branch": integration,
             }
         )
     return {
@@ -58,7 +51,7 @@ def adopt(workspace: Path, state: State) -> dict:
     feature = state.require_feature()
     adopted: list[dict] = []
     skipped: list[dict] = []
-    for repo in product_repos(workspace):
+    for repo in feature_repos(workspace):
         result = _adopt_one(repo, feature)
         if result.get("adopted"):
             feature.add_repo(repo.id, repo.rel)
@@ -81,12 +74,13 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
     current = gitutil.current_branch(repo.path)
     dirty = gitutil.is_dirty(repo.path)
     gitutil.fetch(repo.path)
-    origin_dev = gitutil.rev_parse(repo.path, "origin/develop")
-    on_develop = current == "develop"
+    integration = gitutil.integration_branch(repo.path)
+    origin_int = gitutil.origin_integration(repo.path)
+    on_integration = current == integration
     ahead = bool(
-        origin_dev
-        and on_develop
-        and gitutil.ahead_of(repo.path, "HEAD", "origin/develop")
+        origin_int
+        and on_integration
+        and gitutil.ahead_of(repo.path, "HEAD", f"origin/{integration}")
     )
 
     if current == branch:
@@ -114,25 +108,25 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
             "branch": current,
         }
 
-    if not on_develop and current != branch:
+    if not on_integration and current != branch:
         raise GitConvoyError(
-            f"{repo.id} has work on {current}, not develop or {branch}. "
+            f"{repo.id} has work on {current}, not {integration} or {branch}. "
             "commit/stash or checkout the right branch first"
         )
 
     gitutil.checkout_branch(repo.path, branch)
 
-    if ahead and origin_dev and gitutil.rev_parse(repo.path, "refs/heads/develop"):
-        if not gitutil.is_ancestor(repo.path, "origin/develop", branch):
+    if ahead and origin_int and gitutil.rev_parse(repo.path, f"refs/heads/{integration}"):
+        if not gitutil.is_ancestor(repo.path, f"origin/{integration}", branch):
             raise GitConvoyError(
-                f"{repo.id}: develop has diverged from origin/develop"
+                f"{repo.id}: {integration} has diverged from origin/{integration}"
             )
-        gitutil.checkout(repo.path, "develop")
-        if gitutil.rev_parse(repo.path, "HEAD") == origin_dev:
+        gitutil.checkout(repo.path, integration)
+        if gitutil.rev_parse(repo.path, "HEAD") == origin_int:
             gitutil.checkout(repo.path, branch)
         else:
-            if gitutil.ahead_of(repo.path, "develop", "origin/develop"):
-                gitutil.reset_hard(repo.path, "origin/develop")
+            if gitutil.ahead_of(repo.path, integration, f"origin/{integration}"):
+                gitutil.reset_hard(repo.path, f"origin/{integration}")
             gitutil.checkout(repo.path, branch)
 
     return {
@@ -141,7 +135,8 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
         "adopted": True,
         "action": "branched",
         "dirty": dirty,
-        "reset_develop": bool(ahead),
+        "reset_integration": bool(ahead),
+        "integration_branch": integration,
     }
 
 
@@ -190,11 +185,9 @@ def abandon(
         if current == branch:
             gitutil.reset_hard(repo.path, "HEAD")
             gitutil.clean_untracked(repo.path)
-            gitutil.checkout(repo.path, "develop")
-        elif gitutil.has_local_branch(repo.path, "develop") or gitutil.rev_parse(
-            repo.path, "origin/develop"
-        ):
-            gitutil.checkout_branch(repo.path, "develop")
+            gitutil.checkout_integration(repo.path)
+        else:
+            gitutil.checkout_integration(repo.path)
         deleted_local = False
         if gitutil.has_local_branch(repo.path, branch):
             gitutil.delete_branch(repo.path, branch)
@@ -221,7 +214,7 @@ def abandon(
     save(workspace, state)
     still_on_origin = [row["id"] for row in removed if row["on_origin"]]
     note = (
-        "Local feature branches deleted. Check out develop. "
+        "Local feature branches deleted. Check out the integration branch. "
         "Uncommitted work on those branches is gone."
     )
     if still_on_origin and not remote:
@@ -243,7 +236,7 @@ def abandon(
 def _abandon_targets(workspace: Path, feature: Feature):
     from gitconvoy.workspace import Repo
 
-    products = product_repos(workspace)
+    products = feature_repos(workspace)
     by_id = {repo.id: repo for repo in products}
     seen: set[str] = set()
     targets: list[Repo] = []
@@ -273,7 +266,7 @@ def _confirm_yes(input_fn, prompt: str) -> bool:
 def switch(workspace: Path, state: State, name: str) -> dict:
     slug = _slug(name)
     feature = state.require_feature(slug)
-    repos = product_repos(workspace)
+    repos = feature_repos(workspace)
     dirty = [
         {"id": repo.id, "path": repo.rel, "branch": gitutil.current_branch(repo.path)}
         for repo in repos
@@ -293,15 +286,12 @@ def switch(workspace: Path, state: State, name: str) -> dict:
                 {"id": repo.id, "path": repo.rel, "branch": feature.branch}
             )
         else:
-            if gitutil.rev_parse(repo.path, "refs/heads/develop") or gitutil.rev_parse(
-                repo.path, "origin/develop"
-            ):
-                gitutil.checkout_branch(repo.path, "develop")
+            integration = gitutil.checkout_integration(repo.path)
             switched.append(
                 {
                     "id": repo.id,
                     "path": repo.rel,
-                    "branch": gitutil.current_branch(repo.path),
+                    "branch": integration,
                 }
             )
     state.current_feature = slug
@@ -321,9 +311,10 @@ def refresh(workspace: Path, state: State) -> dict:
     conflicts: list[str] = []
     for repo_row in feature.repos:
         repo_path = workspace / repo_row.path
+        integration = gitutil.integration_branch(repo_path)
         gitutil.checkout_branch(repo_path, feature.branch)
         gitutil.fetch(repo_path)
-        merged = gitutil.merge(repo_path, "origin/develop")
+        merged = gitutil.merge(repo_path, f"origin/{integration}")
         item = {
             "id": repo_row.id,
             "path": repo_row.path,
@@ -372,8 +363,9 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
                 repo_row.pr = created
         compare = None
         if slug:
+            integration = gitutil.integration_branch(repo_path)
             compare = (
-                f"https://github.com/{slug}/compare/develop...{feature.branch}"
+                f"https://github.com/{slug}/compare/{integration}...{feature.branch}"
             )
         opened.append(
             {
@@ -400,20 +392,150 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     }
 
 
-def show(state: State, name: str | None = None) -> dict:
+def show(workspace: Path, state: State, name: str | None = None) -> dict:
     feature = state.require_feature(name)
+    rows = _merge_rows(workspace, feature)
+    merged_count = sum(1 for row in rows if row["merge_status"] == "merged")
+    if rows and merged_count == len(rows):
+        feature.status = "merged"
+    elif feature.status == "in-progress" and any(repo.pr for repo in feature.repos):
+        feature.status = "in-review"
+    save(workspace, state)
     return {
         "ok": True,
         "name": feature.name,
         "branch": feature.branch,
         "status": feature.status,
         "repo_count": len(feature.repos),
-        "repos": [
-            {"id": repo.id, "path": repo.path, "pr": repo.pr}
-            for repo in feature.repos
-        ],
+        "merged_count": merged_count,
+        "repos": rows,
         "merge_order": merge_sort(feature.repo_ids()),
     }
+
+
+def _merge_rows(workspace: Path, feature: Feature) -> list[dict]:
+    rows: list[dict] = []
+    for repo in feature.repos:
+        repo_path = workspace / repo.path
+        merge_status = gitutil.pr_merge_status(repo_path, feature.branch, repo.pr)
+        rows.append(
+            {
+                "id": repo.id,
+                "path": repo.path,
+                "pr": repo.pr,
+                "merge_status": merge_status,
+            }
+        )
+    return rows
+
+
+def close(
+    workspace: Path,
+    state: State,
+    name: str | None = None,
+    *,
+    yes: bool = False,
+    remote: bool = False,
+    keep_branch: bool = False,
+    as_json: bool = False,
+    input_fn=None,
+    is_tty: bool | None = None,
+) -> dict:
+    feature = state.require_feature(name)
+    rows = _merge_rows(workspace, feature)
+    pending = [row for row in rows if row["merge_status"] != "merged"]
+    if pending:
+        raise GitConvoyError(
+            "not all PRs merged: "
+            + ", ".join(f"{row['id']} ({row['merge_status']})" for row in pending)
+            + ". Run: git convoy feature show"
+        )
+
+    if not yes:
+        if as_json or not (sys.stdin.isatty() if is_tty is None else is_tty):
+            raise GitConvoyError("close removes the feature sheet; pass --yes to confirm")
+        ids = ", ".join(row["id"] for row in rows) or "(none)"
+        prompt = (
+            f"This will check out the integration branch in {len(rows)} repos ({ids}), "
+            f"pull from origin, "
+        )
+        if keep_branch:
+            prompt += "and keep local feature branches. Continue? : "
+        else:
+            prompt += (
+                f"delete local {feature.branch}"
+                + (" and origin" if remote else "")
+                + ". Continue? : "
+            )
+        answer = _confirm_yes(input_fn or input, prompt)
+        if not answer:
+            return {
+                "ok": True,
+                "closed": False,
+                "feature": feature.name,
+                "branch": feature.branch,
+                "repos": [],
+            }
+
+    cleaned: list[dict] = []
+    for row in rows:
+        repo_path = workspace / row["path"]
+        gitutil.fetch(repo_path)
+        current = gitutil.current_branch(repo_path)
+        dirty = gitutil.is_dirty(repo_path)
+        if dirty and current == feature.branch:
+            raise GitConvoyError(
+                f"{row['id']} has uncommitted changes on {feature.branch}; "
+                "commit or stash before close"
+            )
+        integration = gitutil.checkout_integration(repo_path)
+        deleted_local = False
+        if not keep_branch and gitutil.has_local_branch(repo_path, feature.branch):
+            gitutil.delete_branch(repo_path, feature.branch)
+            deleted_local = True
+        on_origin = gitutil.has_remote_branch(repo_path, feature.branch)
+        deleted_remote = False
+        if remote and on_origin:
+            gitutil.delete_remote_branch(repo_path, feature.branch)
+            deleted_remote = True
+        cleaned.append(
+            {
+                "id": row["id"],
+                "path": row["path"],
+                "merge_status": row["merge_status"],
+                "branch": gitutil.current_branch(repo_path),
+                "integration_branch": integration,
+                "deleted_local": deleted_local,
+                "deleted_remote": deleted_remote,
+                "on_origin": on_origin and not deleted_remote,
+            }
+        )
+
+    if state.current_feature == feature.name:
+        state.current_feature = None
+    state.features.pop(feature.name, None)
+    save(workspace, state)
+    still_on_origin = [row["id"] for row in cleaned if row["on_origin"]]
+    note = "Checked out the integration branch and pulled from origin in every participant."
+    if keep_branch:
+        note += f" Local {feature.branch} branches kept."
+    else:
+        note += f" Local {feature.branch} deleted where present."
+    if still_on_origin and not remote:
+        note += (
+            f" {feature.branch} still on origin in: "
+            + ", ".join(still_on_origin)
+            + ". Re-run with --remote to delete there."
+        )
+    return {
+        "ok": True,
+        "closed": True,
+        "feature": feature.name,
+        "branch": feature.branch,
+        "note": note,
+        "repos": cleaned,
+    }
+
 
 
 def _push_feature_branches(workspace: Path, feature: Feature) -> list[dict]:
@@ -467,6 +589,7 @@ def _gh_create_pr(repo: Path, feature: Feature, slug: str) -> str | None:
         f"Participants: {', '.join(feature.repo_ids()) or '(this repo)'}\n\n"
         "Do not merge until every sibling PR is approved."
     )
+    integration = gitutil.integration_branch(repo)
     created = subprocess.run(
         [
             gh,
@@ -475,7 +598,7 @@ def _gh_create_pr(repo: Path, feature: Feature, slug: str) -> str | None:
             "--repo",
             slug,
             "--base",
-            "develop",
+            integration,
             "--head",
             feature.branch,
             "--title",

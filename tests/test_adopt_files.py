@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,47 @@ def test_take_refuses_train_without_versions(tmp_path: Path) -> None:
         repo.to = None
     with pytest.raises(GitConvoyError, match="no versions to pin"):
         adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+
+
+def test_take_updates_bom_repo_shas(tmp_path: Path) -> None:
+    from conftest import git, init_repo
+
+    bom_repo = _bom_repo(tmp_path)
+    src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())
+    src["repos"] = {
+        "renglo/pes": {
+            "url": "git@github.com:renglo/pes.git",
+            "commit": "oldsha0000000000000000000000000000000000",
+            "branch": "main",
+        }
+    }
+    (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
+    (tmp_path / "extensions").mkdir()
+    pes = init_repo(tmp_path / "extensions" / "pes")
+    subprocess.run(
+        ["git", "-C", str(pes), "remote", "add", "origin", "git@github.com:renglo/pes.git"],
+        check=True,
+        capture_output=True,
+    )
+    git(pes, "checkout", "-b", "release/2026-W34")
+    git(pes, "commit", "--allow-empty", "-m", "train cut")
+    tagged = git(pes, "rev-parse", "HEAD").stdout.strip()
+    git(pes, "tag", "v1.2.0-rc.1")
+    state = State(current_train="2026-W34")
+    train = Train(name="2026-W34", branch="release/2026-W34", status="stabilizing")
+    train.add_repo(
+        TrainRepo(
+            id="pes",
+            path="extensions/pes",
+            from_version="1.1.0",
+            to="1.2.0rc1",
+            rc_tag="v1.2.0-rc.1",
+        )
+    )
+    state.trains["2026-W34"] = train
+    adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["repos"]["renglo/pes"]["commit"] == tagged
 
 
 def test_take_cli_uses_current_train(tmp_path: Path) -> None:

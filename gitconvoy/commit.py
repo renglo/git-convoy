@@ -11,7 +11,7 @@ from typing import Callable
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import Feature, State
-from gitconvoy.workspace import merge_sort, product_repos
+from gitconvoy.workspace import feature_repos, merge_sort
 
 InputFn = Callable[[str], str]
 WriteFn = Callable[[str], None]
@@ -271,7 +271,7 @@ def _targets(
     include_diff: bool,
 ) -> tuple[Feature, list[DirtyRepo]]:
     feature = state.require_feature()
-    products = {repo.id: repo for repo in product_repos(workspace)}
+    products = {repo.id: repo for repo in feature_repos(workspace)}
     participant_ids = set(feature.repo_ids())
     unadopted: list[str] = []
     for repo in products.values():

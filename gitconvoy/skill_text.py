@@ -75,6 +75,15 @@ git convoy --json feature prs
 
 Opens PRs (or prints compare URLs). Approve and merge in the GitHub UI. Merge order is `renglo-lib` → `renglo-api` → console/extensions. Do not merge a subset.
 
+After merges, check status and close the feature:
+
+```bash
+git convoy --json feature show
+git convoy --json feature close --yes
+```
+
+`feature show` reports `pending` vs `merged` per repo. `feature close` checks out `develop` and removes feature branches once every participant is merged.
+
 ## What not to do
 
 - Do not create `feature/<name>` in every repo.

@@ -147,3 +147,60 @@ def test_abandon_no_keeps_branch(workspace: Path, monkeypatch) -> None:
     )
     assert data["abandoned"] is False
     assert gitutil.has_local_branch(schd, "feature/blast-radius")
+
+
+def _prepare_participant(workspace: Path, monkeypatch) -> Path:
+    monkeypatch.chdir(workspace)
+    save(workspace, State())
+    assert main(["--json", "init"]) == 0
+    assert main(["--json", "feature", "start", "blast-radius"]) == 0
+    schd = workspace / "extensions" / "schd"
+    (schd / "handler.py").write_text("print('x')\n")
+    assert main(["--json", "feature", "adopt"]) == 0
+    gitutil.run(schd, "add", "-A")
+    gitutil.run(schd, "commit", "-m", "feat")
+    state = load(workspace)
+    state.features["blast-radius"].repos[0].pr = "https://github.com/renglo/schd/pull/1"
+    save(workspace, state)
+    return schd
+
+
+def test_show_reports_merged(workspace: Path, monkeypatch) -> None:
+    schd = _prepare_participant(workspace, monkeypatch)
+    gitutil.checkout(schd, "develop")
+    gitutil.merge(schd, "feature/blast-radius")
+    data = feature_cmd.show(workspace, load(workspace))
+    assert data["repos"][0]["merge_status"] == "merged"
+    assert data["status"] == "merged"
+    assert data["merged_count"] == 1
+
+
+def test_show_reports_pending(workspace: Path, monkeypatch) -> None:
+    _prepare_participant(workspace, monkeypatch)
+    data = feature_cmd.show(workspace, load(workspace))
+    assert data["repos"][0]["merge_status"] == "pending"
+    assert data["status"] == "in-review"
+    assert data["merged_count"] == 0
+
+
+def test_close_requires_all_merged(workspace: Path, monkeypatch, capsys) -> None:
+    _prepare_participant(workspace, monkeypatch)
+    capsys.readouterr()
+    assert main(["--json", "feature", "close", "--yes"]) == 1
+    err = json.loads(capsys.readouterr().out)
+    assert "not all PRs merged" in err["error"]
+
+
+def test_close_after_merge(workspace: Path, monkeypatch, capsys) -> None:
+    schd = _prepare_participant(workspace, monkeypatch)
+    gitutil.checkout(schd, "develop")
+    gitutil.merge(schd, "feature/blast-radius")
+    capsys.readouterr()
+    assert main(["--json", "feature", "close", "--yes"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["closed"] is True
+    assert gitutil.current_branch(schd) == "develop"
+    assert not gitutil.has_local_branch(schd, "feature/blast-radius")
+    state = load(workspace)
+    assert state.current_feature is None
+    assert "blast-radius" not in state.features

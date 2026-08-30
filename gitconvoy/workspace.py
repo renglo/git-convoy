@@ -27,6 +27,17 @@ MERGE_RANK = {
     "console": 2,
 }
 
+# Platform tooling under ops/ — discovered by init but not part of feature sheets.
+FEATURE_SKIP_OPS = frozenset(
+    {
+        "extensions-service",
+        "git-convoy",
+        "gitconvoy",
+        "launcher",
+        "publisher",
+    }
+)
+
 
 @dataclass(frozen=True)
 class Repo:
@@ -88,6 +99,15 @@ def discover_repos(workspace: Path) -> list[Repo]:
 
 def product_repos(workspace: Path) -> list[Repo]:
     return [repo for repo in discover_repos(workspace) if repo.kind != "ops"]
+
+
+def feature_repos(workspace: Path) -> list[Repo]:
+    """Product repos plus tenant ops (bootstrap, *-bom, *-wl). Excludes platform tooling."""
+    return [
+        repo
+        for repo in discover_repos(workspace)
+        if repo.kind != "ops" or repo.id not in FEATURE_SKIP_OPS
+    ]
 
 
 def require_repo(repos: list[Repo], repo_id: str) -> Repo:

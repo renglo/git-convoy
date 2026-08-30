@@ -5,9 +5,9 @@ import re
 import shutil
 from pathlib import Path
 
-from gitconvoy import versions
+from gitconvoy import gitutil, versions
 from gitconvoy.errors import GitConvoyError
-from gitconvoy.state import State, TrainRepo
+from gitconvoy.state import State, Train, TrainRepo
 from gitconvoy.workspace import SKIP_DIR_NAMES
 
 _BOM_SKIP = SKIP_DIR_NAMES | {"gitconvoy", "git-convoy"}
@@ -198,6 +198,10 @@ def take(
                     "pin": value,
                 }
             )
+        for row in _pin_repo_shas(
+            workspace, dest, bom_data, repo, train_obj, bom=bom, root=root
+        ):
+            pinned.append(row)
     pointed = point(workspace, dest, bom=bom, production=False)
     return {
         "ok": True,
@@ -280,6 +284,75 @@ def _package_targets(
     if info.get("npm"):
         targets.append(("npm", npm_names[0]))
     return targets
+
+
+def _bom_repo_keys(workspace: Path, repo: TrainRepo, bom: dict) -> list[str]:
+    repos_section = bom.get("repos")
+    if not isinstance(repos_section, dict):
+        return []
+    repo_path = workspace / repo.path
+    slug = gitutil.github_slug(repo_path)
+    matches: list[str] = []
+    if slug and slug in repos_section:
+        matches.append(slug)
+    suffix = f"/{repo.id}"
+    for key in repos_section:
+        if key.endswith(suffix) and key not in matches:
+            matches.append(key)
+    return matches
+
+
+def _train_repo_commit(workspace: Path, repo: TrainRepo, train: Train) -> str | None:
+    repo_path = workspace / repo.path
+    if not repo_path.is_dir():
+        return None
+    for ref in (repo.stable_tag, repo.rc_tag, train.branch, "HEAD"):
+        if not ref:
+            continue
+        sha = gitutil.rev_parse(repo_path, ref)
+        if sha:
+            return sha
+    return None
+
+
+def _pin_repo_shas(
+    workspace: Path,
+    version: str,
+    bom_data: dict,
+    repo: TrainRepo,
+    train: Train,
+    *,
+    bom: str | None,
+    root: Path,
+) -> list[dict]:
+    keys = _bom_repo_keys(workspace, repo, bom_data)
+    if not keys:
+        return []
+    commit = _train_repo_commit(workspace, repo, train)
+    if not commit:
+        return []
+    path = _bom_file(root, version)
+    data = json.loads(path.read_text())
+    repos_section = data.setdefault("repos", {})
+    pinned: list[dict] = []
+    for key in keys:
+        entry = repos_section.get(key)
+        if not isinstance(entry, dict):
+            continue
+        updated = dict(entry)
+        updated["commit"] = commit
+        repos_section[key] = updated
+        bom_data.setdefault("repos", {})[key] = updated
+        pinned.append(
+            {
+                "id": repo.id,
+                "section": "repos",
+                "package": key,
+                "pin": commit,
+            }
+        )
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return pinned
 
 
 def _bom_file(root: Path, version: str) -> Path:

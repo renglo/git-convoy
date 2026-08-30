@@ -224,5 +224,90 @@ def github_slug(repo: Path) -> str | None:
     return None
 
 
+def integration_branch(repo: Path) -> str:
+    """Integration branch for feature work: develop when present, else main."""
+    fetch(repo)
+    if rev_parse(repo, "origin/develop") or rev_parse(repo, "develop"):
+        return "develop"
+    if rev_parse(repo, "origin/main") or rev_parse(repo, "main"):
+        return "main"
+    branch = current_branch(repo)
+    return branch if branch != "HEAD" else "develop"
+
+
+def origin_integration(repo: Path) -> str | None:
+    branch = integration_branch(repo)
+    return rev_parse(repo, f"origin/{branch}") or rev_parse(repo, branch)
+
+
+def checkout_integration(repo: Path) -> str:
+    branch = integration_branch(repo)
+    if rev_parse(repo, f"origin/{branch}"):
+        checkout(repo, branch)
+        run(repo, "pull", "--ff-only", "origin", branch, check=False)
+    else:
+        checkout_branch(repo, branch)
+    return branch
+
+
+def branch_merged_into(repo: Path, branch: str, base: str | None = None) -> bool:
+    """True when every commit on branch is contained in the integration branch."""
+    fetch(repo)
+    integration = base or origin_integration(repo)
+    feature_tip = rev_parse(repo, f"refs/heads/{branch}") or rev_parse(
+        repo, f"refs/remotes/origin/{branch}"
+    )
+    if not integration or not feature_tip:
+        return False
+    return is_ancestor(repo, feature_tip, integration)
+
+
+def pr_number(url: str | None) -> int | None:
+    if not url:
+        return None
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
+def pr_merge_status(repo: Path, branch: str, pr_url: str | None = None) -> str:
+    """Return merged | pending | closed | unknown for a participant PR/branch."""
+    gh = gh_bin()
+    slug = github_slug(repo)
+    number = pr_number(pr_url)
+    if gh and slug and number:
+        result = subprocess.run(
+            [
+                gh,
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                slug,
+                "--json",
+                "state,mergedAt",
+            ],
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0 and (result.stdout or "").strip():
+            import json
+
+            row = json.loads(result.stdout)
+            if row.get("mergedAt"):
+                return "merged"
+            state = (row.get("state") or "").upper()
+            if state == "OPEN":
+                return "pending"
+            if state == "CLOSED":
+                return "closed"
+    if branch_merged_into(repo, branch):
+        return "merged"
+    if has_local_branch(repo, branch) or has_remote_branch(repo, branch):
+        return "pending"
+    return "unknown"
+
+
 def gh_bin() -> str | None:
     return shutil.which("gh")

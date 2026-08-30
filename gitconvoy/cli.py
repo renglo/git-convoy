@@ -66,6 +66,17 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
             as_json=args.json,
         )
         return data, _abandon_text(data)
+    if sub == "close":
+        data = feature_cmd.close(
+            workspace,
+            state,
+            args.name,
+            yes=args.yes,
+            remote=args.remote,
+            keep_branch=args.keep_branch,
+            as_json=args.json,
+        )
+        return data, _close_text(data)
     if sub == "switch":
         data = feature_cmd.switch(workspace, state, args.name)
         return data, f"switched to {data['feature']} ({', '.join(data['participants']) or 'no participants'})"
@@ -93,7 +104,7 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
         data = feature_cmd.prs(workspace, state, use_gh=not args.no_gh)
         return data, _prs_text(data)
     if sub == "show":
-        data = feature_cmd.show(state, args.name)
+        data = feature_cmd.show(workspace, state, args.name)
         return data, _feature_show_text(data)
     raise GitConvoyError(f"unknown feature command: {sub}")
 
@@ -110,7 +121,7 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
             repo_ids=repos,
             no_bump=args.no_bump,
         )
-        return data, f"cut train {data['train']} on {len(data['repos'])} repos"
+        return data, _cut_train_text(data)
     if sub == "tag-rc":
         data = train_cmd.tag_rc(workspace, state, push=not args.no_push)
         return data, f"tagged rc for {data['train']}"
@@ -120,6 +131,16 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
     if sub == "show":
         data = train_cmd.show(state, args.name)
         return data, _train_show_text(data)
+    if sub == "delete":
+        data = train_cmd.delete(
+            workspace,
+            state,
+            args.name,
+            yes=args.yes,
+            remote=args.remote,
+            as_json=args.json,
+        )
+        return data, _delete_train_text(data)
     raise GitConvoyError(f"unknown train command: {sub}")
 
 
@@ -233,6 +254,26 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also delete origin/feature/<name>",
     )
+    close = fsub.add_parser(
+        "close",
+        help="After all PRs merge: checkout develop and remove feature branches",
+    )
+    close.add_argument("name", nargs="?")
+    close.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    close.add_argument(
+        "--remote",
+        action="store_true",
+        help="Also delete origin/feature/<name>",
+    )
+    close.add_argument(
+        "--keep-branch",
+        action="store_true",
+        help="Keep local feature/<name> branches",
+    )
     commit = fsub.add_parser("commit", help="Commit dirty participant repos")
     commit.add_argument(
         "--plan",
@@ -280,6 +321,21 @@ def _parser() -> argparse.ArgumentParser:
     pub.add_argument("--no-push", action="store_true")
     tshow = tsub.add_parser("show", help="Print the train sheet")
     tshow.add_argument("name", nargs="?")
+    tdelete = tsub.add_parser(
+        "delete",
+        help="Delete release/<train> branches and remove the train sheet",
+    )
+    tdelete.add_argument("name", nargs="?")
+    tdelete.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    tdelete.add_argument(
+        "--remote",
+        action="store_true",
+        help="Also delete origin/release/<train>",
+    )
 
     adopt = sub.add_parser(
         "adopt",
@@ -361,13 +417,70 @@ def _status_text(data: dict) -> str:
 
 
 def _feature_show_text(data: dict) -> str:
+    merged = data.get("merged_count", 0)
+    total = data.get("repo_count", 0)
+    progress = f"  {merged}/{total} merged" if total else ""
     lines = [
-        f"{data['name']}  {data['branch']}  {data['status']}  {data['repo_count']} repos",
+        f"{data['name']}  {data['branch']}  {data['status']}{progress}  {total} repos",
         "merge order: " + " → ".join(data["merge_order"] or ["(empty)"]),
     ]
     for repo in data["repos"]:
-        pr = f"  {repo['pr']}" if repo["pr"] else ""
-        lines.append(f"  {repo['id']:20} {repo['path']}{pr}")
+        pr = f"  {repo['pr']}" if repo.get("pr") else ""
+        status = repo.get("merge_status") or "unknown"
+        lines.append(
+            f"  {repo['id']:20} {repo['path']:24} {status:8}{pr}"
+        )
+    return "\n".join(lines)
+
+
+def _close_text(data: dict) -> str:
+    if not data.get("closed"):
+        return f"{data['feature']}  not closed"
+    feature_branch = data.get("branch") or "feature/<name>"
+    lines = [
+        f"{data['feature']}  closed  {feature_branch}",
+        data.get("note") or "",
+    ]
+    for repo in data.get("repos") or []:
+        checked_out = repo.get("branch") or "develop"
+        bits = [f"checked out {checked_out}"]
+        if repo.get("deleted_local"):
+            bits.append(f"deleted local {feature_branch}")
+        if repo.get("deleted_remote"):
+            bits.append(f"deleted origin {feature_branch}")
+        elif repo.get("on_origin"):
+            bits.append(f"{feature_branch} still on origin")
+        lines.append(f"  {repo['id']:20}  " + "; ".join(bits))
+    return "\n".join(lines)
+
+
+def _cut_train_text(data: dict) -> str:
+    lines = [f"cut train {data['train']} on {len(data.get('repos') or [])} repos"]
+    skipped = data.get("skipped") or []
+    if skipped:
+        lines.append(
+            "skipped (no version file): "
+            + ", ".join(item["id"] for item in skipped)
+        )
+    return "\n".join(lines)
+
+
+def _delete_train_text(data: dict) -> str:
+    if not data.get("deleted"):
+        return f"{data['train']}  not deleted"
+    lines = [
+        f"{data['train']}  deleted  {data['branch']}",
+        data.get("note") or "",
+    ]
+    for repo in data.get("repos") or []:
+        bits = [f"checked out {repo.get('integration_branch') or repo.get('branch') or 'develop'}"]
+        if repo.get("deleted_local"):
+            bits.append(f"deleted local {data['branch']}")
+        if repo.get("deleted_remote"):
+            bits.append("deleted origin")
+        if repo.get("on_origin"):
+            bits.append(f"{data['branch']} still on origin")
+        lines.append(f"  {repo['id']:20}  " + "; ".join(bits))
     return "\n".join(lines)
 
 
