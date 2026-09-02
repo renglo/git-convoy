@@ -85,12 +85,82 @@ def test_start_two_repos_from_develop_dirty(workspace: Path) -> None:
     assert set(state.hotfixes["fetch-file"].repo_ids()) == {"schd", "renglo-lib"}
 
 
+def test_show_reports_uncommitted_while_dirty(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    (schd / "fix.py").write_text("print('hotfix')\n")
+    hotfix_cmd.start(workspace, State(), "fetch-file")
+    data = hotfix_cmd.show(workspace, load(workspace))
+    assert data["repos"][0]["merge_status"] == "uncommitted"
+
+
 def test_start_refuses_feature_branch(workspace: Path) -> None:
     schd = workspace / "extensions" / "schd"
     git(schd, "checkout", "-b", "feature/other")
     (schd / "fix.py").write_text("x\n")
     with pytest.raises(GitConvoyError, match="feature/other"):
         hotfix_cmd.start(workspace, State(), "oops")
+
+
+def test_start_does_not_convert_same_named_feature_branch(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "-b", "feature/console-extension-ui-bundle")
+    (schd / "fix.py").write_text("x\n")
+    with pytest.raises(GitConvoyError, match="feature/console-extension-ui-bundle"):
+        hotfix_cmd.start(workspace, State(), "console-extension-ui-bundle")
+
+
+def test_start_twice_does_not_double_bump(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    (schd / "fix.py").write_text("print('hotfix')\n")
+    hotfix_cmd.start(workspace, State(), "fetch-file")
+    data = hotfix_cmd.start(workspace, load(workspace), "fetch-file")
+    assert data["repos"][0]["action"] == "already-on-hotfix"
+    assert read_version(schd)["python"] == "1.0.1"
+    assert gitutil.current_branch(schd) == "hotfix/fetch-file"
+
+
+def test_start_picks_up_existing_hotfix_without_dirty(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    (schd / "fix.py").write_text("print('hotfix')\n")
+    hotfix_cmd.start(workspace, State(), "fetch-file")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "hotfix")
+    data = hotfix_cmd.start(workspace, load(workspace), "fetch-file")
+    assert data["repos"][0]["action"] == "already-on-hotfix"
+    assert read_version(schd)["python"] == "1.0.1"
+    assert gitutil.current_branch(schd) == "hotfix/fetch-file"
+    assert gitutil.is_dirty(schd) is False
+
+
+def test_start_picks_up_existing_hotfix_after_lost_sheet(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    (schd / "fix.py").write_text("print('hotfix')\n")
+    hotfix_cmd.start(workspace, State(), "fetch-file")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "hotfix")
+    save(workspace, State())
+    data = hotfix_cmd.start(workspace, load(workspace), "fetch-file")
+    assert data["repos"][0]["action"] == "already-on-hotfix"
+    assert data["repos"][0]["from"] == "1.0.0"
+    assert data["repos"][0]["to"] == "1.0.1"
+    assert read_version(schd)["python"] == "1.0.1"
+    assert load(workspace).hotfixes["fetch-file"].repo_ids() == ["schd"]
+
+
+def test_start_switches_from_clean_feature_onto_existing_hotfix(
+    workspace: Path,
+) -> None:
+    schd = workspace / "extensions" / "schd"
+    (schd / "fix.py").write_text("print('hotfix')\n")
+    hotfix_cmd.start(workspace, State(), "fetch-file")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "hotfix")
+    git(schd, "checkout", "develop")
+    git(schd, "checkout", "-b", "feature/other")
+    data = hotfix_cmd.start(workspace, load(workspace), "fetch-file")
+    assert gitutil.current_branch(schd) == "hotfix/fetch-file"
+    assert data["repos"][0]["action"] == "already-on-hotfix"
+    assert read_version(schd)["python"] == "1.0.1"
 
 
 def test_commit_publish_absorbs_feature_branch(workspace: Path, monkeypatch) -> None:

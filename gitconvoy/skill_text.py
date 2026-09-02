@@ -51,6 +51,8 @@ git convoy --json feature adopt
 
 That creates `feature/<name>` only in repos that changed and resets local `develop` if you committed there. Do not commit feature work onto `develop`.
 
+If `feature/<name>` already exists (you created it, another checkout, or a previous start/adopt), `git convoy --json feature start NAME` checks those branches out and puts them on the sheet **only when they have work** (dirty files on the branch, or commits not in `develop`). Empty leftover branches stay off the sheet. Dirty work already on `feature/<name>` is kept. It still does not create the branch in untouched repos — that is `adopt`. `feature adopt` also drops empty `feature/<name>` participants already on the sheet.
+
 Then commit on the feature branch. `--json` without `--from` or `--header-only` prints a plan (never a prompt). Fill `header` and each repo `body`, send the same document back.
 
 ```bash
@@ -99,7 +101,7 @@ git convoy --json feature show
 git convoy --json feature close --yes
 ```
 
-`feature show` reports `pending` vs `merged` per repo. `feature close` checks out `develop` and removes feature branches once every participant is merged.
+`feature show` reports `pending`, `uncommitted`, or `merged` per repo. `uncommitted` is local work that has not been committed yet (the branch tip may still equal `develop`). `feature close` checks out `develop` and removes feature branches once every participant is merged.
 
 ## Publish verification (cycles 3–4, Full mode)
 
@@ -128,7 +130,7 @@ Do not run cycle 3/4 without tenant publisher + BOM setup (README: “Setup for 
 Use when production is already on a stable train and you need a PATCH now.
 
 ```bash
-git convoy --json hotfix start NAME                 # dirty repos or --repos a,b
+git convoy --json hotfix start NAME                 # dirty repos, existing hotfix/<name>, or --repos a,b
 git convoy --json hotfix commit --header "fix: …" --header-only
 git convoy --json hotfix prs                        # PRs into main
 # merge those PRs in GitHub
@@ -136,7 +138,7 @@ git convoy --json hotfix publish
 git convoy --json hotfix adopt --bom ops/<system>-bom
 ```
 
-`hotfix start` branches from `main` and bumps PATCH. Start from `main` or `develop`, not a `feature/*`. `hotfix publish` tags `vX.Y.Z` on `main`, merges into `develop` (and pushes when origin exists), then merges that `develop` into local `feature/*` so in-process work gets the patch. Conflicts are listed; then `git convoy feature refresh`. `hotfix adopt` pins **only** those packages on the next BOM patch and points **staging**. It does not enable production. Commit and push the BOM; `adopt --production` when staging is acceptable.
+`hotfix start` branches from `main` and bumps PATCH. Start from `main` or `develop`, not a dirty `feature/*`. If `hotfix/<name>` already exists, start picks it up and does not bump PATCH again. It does not convert `feature/<name>` into a hotfix. `hotfix publish` tags `vX.Y.Z` on `main`, merges into `develop` (and pushes when origin exists), then merges that `develop` into local `feature/*` so in-process work gets the patch. Conflicts are listed; then `git convoy feature refresh`. `hotfix adopt` pins **only** those packages on the next BOM patch and points **staging**. It does not enable production. Commit and push the BOM; `adopt --production` when staging is acceptable.
 
 ## What not to do
 

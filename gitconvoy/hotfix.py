@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -27,26 +29,45 @@ def start(
     if repo_ids:
         chosen = [require_repo(products, repo_id) for repo_id in repo_ids]
     else:
-        chosen = [repo for repo in products if gitutil.is_dirty(repo.path)]
+        chosen = []
+        seen: set[str] = set()
+        for repo in products:
+            gitutil.fetch(repo.path)
+            take = gitutil.is_dirty(repo.path) or gitutil.has_branch(
+                repo.path, branch
+            )
+            if take and repo.id not in seen:
+                seen.add(repo.id)
+                chosen.append(repo)
     if not chosen:
         raise GitConvoyError(
-            "no dirty product repos; pass --repos or make the fix in at least one repo"
+            f"no dirty product repos and no existing {branch}; "
+            "pass --repos or make the fix in at least one repo"
         )
 
     started: list[dict] = []
     for repo in chosen:
         started.append(_start_one(repo, hotfix))
     save(workspace, state)
+    picked_up = bool(started) and all(
+        row.get("action") == "already-on-hotfix" for row in started
+    )
+    note = (
+        "Existing hotfix/<name> picked up; PATCH was not bumped again. "
+        "Commit next: git convoy hotfix commit. PRs target main, not develop."
+        if picked_up
+        else (
+            "PATCH bumped on hotfix/<name> from main. Commit next: "
+            "git convoy hotfix commit. PRs target main, not develop."
+        )
+    )
     return {
         "ok": True,
         "hotfix": slug,
         "branch": branch,
         "repos": started,
         "repo_count": len(hotfix.repos),
-        "note": (
-            "PATCH bumped on hotfix/<name> from main. Commit next: "
-            "git convoy hotfix commit. PRs target main, not develop."
-        ),
+        "note": note,
     }
 
 
@@ -58,7 +79,9 @@ def _start_one(repo, hotfix: Hotfix) -> dict:
         )
     current = gitutil.current_branch(repo.path)
     dirty = gitutil.is_dirty(repo.path)
-    if current not in {"main", "develop", hotfix.branch}:
+    branch_exists = gitutil.has_branch(repo.path, hotfix.branch)
+    allowed = current in {"main", "develop", hotfix.branch}
+    if not allowed and not (branch_exists and not dirty):
         raise GitConvoyError(
             f"{repo.id} has work on {current}, not main, develop, or {hotfix.branch}. "
             "commit/stash or checkout the right branch first"
@@ -73,10 +96,13 @@ def _start_one(repo, hotfix: Hotfix) -> dict:
 
     existing = next((row for row in hotfix.repos if row.id == repo.id), None)
     if current != hotfix.branch:
-        _checkout_main(
-            repo.path, repo_id=repo.id, dirty=dirty, origin_main=origin_main
-        )
-        gitutil.checkout_branch(repo.path, hotfix.branch)
+        if branch_exists:
+            gitutil.checkout_branch(repo.path, hotfix.branch)
+        else:
+            _checkout_main(
+                repo.path, repo_id=repo.id, dirty=dirty, origin_main=origin_main
+            )
+            gitutil.checkout_branch(repo.path, hotfix.branch)
 
     if existing and existing.to and gitutil.current_branch(repo.path) == hotfix.branch:
         return {
@@ -95,6 +121,30 @@ def _start_one(repo, hotfix: Hotfix) -> dict:
     if not current_version:
         raise GitConvoyError(f"{repo.id}: no version file")
     pep_now, _npm_now = _stable_pair(current_version)
+    main_ref = "origin/main" if origin_main else "main"
+    main_ver = _version_on_ref(repo.path, main_ref)
+    if main_ver and _already_ahead_of_main(pep_now, main_ver):
+        pep_main, _ = _stable_pair(main_ver)
+        row = hotfix.add_repo(
+            HotfixRepo(
+                id=repo.id,
+                path=repo.rel,
+                from_version=pep_main,
+                to=pep_now,
+                stable_tag=f"v{pep_now}",
+            )
+        )
+        return {
+            "id": repo.id,
+            "path": repo.rel,
+            "from": row.from_version,
+            "to": row.to,
+            "branch": hotfix.branch,
+            "files": [],
+            "dirty": gitutil.is_dirty(repo.path),
+            "action": "already-on-hotfix",
+        }
+
     to = versions.bump(pep_now, "patch")
     pep, npm = versions.drop_rc(to)
     changed = versions.write_version(repo.path, pep, npm)
@@ -115,6 +165,7 @@ def _start_one(repo, hotfix: Hotfix) -> dict:
         "branch": hotfix.branch,
         "files": changed,
         "dirty": True,
+        "action": "started",
     }
 
 
@@ -390,6 +441,12 @@ def show(workspace: Path, state: State, name: str | None = None) -> dict:
             merged = gitutil.branch_merged_into(
                 repo_path, hotfix.branch, base=main_tip
             )
+        if gitutil.is_dirty(repo_path):
+            merge_status = "uncommitted"
+        elif merged:
+            merge_status = "merged"
+        else:
+            merge_status = "pending"
         rows.append(
             {
                 "id": repo_row.id,
@@ -398,7 +455,7 @@ def show(workspace: Path, state: State, name: str | None = None) -> dict:
                 "to": repo_row.to,
                 "stable_tag": repo_row.stable_tag,
                 "pr": repo_row.pr,
-                "merge_status": "merged" if merged else "pending",
+                "merge_status": merge_status,
             }
         )
     return {
@@ -687,6 +744,48 @@ def _ordered(hotfix: Hotfix) -> list[HotfixRepo]:
 def _has_version(repo: Path) -> bool:
     info = versions.read_version(repo)
     return bool(info.get("python") or info.get("npm"))
+
+
+def _version_on_ref(repo: Path, ref: str) -> str | None:
+    if not ref:
+        return None
+    found: dict[str, str] = {}
+    for rel, kind in (
+        ("pyproject.toml", "python"),
+        ("package/pyproject.toml", "python"),
+        ("ui/package.json", "npm"),
+        ("package.json", "npm"),
+    ):
+        if kind in found:
+            continue
+        shown = gitutil.run(repo, "show", f"{ref}:{rel}", check=False)
+        if shown.returncode != 0:
+            continue
+        text = shown.stdout or ""
+        if kind == "python":
+            match = re.search(r'(?m)^version\s*=\s*["\']([^"\']+)["\']', text)
+            if match:
+                found["python"] = match.group(1)
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        ver = data.get("version")
+        if isinstance(ver, str):
+            found["npm"] = ver
+    return found.get("python") or found.get("npm")
+
+
+def _already_ahead_of_main(current: str, main: str) -> bool:
+    try:
+        pep_now, _ = versions.drop_rc(current)
+        pep_main, _ = versions.drop_rc(main)
+        now = versions.parse(pep_now)
+        base = versions.parse(pep_main)
+    except GitConvoyError:
+        return False
+    return (now[0], now[1], now[2]) > (base[0], base[1], base[2])
 
 
 def _stable_pair(version: str) -> tuple[str, str]:

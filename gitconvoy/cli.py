@@ -56,11 +56,22 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
     sub = args.feature_cmd
     if sub == "start":
         data = feature_cmd.start(workspace, state, args.name)
+        n = data.get("repo_count") or 0
+        if n:
+            names = ", ".join(item["id"] for item in data["repos"]) or f"{n} repos"
+            return (
+                data,
+                f"feature {data['feature']} started ({data['branch']}): picked up {names}",
+            )
         return data, f"feature {data['feature']} started ({data['branch']})"
     if sub == "adopt":
         data = feature_cmd.adopt(workspace, state)
         names = ", ".join(item["id"] for item in data["adopted"]) or "(none)"
-        return data, f"adopted {data['repo_count']} repos: {names}"
+        dropped = ", ".join(item["id"] for item in data.get("dropped") or [])
+        text = f"adopted {data['repo_count']} repos: {names}"
+        if dropped:
+            text += f"; dropped empty {dropped}"
+        return data, text
     if sub == "abandon":
         data = feature_cmd.abandon(
             workspace,
@@ -344,7 +355,10 @@ def _parser() -> argparse.ArgumentParser:
 
     feature = sub.add_parser("feature", help="Feature sheet commands")
     fsub = feature.add_subparsers(dest="feature_cmd", required=True)
-    start = fsub.add_parser("start", help="Create the feature sheet; checkout develop")
+    start = fsub.add_parser(
+        "start",
+        help="Create the feature sheet; pick up existing feature/<name>; otherwise checkout develop",
+    )
     start.add_argument("name")
     fsub.add_parser("adopt", help="Move local changes onto feature/<name>")
     abandon = fsub.add_parser(
@@ -547,7 +561,7 @@ def _parser() -> argparse.ArgumentParser:
     hsub = hotfix.add_subparsers(dest="hotfix_cmd", required=True)
     hstart = hsub.add_parser(
         "start",
-        help="Branch hotfix/<name> from main on dirty (or --repos) product repos; bump PATCH",
+        help="Branch hotfix/<name> from main, or pick up an existing one; bump PATCH unless already bumped",
     )
     hstart.add_argument("name")
     hstart.add_argument("--repos", help="Comma-separated repo ids (skip dirty discovery)")
@@ -636,7 +650,7 @@ def _feature_show_text(data: dict) -> str:
         pr = f"  {repo['pr']}" if repo.get("pr") else ""
         status = repo.get("merge_status") or "unknown"
         lines.append(
-            f"  {repo['id']:20} {repo['path']:24} {status:8}{pr}"
+            f"  {repo['id']:20} {repo['path']:24} {status:12}{pr}"
         )
     return "\n".join(lines)
 

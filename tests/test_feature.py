@@ -9,6 +9,8 @@ from gitconvoy.cli import main
 from gitconvoy.state import State, load, save
 from gitconvoy.workspace import find_workspace
 
+from conftest import git
+
 
 def test_start_and_adopt_uncommitted(workspace: Path, monkeypatch) -> None:
     monkeypatch.chdir(workspace)
@@ -23,6 +25,112 @@ def test_start_and_adopt_uncommitted(workspace: Path, monkeypatch) -> None:
     assert gitutil.current_branch(workspace / "dev" / "renglo-lib") == "develop"
     state = load(workspace)
     assert state.features["blast-radius"].repo_ids() == ["schd"]
+
+
+def test_adopt_skips_and_drops_empty_feature_branch(workspace: Path) -> None:
+    feature_cmd.start(workspace, State(), "blast-radius")
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "-b", "feature/blast-radius")
+    state = load(workspace)
+    state.features["blast-radius"].add_repo("schd", "extensions/schd")
+    save(workspace, state)
+    data = feature_cmd.adopt(workspace, load(workspace))
+    assert data["adopted"] == []
+    assert [row["id"] for row in data["dropped"]] == ["schd"]
+    assert data["dropped"][0]["reason"] == "on-feature-no-changes"
+    assert gitutil.current_branch(schd) == "develop"
+    assert gitutil.has_local_branch(schd, "feature/blast-radius")
+    assert load(workspace).features["blast-radius"].repo_ids() == []
+
+
+def test_adopt_picks_up_existing_branch_with_commits(workspace: Path) -> None:
+    feature_cmd.start(workspace, State(), "blast-radius")
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "-b", "feature/blast-radius")
+    (schd / "handler.py").write_text("print('x')\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "wip")
+    git(schd, "checkout", "develop")
+    data = feature_cmd.adopt(workspace, load(workspace))
+    assert [row["id"] for row in data["adopted"]] == ["schd"]
+    assert data["adopted"][0]["action"] == "picked-up"
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert load(workspace).features["blast-radius"].repo_ids() == ["schd"]
+
+
+def test_start_picks_up_existing_feature_branch(workspace: Path) -> None:
+    state = State()
+    feature_cmd.start(workspace, state, "blast-radius")
+    schd = workspace / "extensions" / "schd"
+    lib = workspace / "dev" / "renglo-lib"
+    (schd / "handler.py").write_text("print('x')\n")
+    feature_cmd.adopt(workspace, load(workspace))
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "wip")
+    data = feature_cmd.start(workspace, load(workspace), "blast-radius")
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert gitutil.current_branch(lib) == "develop"
+    assert [row["id"] for row in data["repos"]] == ["schd"]
+    assert data["repos"][0]["action"] == "already-on-feature"
+    assert data["repo_count"] == 1
+    state = load(workspace)
+    assert state.features["blast-radius"].repo_ids() == ["schd"]
+
+
+def test_start_picks_up_existing_branch_after_lost_sheet(workspace: Path) -> None:
+    feature_cmd.start(workspace, State(), "blast-radius")
+    schd = workspace / "extensions" / "schd"
+    (schd / "handler.py").write_text("print('x')\n")
+    feature_cmd.adopt(workspace, load(workspace))
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "wip")
+    save(workspace, State())
+    data = feature_cmd.start(workspace, load(workspace), "blast-radius")
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert [row["id"] for row in data["repos"]] == ["schd"]
+    assert data["repos"][0]["action"] == "already-on-feature"
+    assert load(workspace).features["blast-radius"].repo_ids() == ["schd"]
+
+
+def test_start_picks_up_origin_feature_branch(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "-b", "feature/blast-radius")
+    (schd / "handler.py").write_text("print('x')\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "wip")
+    tip = gitutil.rev_parse(schd, "HEAD")
+    git(schd, "checkout", "develop")
+    git(schd, "update-ref", "refs/remotes/origin/feature/blast-radius", tip)
+    git(schd, "branch", "-D", "feature/blast-radius")
+    data = feature_cmd.start(workspace, State(), "blast-radius")
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert data["repos"][0]["action"] == "picked-up"
+    assert load(workspace).features["blast-radius"].repo_ids() == ["schd"]
+
+
+def test_start_skips_empty_feature_branch(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "-b", "feature/blast-radius")
+    git(schd, "checkout", "develop")
+    data = feature_cmd.start(workspace, State(), "blast-radius")
+    assert gitutil.current_branch(schd) == "develop"
+    assert data["repos"] == []
+    assert data["repo_count"] == 0
+    skipped = [row for row in data["workspace"] if row["id"] == "schd"]
+    assert skipped[0]["skipped"] == "empty-feature-branch"
+    assert gitutil.has_local_branch(schd, "feature/blast-radius")
+
+
+def test_start_picks_up_dirty_repo_already_on_feature(workspace: Path) -> None:
+    feature_cmd.start(workspace, State(), "blast-radius")
+    schd = workspace / "extensions" / "schd"
+    (schd / "handler.py").write_text("print('x')\n")
+    feature_cmd.adopt(workspace, load(workspace))
+    data = feature_cmd.start(workspace, load(workspace), "blast-radius")
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert gitutil.is_dirty(schd)
+    assert data["repos"][0]["action"] == "already-on-feature"
+    assert data["repos"][0]["dirty"] is True
 
 
 def test_switch_refuses_dirty(workspace: Path) -> None:
@@ -183,12 +291,32 @@ def test_show_reports_pending(workspace: Path, monkeypatch) -> None:
     assert data["merged_count"] == 0
 
 
+def test_show_reports_uncommitted_when_dirty_and_undiverged(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    save(workspace, State())
+    assert main(["--json", "init"]) == 0
+    assert main(["--json", "feature", "start", "blast-radius"]) == 0
+    schd = workspace / "extensions" / "schd"
+    (schd / "handler.py").write_text("print('x')\n")
+    assert main(["--json", "feature", "adopt"]) == 0
+    state = load(workspace)
+    state.features["blast-radius"].status = "merged"
+    save(workspace, state)
+    data = feature_cmd.show(workspace, load(workspace))
+    assert data["repos"][0]["merge_status"] == "uncommitted"
+    assert data["status"] == "in-progress"
+    assert data["merged_count"] == 0
+    assert load(workspace).features["blast-radius"].status == "in-progress"
+
+
 def test_close_requires_all_merged(workspace: Path, monkeypatch, capsys) -> None:
     _prepare_participant(workspace, monkeypatch)
     capsys.readouterr()
     assert main(["--json", "feature", "close", "--yes"]) == 1
     err = json.loads(capsys.readouterr().out)
-    assert "not all PRs merged" in err["error"]
+    assert "not all participants merged" in err["error"]
 
 
 def test_close_after_merge(workspace: Path, monkeypatch, capsys) -> None:

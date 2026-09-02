@@ -17,16 +17,64 @@ def start(workspace: Path, state: State, name: str) -> dict:
     if slug not in state.features:
         state.features[slug] = Feature(name=slug, branch=branch)
     state.current_feature = slug
-    save(workspace, state)
+    feature = state.features[slug]
     checked: list[dict] = []
+    picked: list[dict] = []
     for repo in feature_repos(workspace):
-        if gitutil.is_dirty(repo.path):
+        gitutil.fetch(repo.path)
+        current = gitutil.current_branch(repo.path)
+        dirty = gitutil.is_dirty(repo.path)
+        exists = gitutil.has_branch(repo.path, branch)
+        if exists:
+            if current != branch:
+                if dirty:
+                    checked.append(
+                        {
+                            "id": repo.id,
+                            "path": repo.rel,
+                            "skipped": "dirty",
+                            "branch": current,
+                            "existing_branch": branch,
+                        }
+                    )
+                    continue
+                gitutil.checkout_branch(repo.path, branch)
+            if not _branch_has_work(repo.path, branch):
+                if repo.id in feature.repo_ids():
+                    feature.drop_repo(repo.id)
+                if not gitutil.is_dirty(repo.path):
+                    gitutil.checkout_integration(repo.path)
+                checked.append(
+                    {
+                        "id": repo.id,
+                        "path": repo.rel,
+                        "skipped": "empty-feature-branch",
+                        "branch": gitutil.current_branch(repo.path),
+                        "existing_branch": branch,
+                    }
+                )
+                continue
+            feature.add_repo(repo.id, repo.rel)
+            action = (
+                "already-on-feature" if current == branch else "picked-up"
+            )
+            row = {
+                "id": repo.id,
+                "path": repo.rel,
+                "branch": branch,
+                "action": action,
+                "dirty": gitutil.is_dirty(repo.path),
+            }
+            picked.append(row)
+            checked.append(row)
+            continue
+        if dirty:
             checked.append(
                 {
                     "id": repo.id,
                     "path": repo.rel,
                     "skipped": "dirty",
-                    "branch": gitutil.current_branch(repo.path),
+                    "branch": current,
                 }
             )
             continue
@@ -39,11 +87,13 @@ def start(workspace: Path, state: State, name: str) -> dict:
                 "integration_branch": integration,
             }
         )
+    save(workspace, state)
     return {
         "ok": True,
         "feature": slug,
         "branch": branch,
-        "repos": [],
+        "repos": picked,
+        "repo_count": len(feature.repos),
         "workspace": checked,
     }
 
@@ -52,13 +102,22 @@ def adopt(workspace: Path, state: State) -> dict:
     feature = state.require_feature()
     adopted: list[dict] = []
     skipped: list[dict] = []
+    dropped: list[dict] = []
     for repo in feature_repos(workspace):
         result = _adopt_one(repo, feature)
         if result.get("adopted"):
             feature.add_repo(repo.id, repo.rel)
             adopted.append(result)
-        else:
-            skipped.append(result)
+            continue
+        skipped.append(result)
+        if result.get("drop") and feature.drop_repo(repo.id):
+            dropped.append(
+                {
+                    "id": repo.id,
+                    "path": repo.rel,
+                    "reason": result.get("reason"),
+                }
+            )
     save(workspace, state)
     return {
         "ok": True,
@@ -66,8 +125,18 @@ def adopt(workspace: Path, state: State) -> dict:
         "branch": feature.branch,
         "adopted": adopted,
         "skipped": skipped,
+        "dropped": dropped,
         "repo_count": len(feature.repos),
     }
+
+
+def _branch_has_work(repo: Path, branch: str) -> bool:
+    """Dirty on this branch, or commits not already contained in develop/main."""
+    if gitutil.is_dirty(repo) and gitutil.current_branch(repo) == branch:
+        return True
+    if not gitutil.has_branch(repo, branch):
+        return False
+    return not gitutil.branch_merged_into(repo, branch)
 
 
 def _adopt_one(repo: Repo, feature: Feature) -> dict:
@@ -83,9 +152,11 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
         and on_integration
         and gitutil.ahead_of(repo.path, "HEAD", f"origin/{integration}")
     )
+    exists = gitutil.has_branch(repo.path, branch)
+    unique = exists and not gitutil.branch_merged_into(repo.path, branch)
 
     if current == branch:
-        if dirty or repo.id in feature.repo_ids():
+        if dirty or unique:
             return {
                 "id": repo.id,
                 "path": repo.rel,
@@ -93,11 +164,29 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
                 "action": "already-on-feature",
                 "dirty": dirty,
             }
+        if not dirty:
+            gitutil.checkout_integration(repo.path)
         return {
             "id": repo.id,
             "path": repo.rel,
             "adopted": False,
             "reason": "on-feature-no-changes",
+            "drop": True,
+        }
+
+    if exists and unique and not dirty:
+        if not on_integration:
+            raise GitConvoyError(
+                f"{repo.id} has work on {current}, not {integration} or {branch}. "
+                "commit/stash or checkout the right branch first"
+            )
+        gitutil.checkout_branch(repo.path, branch)
+        return {
+            "id": repo.id,
+            "path": repo.rel,
+            "adopted": True,
+            "action": "picked-up",
+            "dirty": False,
         }
 
     if not dirty and not ahead:
@@ -105,8 +194,9 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
             "id": repo.id,
             "path": repo.rel,
             "adopted": False,
-            "reason": "unchanged",
+            "reason": "empty-feature-branch" if exists else "unchanged",
             "branch": current,
+            "drop": bool(exists),
         }
 
     if not on_integration and current != branch:
@@ -528,8 +618,10 @@ def show(workspace: Path, state: State, name: str | None = None) -> dict:
     merged_count = sum(1 for row in rows if row["merge_status"] == "merged")
     if rows and merged_count == len(rows):
         feature.status = "merged"
-    elif feature.status == "in-progress" and any(repo.pr for repo in feature.repos):
+    elif any(repo.pr for repo in feature.repos):
         feature.status = "in-review"
+    else:
+        feature.status = "in-progress"
     save(workspace, state)
     return {
         "ok": True,
@@ -576,7 +668,7 @@ def close(
     pending = [row for row in rows if row["merge_status"] != "merged"]
     if pending:
         raise GitConvoyError(
-            "not all PRs merged: "
+            "not all participants merged: "
             + ", ".join(f"{row['id']} ({row['merge_status']})" for row in pending)
             + ". Run: git convoy feature show"
         )

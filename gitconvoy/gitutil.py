@@ -141,6 +141,10 @@ def has_remote_branch(repo: Path, branch: str) -> bool:
     return bool(rev_parse(repo, f"refs/remotes/origin/{branch}"))
 
 
+def has_branch(repo: Path, branch: str) -> bool:
+    return has_local_branch(repo, branch) or has_remote_branch(repo, branch)
+
+
 def delete_branch(repo: Path, branch: str) -> None:
     run(repo, "branch", "-D", branch)
 
@@ -270,7 +274,7 @@ def pr_number(url: str | None) -> int | None:
 
 
 def pr_merge_status(repo: Path, branch: str, pr_url: str | None = None) -> str:
-    """Return merged | pending | closed | unknown for a participant PR/branch."""
+    """Return merged | pending | uncommitted | closed | unknown for a participant PR/branch."""
     gh = gh_bin()
     slug = github_slug(repo)
     number = pr_number(pr_url)
@@ -302,6 +306,8 @@ def pr_merge_status(repo: Path, branch: str, pr_url: str | None = None) -> str:
                 return "pending"
             if state == "CLOSED":
                 return "closed"
+    if is_dirty(repo):
+        return "uncommitted"
     if branch_merged_into(repo, branch):
         return "merged"
     if has_local_branch(repo, branch) or has_remote_branch(repo, branch):

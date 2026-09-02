@@ -36,6 +36,11 @@ class Feature:
         self.repos.append(row)
         return row
 
+    def drop_repo(self, repo_id: str) -> bool:
+        before = len(self.repos)
+        self.repos = [repo for repo in self.repos if repo.id != repo_id]
+        return len(self.repos) < before
+
 
 @dataclass
 class TrainRepo:

@@ -15,7 +15,7 @@ State lives in `.gitconvoy/state.json` at the workspace root. That directory is 
 | **Requires** | `git` on `PATH` | `git` + [`gh`](https://cli.github.com/) logged in (or `GH_TOKEN`) |
 | **Cycle 1 — push feature branch** | `feature push` | same |
 | **Cycle 1 — open PRs** | `feature prs --no-gh` prints compare URLs; you open PRs in the browser | `feature prs` opens PRs and stores URLs on the feature sheet |
-| **Cycle 1 — merge status** | `feature show` uses git (branch tip contained in `develop`) | `feature show` uses `gh` — accurate with squash merges |
+| **Cycle 1 — merge status** | `feature show` uses git (tip in `develop`, tree clean); dirty → `uncommitted` | `feature show` uses `gh` — accurate with squash merges |
 | **Cycle 1 — approve PRs** | GitHub UI | `feature approve` (Full; uses the same `gh` connection) |
 | **Cycles 3–4 — publish CI** | Watch Actions on each repo manually | `train verify` checks publish workflow status per participant (Full) |
 
@@ -169,7 +169,9 @@ git-convoy is four cycles. They run at different times and they do not substitut
 git convoy feature start blast-radius
 ```
 
-Creates an empty feature sheet, sets it current, and checks out the integration branch (`develop`, or `main` when a repo has no `develop`) in every clean feature repo. It does **not** create `feature/blast-radius` yet.
+Creates an empty feature sheet, sets it current, and checks out the integration branch (`develop`, or `main` when a repo has no `develop`) in every clean feature repo that does **not** already have `feature/blast-radius`.
+
+If `feature/blast-radius` already exists locally or on origin (you created it yourself, another machine, or a previous `start`/`adopt`), `feature start` checks that branch out and adds the repo to the sheet **only when it has work**: uncommitted files on that branch, or commits not already in `develop`. Empty leftover branches (created and then emptied) are left off the sheet; a clean checkout is returned to `develop`. Dirty work already on `feature/blast-radius` is kept. Dirty work on another branch is skipped (the existing feature branch is left as-is). It does **not** create `feature/blast-radius` in repos that have no such branch yet — that is `feature adopt`.
 
 Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `stanley-bom`, `stanley-wl`, …). Platform tooling in `ops/` (`publisher`, `launcher`, `extensions-service`, `git-convoy`) is excluded. Release trains still only cut product repos.
 
@@ -183,13 +185,13 @@ Edit code (or let an agent edit). Work happens on `develop`. That is expected.
 git convoy feature adopt
 ```
 
-For each feature repo that is dirty or has local commits on its integration branch that are not on `origin/<integration>`:
+For each feature repo that is dirty, has local commits on its integration branch that are not on `origin/<integration>`, or already has `feature/<name>` with unique commits:
 
 - Creates or checks out `feature/<name>`
 - If you committed on `develop` (and did not push it), resets local `develop` to `origin/develop`
 - Adds the repo to the feature sheet
 
-Repos you did not touch are left alone.
+Empty `feature/<name>` branches (no unique commits, clean tree) are not added. If they were already on the sheet, `adopt` drops them and checks out `develop`. Repos you did not touch are left alone.
 
 To throw away a test or abandoned feature (**deletes the branch and that work**):
 
@@ -276,7 +278,7 @@ In **Simple** mode, approve in the GitHub UI instead.
 git convoy feature show
 ```
 
-Each participant shows `pending` or `merged`. When every PR is merged, status becomes `merged` (`N/N merged` in the header). **Full** mode uses `gh` (works with squash merges). **Simple** mode checks whether the feature branch tip is contained in `develop`.
+Each participant shows `pending`, `uncommitted`, or `merged`. `uncommitted` means the feature branch has local changes that are not commits — the tip may still equal `develop`, so git would otherwise look merged. When every participant is merged, status becomes `merged` (`N/N merged` in the header). **Full** mode uses `gh` (works with squash merges). **Simple** mode checks whether the feature branch tip is contained in `develop`, and only after the tree is clean.
 
 ### 9. Close the feature
 
@@ -287,7 +289,7 @@ git convoy feature close
 git convoy feature close console-whitelabel-v1 --yes
 ```
 
-Checks out `develop`, pulls `origin/develop`, deletes local `feature/<name>`, and removes the feature sheet. Refuses if any participant is still `pending`. Pass `--remote` to delete `origin/feature/<name>` too. `--keep-branch` leaves local feature branches in place. `--json` requires `--yes`.
+Checks out `develop`, pulls `origin/develop`, deletes local `feature/<name>`, and removes the feature sheet. Refuses if any participant is still `pending` or `uncommitted`. Pass `--remote` to delete `origin/feature/<name>` too. `--keep-branch` leaves local feature branches in place. `--json` requires `--yes`.
 
 To throw away unmerged work instead, use `feature abandon` (lossy).
 
@@ -606,7 +608,7 @@ A manual staging check on **stable** pins before enabling production is recommen
 Do not wait for the next train. A hotfix can touch **more than one product repo**. PRs go to **`main`**. After tags land, the patch is merged into **`develop`** and absorbed into local in-progress **`feature/*`** branches so every branch in process gets it.
 
 ```bash
-git convoy hotfix start fetch-file                 # dirty product repos (or --repos a,b)
+git convoy hotfix start fetch-file                 # dirty product repos, existing hotfix/<name>, or --repos a,b
 git convoy hotfix commit --header "fix: …" --header-only
 git convoy hotfix push
 git convoy hotfix prs                              # PRs into main
@@ -615,7 +617,7 @@ git convoy hotfix publish                          # tag vX.Y.Z; merge main → 
 git convoy hotfix adopt --bom ops/acme-bom         # next BOM patch; pin only hotfix packages; staging only
 ```
 
-`hotfix start` branches `hotfix/<name>` from `main` and bumps **PATCH** only. You must be on `main`, `develop`, or the hotfix branch (not a `feature/*`).
+`hotfix start` branches `hotfix/<name>` from `main` and bumps **PATCH** only. You must be on `main`, `develop`, or the hotfix branch (not a dirty `feature/*`). If `hotfix/<name>` already exists locally or on origin, start checks it out, puts those repos on the sheet, and does **not** bump PATCH again — even when the tree is clean and the sheet was empty. It does **not** convert `feature/<name>` into a hotfix; create a new hotfix from `main` or `develop`, or be clean so start can switch onto an existing `hotfix/<name>`.
 
 `hotfix publish` refuses until each participant’s hotfix branch is on `main` (or `main` already has the expected PATCH — squash-safe). It tags `vX.Y.Z`, pushes `main` and the tag when origin exists, merges tagged `main` into `develop` (and pushes `develop`), then merges that `develop` into every **local** `feature/*`. Conflicts abort that merge and are listed; resolve and run `git convoy feature refresh`. Use `--no-push` to keep tags and merges local.
 
@@ -660,8 +662,8 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | ------- | ----- | ------------ |
 | `git convoy init` | 1 | State file, gitignore, Cursor skill |
 | `git convoy status` | * | Current feature, train, dirty repos |
-| `git convoy feature start NAME` | 1 | Empty sheet; checkout `develop` |
-| `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME` |
+| `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
+| `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
 | `git convoy feature abandon` | 1 | Delete local `feature/<name>` (lossy) |
 | `git convoy feature commit` | 1 | Commit dirty participants |
 | `git convoy feature push` | 1 | Push `feature/<name>` (no PRs) |
@@ -682,7 +684,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy train publish` | 4 | Stable tags → registry; then mergeback into `develop` |
 | `git convoy train mergeback` | 4 | Retry merge of tagged `main` into `develop` |
 | `git convoy adopt --production` | 4 | Stable pins + `production.enabled: true` |
-| `git convoy hotfix start NAME` | * | Branch `hotfix/<name>` from `main`; bump PATCH (dirty or `--repos`) |
+| `git convoy hotfix start NAME` | * | Branch or pick up `hotfix/<name>`; bump PATCH unless already bumped |
 | `git convoy hotfix commit` | * | Commit dirty hotfix participants |
 | `git convoy hotfix push` | * | Push `hotfix/<name>` (no PRs) |
 | `git convoy hotfix prs` | * | PRs into **main** (Full); `--no-gh` for compare URLs |
