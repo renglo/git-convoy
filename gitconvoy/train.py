@@ -153,6 +153,142 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
     return {"ok": True, "train": train.name, "repos": tagged}
 
 
+def _sync_develop_from_main(
+    repo_path: Path, *, repo_id: str, push: bool, ref: str = "main"
+) -> dict:
+    """Merge tagged main (or a stable tag) into develop.
+
+    Repos with no develop branch are skipped. On merge conflict the merge is
+    aborted so the repo is not left mid-merge. Callers catch failures so the
+    rest of the set can still sync.
+    """
+    has_develop = gitutil.has_local_branch(
+        repo_path, "develop"
+    ) or gitutil.has_remote_branch(repo_path, "develop")
+    if not has_develop:
+        return {"status": "skipped", "synced": False}
+    gitutil.fetch(repo_path)
+    gitutil.checkout_branch(repo_path, "main")
+    if gitutil.rev_parse(repo_path, "origin/main"):
+        pulled = gitutil.run(
+            repo_path, "pull", "--ff-only", "origin", "main", check=False
+        )
+        if pulled.returncode != 0:
+            raise GitConvoyError(
+                f"{repo_id}: cannot fast-forward main from origin; "
+                "fix main, then git convoy train mergeback"
+            )
+    merge_ref = ref
+    if merge_ref != "main" and not gitutil.rev_parse(repo_path, merge_ref):
+        raise GitConvoyError(
+            f"{repo_id}: missing {merge_ref}; fetch tags, then git convoy train mergeback"
+        )
+    gitutil.checkout_branch(repo_path, "develop")
+    if gitutil.rev_parse(repo_path, "origin/develop"):
+        pulled = gitutil.run(
+            repo_path, "pull", "--ff-only", "origin", "develop", check=False
+        )
+        if pulled.returncode != 0:
+            raise GitConvoyError(
+                f"{repo_id}: cannot fast-forward develop from origin; "
+                "reconcile develop, then git convoy train mergeback"
+            )
+    if gitutil.is_dirty(repo_path):
+        raise GitConvoyError(
+            f"{repo_id} develop is dirty; commit or stash, then git convoy train mergeback"
+        )
+    already = gitutil.is_ancestor(repo_path, merge_ref, "develop")
+    if not already:
+        merged = gitutil.merge(repo_path, merge_ref)
+        if merged.returncode != 0:
+            gitutil.run(repo_path, "merge", "--abort", check=False)
+            raise GitConvoyError(
+                f"{repo_id}: merge {merge_ref} into develop failed "
+                "(merge aborted, repo left clean). "
+                "resolve on develop, then git convoy train mergeback"
+            )
+        status = "merged"
+    else:
+        status = "already"
+    if push:
+        gitutil.push(repo_path, "origin", "develop")
+    return {"status": status, "synced": True}
+
+
+def mergeback(
+    workspace: Path,
+    state: State,
+    name: str | None = None,
+    push: bool = True,
+) -> dict:
+    """Merge each published participant's tagged main into develop.
+
+    Idempotent. Safe to re-run after a partial publish or a conflict. Continues
+    past per-repo failures so as many repos as possible get unstuck.
+    """
+    train = state.require_train(name)
+    if train.status != "published":
+        raise GitConvoyError(
+            f"train {train.name} is {train.status}; "
+            "mergeback runs after train publish"
+        )
+    rows: list[dict] = []
+    failed: list[str] = []
+    for repo_row in _ordered(train):
+        repo_path = workspace / repo_row.path
+        item: dict = {
+            "id": repo_row.id,
+            "path": repo_row.path,
+            "status": "failed",
+            "synced": False,
+        }
+        try:
+            result = _sync_develop_from_main(
+                repo_path,
+                repo_id=repo_row.id,
+                push=push,
+                ref=repo_row.stable_tag or "main",
+            )
+            item["status"] = result["status"]
+            item["synced"] = result["synced"]
+        except GitConvoyError as exc:
+            item["error"] = exc.message
+            failed.append(repo_row.id)
+        rows.append(item)
+    data: dict = {
+        "ok": not failed,
+        "train": train.name,
+        "repos": rows,
+        "failed": failed,
+    }
+    if failed:
+        data["note"] = (
+            "stable tags are on main; "
+            "fix the failed repos, then: git convoy train mergeback"
+        )
+    return data
+
+
+def format_mergeback_text(data: dict) -> str:
+    failed = data.get("failed") or []
+    counts: dict[str, int] = {}
+    for row in data.get("repos") or []:
+        status = row.get("status") or "failed"
+        counts[status] = counts.get(status, 0) + 1
+    summary = ", ".join(
+        f"{counts[key]} {key}"
+        for key in ("merged", "already", "skipped", "failed")
+        if counts.get(key)
+    ) or "nothing to do"
+    lines = [f"mergeback {data['train']}: {summary}"]
+    for row in data.get("repos") or []:
+        extra = f"  {row['error']}" if row.get("error") else ""
+        lines.append(f"  {row['id']:20} {row['status']}{extra}")
+    if failed:
+        lines.append(data.get("note") or "re-run: git convoy train mergeback")
+    return "\n".join(lines)
+
+
 def publish(workspace: Path, state: State, push: bool = True) -> dict:
     train = state.require_train()
     published: list[dict] = []
@@ -193,12 +329,24 @@ def publish(workspace: Path, state: State, push: bool = True) -> dict:
         published.append({"id": repo_row.id, "tag": tag, "version": pep})
     train.status = "published"
     save(workspace, state)
-    return {
-        "ok": True,
+    mb = mergeback(workspace, state, train.name, push=push)
+    by_id = {row["id"]: row for row in mb["repos"]}
+    for row in published:
+        extra = by_id.get(row["id"]) or {}
+        row["synced_develop"] = bool(extra.get("synced"))
+        row["develop_status"] = extra.get("status")
+    result = {
+        "ok": mb["ok"],
         "train": train.name,
         "merge_order": [row.id for row in _ordered(train)],
         "repos": published,
+        "mergeback": mb,
     }
+    if not mb["ok"]:
+        result["note"] = mb.get("note") or (
+            "stable tags are on main; re-run: git convoy train mergeback"
+        )
+    return result
 
 
 def verify(

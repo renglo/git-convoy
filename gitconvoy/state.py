@@ -63,11 +63,45 @@ class Train:
 
 
 @dataclass
+class HotfixRepo:
+    id: str
+    path: str
+    from_version: str | None = None
+    to: str | None = None
+    stable_tag: str | None = None
+    pr: str | None = None
+
+
+@dataclass
+class Hotfix:
+    name: str
+    branch: str
+    status: str = "in-progress"
+    repos: list[HotfixRepo] = field(default_factory=list)
+
+    def repo_ids(self) -> list[str]:
+        return [repo.id for repo in self.repos]
+
+    def add_repo(self, row: HotfixRepo) -> HotfixRepo:
+        for existing in self.repos:
+            if existing.id == row.id:
+                if row.from_version and not existing.from_version:
+                    existing.from_version = row.from_version
+                if row.to and not existing.to:
+                    existing.to = row.to
+                return existing
+        self.repos.append(row)
+        return row
+
+
+@dataclass
 class State:
     current_feature: str | None = None
     current_train: str | None = None
+    current_hotfix: str | None = None
     features: dict[str, Feature] = field(default_factory=dict)
     trains: dict[str, Train] = field(default_factory=dict)
+    hotfixes: dict[str, Hotfix] = field(default_factory=dict)
 
     def require_feature(self, name: str | None = None) -> Feature:
         key = name or self.current_feature
@@ -84,6 +118,14 @@ class State:
         if key not in self.trains:
             raise GitConvoyError(f"unknown train: {key}")
         return self.trains[key]
+
+    def require_hotfix(self, name: str | None = None) -> Hotfix:
+        key = name or self.current_hotfix
+        if not key:
+            raise GitConvoyError("no current hotfix; run: git convoy hotfix start <name>")
+        if key not in self.hotfixes:
+            raise GitConvoyError(f"unknown hotfix: {key}")
+        return self.hotfixes[key]
 
 
 def state_path(workspace: Path) -> Path:
@@ -109,6 +151,7 @@ def _to_dict(state: State) -> dict[str, Any]:
     return {
         "current_feature": state.current_feature,
         "current_train": state.current_train,
+        "current_hotfix": state.current_hotfix,
         "features": {
             name: {
                 "name": feat.name,
@@ -137,6 +180,25 @@ def _to_dict(state: State) -> dict[str, Any]:
                 ],
             }
             for name, train in state.trains.items()
+        },
+        "hotfixes": {
+            name: {
+                "name": item.name,
+                "branch": item.branch,
+                "status": item.status,
+                "repos": [
+                    {
+                        "id": repo.id,
+                        "path": repo.path,
+                        "from": repo.from_version,
+                        "to": repo.to,
+                        "stable_tag": repo.stable_tag,
+                        "pr": repo.pr,
+                    }
+                    for repo in item.repos
+                ],
+            }
+            for name, item in state.hotfixes.items()
         },
     }
 
@@ -176,9 +238,29 @@ def _from_dict(raw: dict[str, Any]) -> State:
                 for row in item.get("repos") or []
             ],
         )
+    hotfixes: dict[str, Hotfix] = {}
+    for name, item in (raw.get("hotfixes") or {}).items():
+        hotfixes[name] = Hotfix(
+            name=item.get("name", name),
+            branch=item.get("branch", f"hotfix/{name}"),
+            status=item.get("status", "in-progress"),
+            repos=[
+                HotfixRepo(
+                    id=row["id"],
+                    path=row["path"],
+                    from_version=row.get("from") or row.get("from_version"),
+                    to=row.get("to"),
+                    stable_tag=row.get("stable_tag"),
+                    pr=row.get("pr"),
+                )
+                for row in item.get("repos") or []
+            ],
+        )
     return State(
         current_feature=raw.get("current_feature"),
         current_train=raw.get("current_train"),
+        current_hotfix=raw.get("current_hotfix"),
         features=features,
         trains=trains,
+        hotfixes=hotfixes,
     )

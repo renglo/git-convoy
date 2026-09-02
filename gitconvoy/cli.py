@@ -7,6 +7,7 @@ from pathlib import Path
 from gitconvoy import adopt as adopt_cmd
 from gitconvoy import commit as commit_cmd
 from gitconvoy import feature as feature_cmd
+from gitconvoy import hotfix as hotfix_cmd
 from gitconvoy import train as train_cmd
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.initcmd import init
@@ -46,6 +47,8 @@ def _dispatch(workspace: Path, args: argparse.Namespace) -> tuple[dict, str]:
         return _train(workspace, state, args)
     if cmd == "adopt":
         return _adopt(workspace, state, args)
+    if cmd == "hotfix":
+        return _hotfix(workspace, state, args)
     raise GitConvoyError(f"unknown command: {cmd}")
 
 
@@ -132,7 +135,12 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
         return data, f"tagged rc for {data['train']}"
     if sub == "publish":
         data = train_cmd.publish(workspace, state, push=not args.no_push)
-        return data, f"published {data['train']}: {', '.join(item['tag'] for item in data['repos'])}"
+        return data, _publish_text(data)
+    if sub == "mergeback":
+        data = train_cmd.mergeback(
+            workspace, state, args.name, push=not args.no_push
+        )
+        return data, train_cmd.format_mergeback_text(data)
     if sub == "show":
         data = train_cmd.show(state, args.name)
         return data, _train_show_text(data)
@@ -159,6 +167,70 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
         )
         return data, train_cmd.format_verify_text(data)
     raise GitConvoyError(f"unknown train command: {sub}")
+
+
+def _hotfix(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
+    sub = args.hotfix_cmd
+    if sub == "start":
+        repos = (
+            [item.strip() for item in args.repos.split(",") if item.strip()]
+            if args.repos
+            else None
+        )
+        data = hotfix_cmd.start(workspace, state, args.name, repo_ids=repos)
+        names = ", ".join(item["id"] for item in data["repos"]) or "(none)"
+        return data, f"hotfix {data['hotfix']} started ({data['branch']}): {names}"
+    if sub == "commit":
+        data = commit_cmd.commit(
+            workspace,
+            state,
+            plan=args.plan,
+            from_file=args.from_file,
+            header=args.header,
+            header_only=args.header_only,
+            include_diff=args.diff,
+            as_json=args.json,
+            kind="hotfix",
+        )
+        if data.get("printed"):
+            return data, "\n"
+        return data, _commit_text(data)
+    if sub == "push":
+        data = hotfix_cmd.push(workspace, state)
+        return data, _push_text(data)
+    if sub == "prs":
+        data = hotfix_cmd.prs(workspace, state, use_gh=not args.no_gh)
+        return data, _hotfix_prs_text(data)
+    if sub == "publish":
+        data = hotfix_cmd.publish(workspace, state, push_remote=not args.no_push)
+        return data, _hotfix_publish_text(data)
+    if sub == "adopt":
+        data = hotfix_cmd.adopt(
+            workspace,
+            state,
+            bom=args.bom,
+            from_version=args.from_version,
+            to_version=args.to_version,
+            description=args.description,
+        )
+        pins = ", ".join(
+            f"{row['package']}={row['pin']}" for row in data.get("pins") or []
+        )
+        return data, f"hotfix adopt {data['version']}  {pins}"
+    if sub == "show":
+        data = hotfix_cmd.show(workspace, state, args.name)
+        return data, _hotfix_show_text(data)
+    if sub == "abandon":
+        data = hotfix_cmd.abandon(
+            workspace,
+            state,
+            args.name,
+            yes=args.yes,
+            remote=args.remote,
+            as_json=args.json,
+        )
+        return data, _abandon_text(data)
+    raise GitConvoyError(f"unknown hotfix command: {sub}")
 
 
 def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
@@ -363,8 +435,17 @@ def _parser() -> argparse.ArgumentParser:
     cut.add_argument("--repos", help="Comma-separated repo ids (skip discovery)")
     tag = tsub.add_parser("tag-rc", help="Tag vX.Y.Z-rc.N and optionally push")
     tag.add_argument("--no-push", action="store_true")
-    pub = tsub.add_parser("publish", help="Drop rc, merge main, tag stable")
+    pub = tsub.add_parser(
+        "publish",
+        help="Drop rc, merge main, tag stable, then mergeback into develop",
+    )
     pub.add_argument("--no-push", action="store_true")
+    mergeback = tsub.add_parser(
+        "mergeback",
+        help="Merge tagged main into develop (retryable; also run by train publish)",
+    )
+    mergeback.add_argument("name", nargs="?")
+    mergeback.add_argument("--no-push", action="store_true")
     tshow = tsub.add_parser("show", help="Print the train sheet")
     tshow.add_argument("name", nargs="?")
     tdelete = tsub.add_parser(
@@ -458,6 +539,46 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable production (default: staging only)",
     )
+
+    hotfix = sub.add_parser(
+        "hotfix",
+        help="Production PATCH: branch from main, tag, merge back to develop",
+    )
+    hsub = hotfix.add_subparsers(dest="hotfix_cmd", required=True)
+    hstart = hsub.add_parser(
+        "start",
+        help="Branch hotfix/<name> from main on dirty (or --repos) product repos; bump PATCH",
+    )
+    hstart.add_argument("name")
+    hstart.add_argument("--repos", help="Comma-separated repo ids (skip dirty discovery)")
+    hcommit = hsub.add_parser("commit", help="Commit dirty hotfix participants")
+    hcommit.add_argument("--plan", action="store_true")
+    hcommit.add_argument("--from", dest="from_file")
+    hcommit.add_argument("--header")
+    hcommit.add_argument("--header-only", action="store_true")
+    hcommit.add_argument("--diff", action="store_true")
+    hsub.add_parser("push", help="Push hotfix/<name> to origin (no PRs)")
+    hprs = hsub.add_parser("prs", help="Push and open PRs into main (gh if available)")
+    hprs.add_argument("--no-gh", action="store_true")
+    hpub = hsub.add_parser(
+        "publish",
+        help="Tag vX.Y.Z on main, merge into develop, absorb local feature/* branches",
+    )
+    hpub.add_argument("--no-push", action="store_true")
+    hadopt = hsub.add_parser(
+        "adopt",
+        help="Draft next BOM, pin only hotfix packages, staging only",
+    )
+    hadopt.add_argument("--bom", help="Path to *-bom repo")
+    hadopt.add_argument("--from", dest="from_version")
+    hadopt.add_argument("--to", dest="to_version")
+    hadopt.add_argument("--description")
+    hshow = hsub.add_parser("show", help="Print the hotfix sheet")
+    hshow.add_argument("name", nargs="?")
+    habandon = hsub.add_parser("abandon", help="Delete local hotfix/<name> (lossy)")
+    habandon.add_argument("name", nargs="?")
+    habandon.add_argument("--yes", action="store_true")
+    habandon.add_argument("--remote", action="store_true")
     return parser
 
 
@@ -491,6 +612,13 @@ def _status_text(data: dict) -> str:
         )
     else:
         lines.append("train:     (none)")
+    if data.get("hotfix"):
+        item = data["hotfix"]
+        lines.append(
+            f"hotfix:    {item['name']}  ({item['repo_count']} repos)  {item['branch']}"
+        )
+    else:
+        lines.append("hotfix:    (none)")
     if data["dirty"]:
         lines.append("dirty:     " + ", ".join(data["dirty"]))
     return "\n".join(lines)
@@ -545,6 +673,20 @@ def _cut_train_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _publish_text(data: dict) -> str:
+    tags = ", ".join(item["tag"] for item in data.get("repos") or [])
+    lines = [f"published {data['train']}: {tags}"]
+    mb = data.get("mergeback") or {}
+    failed = mb.get("failed") or []
+    if failed:
+        lines.append("mergeback failed in: " + ", ".join(failed))
+        lines.append(
+            data.get("note")
+            or "stable tags are on main; re-run: git convoy train mergeback"
+        )
+    return "\n".join(lines)
+
+
 def _delete_train_text(data: dict) -> str:
     if not data.get("deleted"):
         return f"{data['train']}  not deleted"
@@ -576,11 +718,16 @@ def _train_show_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _sheet_name(data: dict) -> str:
+    return data.get("feature") or data.get("hotfix") or "?"
+
+
 def _abandon_text(data: dict) -> str:
+    name = _sheet_name(data)
     if not data.get("abandoned"):
-        return f"{data['feature']}  not abandoned"
+        return f"{name}  not abandoned"
     lines = [
-        f"{data['feature']}  abandoned  {data['branch']}",
+        f"{name}  abandoned  {data['branch']}",
         data.get("note") or "",
     ]
     for repo in data.get("repos") or []:
@@ -629,12 +776,52 @@ def _commit_text(data: dict) -> str:
 def _push_text(data: dict) -> str:
     repos = data.get("repos") or []
     lines = [
-        f"{data['feature']}  pushed {len(repos)} repos  ({data['branch']})",
+        f"{_sheet_name(data)}  pushed {len(repos)} repos  ({data['branch']})",
         data["note"],
     ]
     for repo in repos:
         extra = "  dirty: uncommitted files not pushed" if repo.get("dirty") else ""
         lines.append(f"  {repo['id']:20} origin/{repo.get('branch') or ''}{extra}")
+    return "\n".join(lines)
+
+
+def _hotfix_prs_text(data: dict) -> str:
+    lines = [
+        f"{data['hotfix']} PRs → main",
+        "merge order: " + " → ".join(data["merge_order"]),
+        data["note"],
+    ]
+    for repo in data["repos"]:
+        target = repo["pr"] or repo["compare"] or ""
+        lines.append(f"  {repo['id']:20} {target}")
+    return "\n".join(lines)
+
+
+def _hotfix_publish_text(data: dict) -> str:
+    tags = ", ".join(item.get("tag") or "" for item in data.get("repos") or [])
+    lines = [f"published hotfix {data['hotfix']}: {tags}"]
+    for repo in data.get("repos") or []:
+        develop = (repo.get("develop") or {}).get("status") or ""
+        lines.append(f"  {repo['id']:20} {repo.get('tag') or ''}  develop={develop}")
+        for item in repo.get("feature_branches") or []:
+            flag = "ok" if item.get("ok") else "failed"
+            lines.append(f"    {item['branch']:18} {flag}  {item.get('status') or ''}")
+    if data.get("note"):
+        lines.append(data["note"])
+    return "\n".join(lines)
+
+
+def _hotfix_show_text(data: dict) -> str:
+    lines = [
+        f"{data['name']}  {data['branch']}  {data['status']}  {data['repo_count']} repos",
+        "merge order: " + " → ".join(data["merge_order"] or ["(empty)"]),
+    ]
+    for repo in data["repos"]:
+        pr = f"  {repo['pr']}" if repo.get("pr") else ""
+        lines.append(
+            f"  {repo['id']:20} {repo.get('from') or ''} → {repo.get('to') or ''}  "
+            f"{repo.get('merge_status') or ''}{pr}"
+        )
     return "\n".join(lines)
 
 

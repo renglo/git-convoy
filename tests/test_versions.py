@@ -1,4 +1,6 @@
-from gitconvoy.versions import bump, drop_rc, next_rc, parse, with_rc
+from pathlib import Path
+
+from gitconvoy.versions import bump, drop_rc, next_rc, parse, read_npm_package_name, with_rc
 
 
 def test_bump_patch() -> None:
@@ -29,3 +31,18 @@ def test_drop_rc_does_not_increment() -> None:
 
 def test_parse_npm_rc() -> None:
     assert parse("1.2.4-rc.3") == (1, 2, 4, 3)
+
+
+def test_read_npm_package_name_prefers_ui(tmp_path: Path) -> None:
+    repo = tmp_path / "ext"
+    (repo / "ui").mkdir(parents=True)
+    (repo / "ui" / "package.json").write_text('{"name":"@renglo/schd","version":"1.0.0"}\n')
+    (repo / "package.json").write_text('{"name":"ignored","version":"0.0.1"}\n')
+    assert read_npm_package_name(repo) == "@renglo/schd"
+
+
+def test_read_npm_package_name_root(tmp_path: Path) -> None:
+    repo = tmp_path / "wl"
+    repo.mkdir()
+    (repo / "package.json").write_text('{"name":"@stanley/wl","version":"0.0.1"}\n')
+    assert read_npm_package_name(repo) == "@stanley/wl"

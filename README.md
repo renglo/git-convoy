@@ -155,7 +155,9 @@ git-convoy is four cycles. They run at different times and they do not substitut
 - **Cycle 2 → 3:** the first **`train tag-rc` that pushes** tags to origin. That triggers CI publish workflows. In **Simple** mode, watch GitHub Actions manually before adopting. In **Full** mode, run `train verify` (same `gh` connection as PRs).
 - **Cycle 3 → 4:** **`train publish`** (stable registry) then **`adopt --production`**. Production is never enabled by `adopt` alone until you run the production adopt path in cycle 4.
 
-`train publish` in this tool means **stable packages in the registry** (git merge to `main` + stable tag + CI). It is **not** the same as enabling production on the BOM — that is cycle 4.
+`train publish` in this tool means **stable packages in the registry** (git merge to `main` + stable tag + merge tagged `main` back to `develop` + CI). It is **not** the same as enabling production on the BOM — that is cycle 4.
+
+**Hotfix** is a parallel path, not a fifth cycle. Use it when production is already on a stable train and you need a PATCH in one or more repos without waiting for the next cut. See [Hotfix](#hotfix--production-emergency).
 
 ---
 
@@ -361,7 +363,7 @@ git convoy train tag-rc --no-push
 git convoy train publish --no-push
 ```
 
-These update git and the train sheet locally. They do **not** push tags or trigger CI. Use them when you never plan to run cycles 3–4.
+These update git and the train sheet locally (including merging tagged `main` into `develop`). They do **not** push tags or trigger CI. Use them when you never plan to run cycles 3–4.
 
 ### End of cycle 2
 
@@ -547,7 +549,18 @@ Prerequisites: cycle 3 complete and staging acceptable; setup sections A–C sti
 git convoy train publish
 ```
 
-Drops rc suffix (`1.2.4rc1` → `1.2.4`), merges `release/<name>` into `main`, tags `v1.2.4`, pushes. **CI publishes stable packages.** Train status → **`published`**.
+Drops rc suffix (`1.2.4rc1` → `1.2.4`), merges `release/<name>` into `main`, tags `v1.2.4`, pushes `main` and the tag, then runs **`train mergeback`**: merge that tagged `main` into `develop` and push `develop`. Repos with no `develop` branch are left on `main`. **CI publishes stable packages.** Train status → **`published`** as soon as the stable tags exist, even if mergeback later fails.
+
+The develop merge is what lets the next **`train cut`** see new work. Cut includes a repo only when `develop` is ahead of the last stable tag **and** that tag is an ancestor of `develop`. If `develop` never receives the tagged `main`, the next cut reports nothing to ship even after you merge features.
+
+If mergeback hits a conflict, a dirty `develop`, or a failed push, `train publish` still leaves the stable tags on `main` (and the train sheet `published`). Fix the failed repos and retry:
+
+```bash
+git convoy train mergeback
+git convoy train mergeback 2026-08-30
+```
+
+Mergeback is idempotent: already-synced repos are skipped (`already`). A conflict aborts the merge so the repo is not left mid-merge. It continues past per-repo failures so the rest of the set can still sync.
 
 Again:
 
@@ -585,6 +598,35 @@ A manual staging check on **stable** pins before enabling production is recommen
 2. Commit and push — staging runs stable build
 3. `git convoy adopt --production` — enable production on the same file
 4. Commit and push
+
+---
+
+## Hotfix — Production emergency
+
+Do not wait for the next train. A hotfix can touch **more than one product repo**. PRs go to **`main`**. After tags land, the patch is merged into **`develop`** and absorbed into local in-progress **`feature/*`** branches so every branch in process gets it.
+
+```bash
+git convoy hotfix start fetch-file                 # dirty product repos (or --repos a,b)
+git convoy hotfix commit --header "fix: …" --header-only
+git convoy hotfix push
+git convoy hotfix prs                              # PRs into main
+# merge those PRs in GitHub (merge order)
+git convoy hotfix publish                          # tag vX.Y.Z; merge main → develop; absorb feature/*
+git convoy hotfix adopt --bom ops/acme-bom         # next BOM patch; pin only hotfix packages; staging only
+```
+
+`hotfix start` branches `hotfix/<name>` from `main` and bumps **PATCH** only. You must be on `main`, `develop`, or the hotfix branch (not a `feature/*`).
+
+`hotfix publish` refuses until each participant’s hotfix branch is on `main` (or `main` already has the expected PATCH — squash-safe). It tags `vX.Y.Z`, pushes `main` and the tag when origin exists, merges tagged `main` into `develop` (and pushes `develop`), then merges that `develop` into every **local** `feature/*`. Conflicts abort that merge and are listed; resolve and run `git convoy feature refresh`. Use `--no-push` to keep tags and merges local.
+
+`hotfix adopt` drafts the next system PATCH, pins **only** the hotfix packages, and points **staging**. It does **not** enable production. Commit and push the BOM yourself; then `git convoy adopt --production` when staging is acceptable.
+
+```bash
+git convoy hotfix show
+git convoy hotfix abandon --yes                    # discard local hotfix/<name>
+```
+
+git-convoy does not merge the GitHub PRs and does not push `*-bom`.
 
 ---
 
@@ -637,8 +679,17 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy adopt` | 3 | Staging BOM — `(draft)` or `(refresh)`; Full mode runs verify + self-heal by default |
 | `git convoy adopt --require-verify` | 3–4 | Strict: refuse adopt when any publish workflow failed |
 | `git convoy adopt --no-verify` | 3–4 | Skip verify; local workflow heuristic only (Simple mode) |
-| `git convoy train publish` | 4 | Stable tags → registry |
+| `git convoy train publish` | 4 | Stable tags → registry; then mergeback into `develop` |
+| `git convoy train mergeback` | 4 | Retry merge of tagged `main` into `develop` |
 | `git convoy adopt --production` | 4 | Stable pins + `production.enabled: true` |
+| `git convoy hotfix start NAME` | * | Branch `hotfix/<name>` from `main`; bump PATCH (dirty or `--repos`) |
+| `git convoy hotfix commit` | * | Commit dirty hotfix participants |
+| `git convoy hotfix push` | * | Push `hotfix/<name>` (no PRs) |
+| `git convoy hotfix prs` | * | PRs into **main** (Full); `--no-gh` for compare URLs |
+| `git convoy hotfix publish` | * | Tag on `main`; merge into `develop`; absorb local `feature/*` |
+| `git convoy hotfix adopt` | * | Next BOM patch; pin only hotfix packages; staging only |
+| `git convoy hotfix show [NAME]` | * | Hotfix sheet + merge status |
+| `git convoy hotfix abandon` | * | Delete local `hotfix/<name>` (lossy) |
 | `git convoy adopt draft` | * | Copy BOM to new system version |
 | `git convoy adopt pin` | * | Set one package version |
 | `git convoy adopt point` | * | Aim staging or production at a BOM file |
@@ -659,6 +710,8 @@ git convoy --json feature commit
 git convoy --json feature push
 git convoy --json adopt --bom ops/<system>-bom              # cycle 3: staging
 git convoy --json adopt --production --bom ops/<system>-bom  # cycle 4: production
+git convoy --json hotfix show
+git convoy --json hotfix adopt --bom ops/<system>-bom
 ```
 
 Cycles 1–2 only: no `--bom`, no registry. Do not invent package pins. In cycle 3–4 with Full mode, `adopt` verifies publish CI and self-heals failed repos to git SHAs. Use `--require-verify` when every publish must be green before writing the BOM.

@@ -100,3 +100,138 @@ def test_delete_requires_yes_for_json(workspace: Path, monkeypatch, capsys) -> N
     err = json.loads(capsys.readouterr().out)
     assert "--yes" in err["error"]
     assert gitutil.has_local_branch(schd, "release/2026-08-29")
+
+
+def test_publish_merges_main_into_develop(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31")
+    train_cmd.tag_rc(workspace, state, push=False)
+    data = train_cmd.publish(workspace, state, push=False)
+    assert data["repos"]
+    for row in data["repos"]:
+        assert row["synced_develop"] is True
+        rel = "extensions/schd" if row["id"] == "schd" else "dev/renglo-lib"
+        repo = workspace / rel
+        assert gitutil.is_ancestor(repo, row["tag"], "develop")
+        assert gitutil.current_branch(repo) == "develop"
+    with pytest.raises(GitConvoyError, match="no repos are ahead"):
+        train_cmd.cut(workspace, state, "2026-09-01")
+
+
+def test_publish_then_new_develop_work_is_cuttable(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    train_cmd.tag_rc(workspace, state, push=False)
+    train_cmd.publish(workspace, state, push=False)
+    lib = workspace / "dev" / "renglo-lib"
+    git(lib, "tag", "v1.0.0")
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "develop")
+    (schd / "next.py").write_text("print('next')\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "next feature")
+    data = train_cmd.cut(workspace, state, "2026-09-01")
+    assert {repo["id"] for repo in data["repos"]} == {"schd"}
+
+
+def test_publish_skips_develop_sync_when_no_develop(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    train_cmd.tag_rc(workspace, state, push=False)
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "main")
+    git(schd, "branch", "-D", "develop")
+    data = train_cmd.publish(workspace, state, push=False)
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    assert schd_row["synced_develop"] is False
+    assert gitutil.current_branch(schd) == "main"
+
+
+def test_publish_develop_conflict_leaves_train_published(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    train_cmd.tag_rc(workspace, state, push=False)
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "develop")
+    (schd / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "9.9.9"\n'
+    )
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "diverge develop")
+    data = train_cmd.publish(workspace, state, push=False)
+    assert data["ok"] is False
+    assert "train mergeback" in (data.get("note") or "")
+    assert load(workspace).trains["2026-08-31"].status == "published"
+    assert gitutil.rev_parse(schd, "MERGE_HEAD") is None
+    retry = train_cmd.mergeback(workspace, load(workspace), push=False)
+    assert retry["ok"] is False
+    assert retry["failed"] == ["schd"]
+
+
+def test_mergeback_continues_past_one_conflict(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31")
+    train_cmd.tag_rc(workspace, state, push=False)
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "develop")
+    (schd / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "9.9.9"\n'
+    )
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "diverge develop")
+    data = train_cmd.publish(workspace, state, push=False)
+    assert data["ok"] is False
+    assert data["mergeback"]["failed"] == ["schd"]
+    lib_row = next(row for row in data["repos"] if row["id"] == "renglo-lib")
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    assert lib_row["synced_develop"] is True
+    assert schd_row["synced_develop"] is False
+    lib = workspace / "dev" / "renglo-lib"
+    assert gitutil.is_ancestor(lib, lib_row["tag"], "develop")
+
+
+def test_mergeback_unsticks_develop_behind_tagged_main(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    train_cmd.tag_rc(workspace, state, push=False)
+    schd = workspace / "extensions" / "schd"
+    before = gitutil.rev_parse(schd, "develop")
+    train_cmd.publish(workspace, state, push=False)
+    git(schd, "checkout", "develop")
+    git(schd, "reset", "--hard", before)
+    tag = load(workspace).trains["2026-08-31"].repos[0].stable_tag
+    assert tag
+    assert not gitutil.is_ancestor(schd, tag, "develop")
+    data = train_cmd.mergeback(workspace, load(workspace), push=False)
+    assert data["ok"] is True
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    assert schd_row["status"] == "merged"
+    assert gitutil.is_ancestor(schd, tag, "develop")
+    again = train_cmd.mergeback(workspace, load(workspace), push=False)
+    already = next(row for row in again["repos"] if row["id"] == "schd")
+    assert again["ok"] is True
+    assert already["status"] == "already"
+
+
+def test_mergeback_refuses_before_publish(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    with pytest.raises(GitConvoyError, match="mergeback runs after train publish"):
+        train_cmd.mergeback(workspace, state, push=False)

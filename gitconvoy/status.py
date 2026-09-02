@@ -31,6 +31,16 @@ def status(workspace: Path, state: State) -> dict:
             "repo_count": len(feat.repos),
             "repos": feat.repo_ids(),
         }
+    hotfix = None
+    if state.current_hotfix and state.current_hotfix in state.hotfixes:
+        item = state.hotfixes[state.current_hotfix]
+        hotfix = {
+            "name": item.name,
+            "branch": item.branch,
+            "status": item.status,
+            "repo_count": len(item.repos),
+            "repos": item.repo_ids(),
+        }
     train = None
     if state.current_train and state.current_train in state.trains:
         item = state.trains[state.current_train]
@@ -46,7 +56,9 @@ def status(workspace: Path, state: State) -> dict:
         "workspace": str(workspace),
         "current_feature": state.current_feature,
         "current_train": state.current_train,
+        "current_hotfix": state.current_hotfix,
         "feature": feature,
+        "hotfix": hotfix,
         "train": train,
         "dirty": dirty,
         "repos": repos,

@@ -411,6 +411,43 @@ def test_console_clears_npm_pin_without_tag_publish_workflow(tmp_path: Path) -> 
     assert any(row["package"] == "@renglo/console" for row in cleared)
 
 
+def test_take_pins_tenant_wl_from_package_json(tmp_path: Path) -> None:
+    bom_repo = _bom_repo(tmp_path)
+    src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())
+    src["repos"] = {
+        "renglo/stanley-wl": {
+            "url": "git@github.com:renglo/stanley-wl.git",
+            "commit": "oldsha0000000000000000000000000000000000",
+            "branch": "main",
+        }
+    }
+    (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
+    wl = tmp_path / "dev" / "stanley-wl"
+    wl.mkdir(parents=True)
+    (wl / "package.json").write_text('{"name":"@stanley/wl","version":"0.0.1"}\n')
+    wf = wl / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "publish-npm.yml").write_text("on:\n  push:\n    tags:\n      - 'v*'\n")
+    state = State(current_train="2026-W34")
+    train = Train(name="2026-W34", branch="release/2026-W34", status="published")
+    train.add_repo(
+        TrainRepo(
+            id="stanley-wl",
+            path="dev/stanley-wl",
+            from_version="0.0.1",
+            to="0.0.1",
+            stable_tag="v0.0.1",
+        )
+    )
+    state.trains["2026-W34"] = train
+    adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["npm"]["@stanley/wl"] == "0.0.1"
+    assert "@renglo/stanley-wl" not in dest.get("npm", {})
+    assert "renglo-stanley-wl" not in dest.get("python", {})
+    assert "renglo/stanley-wl" not in dest.get("repos", {})
+
+
 def _fake_verify_result(repos: list[dict], *, train: str = "2026-W34") -> dict:
     verified = [row for row in repos if row.get("status") == "success"]
     skipped = [row for row in repos if row.get("status") == "skip"]

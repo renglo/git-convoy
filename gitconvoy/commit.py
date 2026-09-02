@@ -10,8 +10,8 @@ from typing import Callable
 
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
-from gitconvoy.state import Feature, State
-from gitconvoy.workspace import feature_repos, merge_sort
+from gitconvoy.state import Feature, Hotfix, State
+from gitconvoy.workspace import feature_repos, product_repos, merge_sort
 
 InputFn = Callable[[str], str]
 WriteFn = Callable[[str], None]
@@ -49,6 +49,7 @@ def commit(
     input_fn: InputFn | None = None,
     write_fn: WriteFn | None = None,
     is_tty: bool | None = None,
+    kind: str = "feature",
 ) -> dict:
     if plan and from_file:
         raise GitConvoyError("pass either --plan or --from, not both")
@@ -63,11 +64,14 @@ def commit(
             from_file=from_file,
             header=header,
             header_only=header_only,
+            kind=kind,
         )
 
     want_plan = plan or as_json
     if want_plan:
-        return _plan(workspace, state, header=header, include_diff=include_diff)
+        return _plan(
+            workspace, state, header=header, include_diff=include_diff, kind=kind
+        )
 
     if is_tty is None:
         is_tty = sys.stdin.isatty()
@@ -81,6 +85,7 @@ def commit(
         header=header,
         input_fn=input_fn or input,
         write_fn=write_fn or _stdout,
+        kind=kind,
     )
 
 
@@ -90,16 +95,21 @@ def _plan(
     *,
     header: str | None,
     include_diff: bool,
+    kind: str = "feature",
 ) -> dict:
-    feature, dirty = _targets(workspace, state, include_diff=include_diff)
-    return {
+    sheet, dirty = _targets(workspace, state, include_diff=include_diff, kind=kind)
+    payload = {
         "ok": True,
         "mode": "plan",
-        "feature": feature.name,
-        "branch": feature.branch,
+        "feature": sheet.name,
+        "branch": sheet.branch,
+        "kind": kind,
         "header": (header or "").strip(),
         "repos": [_plan_row(item) for item in dirty],
     }
+    if kind == "hotfix":
+        payload["hotfix"] = sheet.name
+    return payload
 
 
 def _apply(
@@ -109,8 +119,9 @@ def _apply(
     from_file: str | None,
     header: str | None,
     header_only: bool,
+    kind: str = "feature",
 ) -> dict:
-    feature, dirty = _targets(workspace, state, include_diff=False)
+    sheet, dirty = _targets(workspace, state, include_diff=False, kind=kind)
     payload_header, bodies = _payload(
         dirty,
         from_file=from_file,
@@ -121,8 +132,8 @@ def _apply(
         return {
             "ok": True,
             "mode": "commit",
-            "feature": feature.name,
-            "branch": feature.branch,
+            "feature": sheet.name,
+            "branch": sheet.branch,
             "header": (payload_header or "").strip(),
             "repos": [],
         }
@@ -142,8 +153,8 @@ def _apply(
     return {
         "ok": True,
         "mode": "commit",
-        "feature": feature.name,
-        "branch": feature.branch,
+        "feature": sheet.name,
+        "branch": sheet.branch,
         "header": message_header,
         "repos": committed,
     }
@@ -156,15 +167,16 @@ def _interactive(
     header: str | None,
     input_fn: InputFn,
     write_fn: WriteFn,
+    kind: str = "feature",
 ) -> dict:
-    feature, dirty = _targets(workspace, state, include_diff=True)
+    sheet, dirty = _targets(workspace, state, include_diff=True, kind=kind)
     if not dirty:
         write_fn("nothing to commit")
         return {
             "ok": True,
             "mode": "commit",
-            "feature": feature.name,
-            "branch": feature.branch,
+            "feature": sheet.name,
+            "branch": sheet.branch,
             "header": (header or "").strip(),
             "printed": True,
             "repos": [],
@@ -174,7 +186,7 @@ def _interactive(
     write_fn(_rule("═"))
     write_fn(
         _paint(
-            f"{feature.name}  {feature.branch}  {len(dirty)} dirty repos",
+            f"{sheet.name}  {sheet.branch}  {len(dirty)} dirty repos",
             _BOLD,
             color,
         )
@@ -245,8 +257,8 @@ def _interactive(
     return {
         "ok": True,
         "mode": "commit",
-        "feature": feature.name,
-        "branch": feature.branch,
+        "feature": sheet.name,
+        "branch": sheet.branch,
         "header": header_text,
         "printed": True,
         "repos": committed,
@@ -269,10 +281,20 @@ def _targets(
     state: State,
     *,
     include_diff: bool,
-) -> tuple[Feature, list[DirtyRepo]]:
-    feature = state.require_feature()
-    products = {repo.id: repo for repo in feature_repos(workspace)}
-    participant_ids = set(feature.repo_ids())
+    kind: str = "feature",
+) -> tuple[Feature | Hotfix, list[DirtyRepo]]:
+    if kind == "hotfix":
+        sheet: Feature | Hotfix = state.require_hotfix()
+        scan = product_repos(workspace)
+        hint = "run: git convoy hotfix start"
+        label = "hotfix sheet"
+    else:
+        sheet = state.require_feature()
+        scan = feature_repos(workspace)
+        hint = "run: git convoy feature adopt"
+        label = "feature sheet"
+    products = {repo.id: repo for repo in scan}
+    participant_ids = set(sheet.repo_ids())
     unadopted: list[str] = []
     for repo in products.values():
         if repo.id in participant_ids:
@@ -281,14 +303,14 @@ def _targets(
             unadopted.append(repo.id)
     if unadopted:
         raise GitConvoyError(
-            "dirty product repos are not on the feature sheet: "
+            f"dirty product repos are not on the {label}: "
             + ", ".join(unadopted)
-            + ". run: git convoy feature adopt"
+            + f". {hint}"
         )
 
     dirty: list[DirtyRepo] = []
     wrong_branch: list[str] = []
-    for row in feature.repos:
+    for row in sheet.repos:
         product = products.get(row.id)
         repo_path = workspace / row.path
         if product:
@@ -296,17 +318,15 @@ def _targets(
         if not gitutil.is_dirty(repo_path):
             continue
         branch = gitutil.current_branch(repo_path)
-        if branch != feature.branch:
-            wrong_branch.append(f"{row.id} is on {branch}, not {feature.branch}")
+        if branch != sheet.branch:
+            wrong_branch.append(f"{row.id} is on {branch}, not {sheet.branch}")
             continue
         dirty.append(_snapshot(row.id, row.path, repo_path, branch, include_diff))
     if wrong_branch:
-        raise GitConvoyError(
-            "; ".join(wrong_branch) + ". run: git convoy feature adopt"
-        )
+        raise GitConvoyError("; ".join(wrong_branch) + f". {hint}")
     order = {name: index for index, name in enumerate(merge_sort([item.id for item in dirty]))}
     dirty.sort(key=lambda item: order.get(item.id, 99))
-    return feature, dirty
+    return sheet, dirty
 
 
 def _snapshot(

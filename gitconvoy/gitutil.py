@@ -309,5 +309,25 @@ def pr_merge_status(repo: Path, branch: str, pr_url: str | None = None) -> str:
     return "unknown"
 
 
+def local_branches(repo: Path, prefix: str | None = None) -> list[str]:
+    """Short names of local branches, optionally under a prefix like ``feature/``."""
+    ref = "refs/heads/"
+    if prefix:
+        ref = f"refs/heads/{prefix.rstrip('/')}/"
+    result = run(
+        repo,
+        "for-each-ref",
+        "--format=%(refname:short)",
+        ref,
+        check=False,
+    )
+    names = []
+    for line in (result.stdout or "").splitlines():
+        name = line.strip()
+        if name:
+            names.append(name)
+    return names
+
+
 def gh_bin() -> str | None:
     return shutil.which("gh")

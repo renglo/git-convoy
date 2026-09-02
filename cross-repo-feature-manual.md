@@ -628,12 +628,14 @@ The next attempt is a **new** system version (`v1.5.1` or `v1.6.0`): copy from w
 
 # Part 3 — Hotfix (production emergency)
 
-Do not wait for the next train.
+Do not wait for the next train. A hotfix may change **more than one repository**. After it lands on `main`, send the patch back to `develop` so every in-process `feature/*` can absorb it.
 
-1. From `main` in the affected repo(s): `git checkout -b hotfix/<patch-version>`.
-2. Fix. Bump **PATCH** only (`1.2.4` → `1.2.5`). If several repos must change, use a feature sheet the same way as Part 1, with branch name `hotfix/…`.
-3. Merge to `main` in merge order, tag `v1.2.5`, push the tag (registry publish). Merge the hotfix back to `develop`.
-4. Adopt with A1–A3, taking only those new pins.
+CLI: `git convoy hotfix` (see [README](README.md#hotfix--production-emergency)).
+
+1. `git convoy hotfix start <name>` — dirty product repos, or `--repos a,b`. Branches `hotfix/<name>` from `main` and bumps **PATCH** only (`1.2.4` → `1.2.5`). You may start from `main` or `develop` (uncommitted fix comes along). Do not start from a `feature/*` branch.
+2. Fix (if not already). `git convoy hotfix commit`. PRs target **`main`**: `git convoy hotfix prs`. Merge in merge order (`renglo-lib` → `renglo-api` → console/extensions). git-convoy does not merge.
+3. `git convoy hotfix publish` — tag `v1.2.5` on `main`, push the tag (registry publish), merge tagged `main` into `develop` (and push `develop`), then merge that `develop` into local in-progress `feature/*` branches. Conflicts on a feature branch are reported; resolve and `git convoy feature refresh`.
+4. `git convoy hotfix adopt --bom ops/<system>-bom` — draft the next system PATCH, pin **only** the hotfix packages, point staging. Does not enable production. Commit and push the BOM; enable production when staging is acceptable (`adopt --production`).
 
 ---
 
@@ -655,6 +657,13 @@ Do not wait for the next train.
 - [ ] Fixes on the release branch copied back to `develop`
 - [ ] rc acceptable locally and, if you use cloud, on staging pins
 - [ ] rc dropped (same number); merged to `main`; `vX.Y.Z` pushed; features listed on the train sheet
+
+**Hotfix**
+
+- [ ] `hotfix/<name>` from `main` on every repo that must change; PATCH only
+- [ ] PRs merged into `main` in merge order; tags pushed
+- [ ] Tagged `main` merged into `develop` (and pushed); in-progress `feature/*` absorbed
+- [ ] BOM patch pins only those packages; staging first, then production
 
 **Adoption**
 

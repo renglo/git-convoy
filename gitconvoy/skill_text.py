@@ -1,11 +1,11 @@
 SKILL_MARKDOWN = """---
 name: gitconvoy
 description: >-
-  Operate the git-convoy CLI for cross-repo features, release trains, and
-  BOM adoption. Use when the user mentions git convoy, git-convoy, gitconvoy,
-  a feature sheet, a release train, which repos a feature touches, what is on
-  the current train, adopt onto a feature branch, commit participant repos,
-  refresh from develop, or staging/production pins.
+  Operate the git-convoy CLI for cross-repo features, release trains, hotfixes,
+  and BOM adoption. Use when the user mentions git convoy, git-convoy, gitconvoy,
+  a feature sheet, a release train, a production hotfix, which repos a feature
+  touches, what is on the current train, adopt onto a feature branch, commit
+  participant repos, refresh from develop, or staging/production pins.
 ---
 
 # git-convoy
@@ -30,12 +30,14 @@ Run from the workspace root (or pass `--workspace`). Always add `--json` when yo
 git convoy --json status
 git convoy --json feature show
 git convoy --json train show
+git convoy --json hotfix show
 git convoy --json feature commit
 ```
 
 - "What's on the current train?" → `git convoy --json train show`
 - "How many repos is this feature touching?" → `git convoy --json feature show` (`repo_count`)
 - "Which feature am I on?" → `git convoy --json status`
+- "Which hotfix am I on?" → `git convoy --json status` / `git convoy --json hotfix show`
 
 Do not guess membership by scanning dirty directories. The state file is `.gitconvoy/state.json` (gitignored).
 
@@ -115,9 +117,26 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 
 - **1–2:** features and local release branches — git only (Full optional).
 - **3:** `train tag-rc` (push) → `train verify` (Full) or manual Actions → `adopt` → push BOM (staging).
-- **4:** `train publish` → `train verify` (Full) or manual Actions → `adopt --production` → push BOM.
+- **4:** `train publish` (merge to `main`, tag, then `train mergeback` into `develop`) → `train verify` (Full) or manual Actions → `adopt --production` → push BOM.
+  If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.
+- **Hotfix** (parallel, not a fifth cycle): production PATCH without a new train. May touch several repos. PRs into `main`. Publish merges tagged `main` into `develop` and absorbs local `feature/*`.
 
 Do not run cycle 3/4 without tenant publisher + BOM setup (README: “Setup for cycles 3 and 4”).
+
+## Production hotfix
+
+Use when production is already on a stable train and you need a PATCH now.
+
+```bash
+git convoy --json hotfix start NAME                 # dirty repos or --repos a,b
+git convoy --json hotfix commit --header "fix: …" --header-only
+git convoy --json hotfix prs                        # PRs into main
+# merge those PRs in GitHub
+git convoy --json hotfix publish
+git convoy --json hotfix adopt --bom ops/<system>-bom
+```
+
+`hotfix start` branches from `main` and bumps PATCH. Start from `main` or `develop`, not a `feature/*`. `hotfix publish` tags `vX.Y.Z` on `main`, merges into `develop` (and pushes when origin exists), then merges that `develop` into local `feature/*` so in-process work gets the patch. Conflicts are listed; then `git convoy feature refresh`. `hotfix adopt` pins **only** those packages on the next BOM patch and points **staging**. It does not enable production. Commit and push the BOM; `adopt --production` when staging is acceptable.
 
 ## What not to do
 
@@ -128,6 +147,7 @@ Do not run cycle 3/4 without tenant publisher + BOM setup (README: “Setup for 
 - In Full mode, default `adopt` self-heals failed publishes to git SHAs; use `--require-verify` when the BOM must not be written until CI is green.
 - Do not adopt with `--no-verify` on a real train unless you checked Actions manually.
 - Do not increment semver again at publish; drop the rc suffix only.
+- Do not skip merging a hotfix back to `develop`; in-process feature branches need that patch.
 
 To put a train onto a running system, two golden paths:
 
@@ -143,5 +163,5 @@ After `train publish`, either run `adopt` alone (optional staging smoke-test pau
 git convoy --json adopt --production --bom ops/<system>-bom
 ```
 
-That is the **production** path. Refreshes stable pins and enables production in one step. Refuses while the train is still stabilizing. After push, CI deploys staging, verifies it, then production — production is blocked if staging fails (watch GitHub Actions or failure notifications).
+That is the **production** path. Run it only after `train publish` (which also runs `train mergeback` into `develop`). If develop is still behind the stable tag, run `git convoy --json train mergeback` and retry. Refreshes stable pins and enables production in one step. Refuses while the train is still stabilizing. After push, CI deploys staging, verifies it, then production — production is blocked if staging fails (watch GitHub Actions or failure notifications).
 """

@@ -98,6 +98,22 @@ def read_version(repo: Path) -> dict[str, str]:
     return found
 
 
+def read_npm_package_name(repo: Path) -> str | None:
+    """Name from ui/package.json, else root package.json. None if missing."""
+    for candidate in (repo / "ui" / "package.json", repo / "package.json"):
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        name = data.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return None
+    return None
+
+
 def write_version(repo: Path, pep: str, npm: str) -> list[str]:
     changed: list[str] = []
     info = read_version(repo)

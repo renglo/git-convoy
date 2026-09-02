@@ -506,6 +506,32 @@ def _pep_and_npm(version: str) -> tuple[str, str]:
     return versions.with_rc(version, rc)
 
 
+def _invented_npm_name(repo_id: str) -> str:
+    if repo_id == "console":
+        return "@renglo/console"
+    short = repo_id.removeprefix("renglo-")
+    return f"@renglo/{short}"
+
+
+def _python_package_names(repo_id: str) -> list[str]:
+    if repo_id == "console":
+        return []
+    short = repo_id.removeprefix("renglo-")
+    name = repo_id if repo_id.startswith("renglo-") else f"renglo-{short}"
+    return [name]
+
+
+def _npm_package_names(repo: TrainRepo, workspace: Path) -> list[str]:
+    invented = _invented_npm_name(repo.id)
+    actual = versions.read_npm_package_name(workspace / repo.path)
+    names: list[str] = []
+    if actual:
+        names.append(actual)
+    if invented not in names:
+        names.append(invented)
+    return names
+
+
 def _package_targets(
     repo: TrainRepo,
     bom: dict,
@@ -515,15 +541,8 @@ def _package_targets(
     registry = repo_registry_ready(repo_root, repo.id)
     if registry is False or (repo.id == "console" and registry is not True):
         return []
-    short = repo.id.removeprefix("renglo-")
-    python_names = (
-        []
-        if repo.id == "console"
-        else [repo.id if repo.id.startswith("renglo-") else f"renglo-{short}"]
-    )
-    npm_names = (
-        ["@renglo/console"] if repo.id == "console" else [f"@renglo/{short}"]
-    )
+    python_names = _python_package_names(repo.id)
+    npm_names = _npm_package_names(repo, workspace)
     existing: list[tuple[str, str]] = []
     for name in python_names:
         if name in (bom.get("python") or {}):
@@ -538,7 +557,7 @@ def _package_targets(
         return existing
     info = versions.read_version(repo_root) if repo_root.is_dir() else {}
     if repo.id == "console":
-        return [("npm", "@renglo/console")]
+        return [("npm", npm_names[0])]
     targets: list[tuple[str, str]] = []
     if info.get("python") or not info.get("npm"):
         targets.append(("python", python_names[0]))
@@ -551,14 +570,11 @@ def _candidate_package_pins(
     repo: TrainRepo,
     workspace: Path,
 ) -> list[tuple[str, str]]:
-    short = repo.id.removeprefix("renglo-")
     pins: list[tuple[str, str]] = []
-    if repo.id == "console":
-        pins.append(("npm", "@renglo/console"))
-        return pins
-    py_name = repo.id if repo.id.startswith("renglo-") else f"renglo-{short}"
-    pins.append(("python", py_name))
-    pins.append(("npm", f"@renglo/{short}"))
+    for name in _python_package_names(repo.id):
+        pins.append(("python", name))
+    for name in _npm_package_names(repo, workspace):
+        pins.append(("npm", name))
     return pins
 
 
