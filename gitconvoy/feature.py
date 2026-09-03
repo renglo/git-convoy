@@ -8,7 +8,8 @@ from gitconvoy import ghutil
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import Feature, State, save
-from gitconvoy.workspace import Repo, feature_repos, merge_sort
+from gitconvoy.sync import DevelopSyncEntry, sync_repos_develop
+from gitconvoy.workspace import Repo, feature_repos, is_bom_repo_id, merge_sort
 
 
 def start(workspace: Path, state: State, name: str) -> dict:
@@ -95,6 +96,7 @@ def start(workspace: Path, state: State, name: str) -> dict:
         "repos": picked,
         "repo_count": len(feature.repos),
         "workspace": checked,
+        "dropped": _drop_non_feature_sheet_repos(feature),
     }
 
 
@@ -103,6 +105,7 @@ def adopt(workspace: Path, state: State) -> dict:
     adopted: list[dict] = []
     skipped: list[dict] = []
     dropped: list[dict] = []
+    dropped.extend(_drop_non_feature_sheet_repos(feature))
     for repo in feature_repos(workspace):
         result = _adopt_one(repo, feature)
         if result.get("adopted"):
@@ -128,6 +131,23 @@ def adopt(workspace: Path, state: State) -> dict:
         "dropped": dropped,
         "repo_count": len(feature.repos),
     }
+
+
+def _drop_non_feature_sheet_repos(feature: Feature) -> list[dict]:
+    """Remove *-bom (and other non-feature) rows left on an older sheet."""
+    dropped: list[dict] = []
+    for row in list(feature.repos):
+        if not is_bom_repo_id(row.id):
+            continue
+        feature.drop_repo(row.id)
+        dropped.append(
+            {
+                "id": row.id,
+                "path": row.path,
+                "reason": "bom-not-a-feature-repo",
+            }
+        )
+    return dropped
 
 
 def _branch_has_work(repo: Path, branch: str) -> bool:
@@ -441,6 +461,24 @@ def push(workspace: Path, state: State) -> dict:
 
 def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     feature = state.require_feature()
+    branch = feature.branch
+    entries = [
+        DevelopSyncEntry(id=repo_row.id, rel=repo_row.path)
+        for repo_row in feature.repos
+    ]
+    develop_sync = sync_repos_develop(
+        workspace,
+        entries,
+        push=True,
+        retry_hint="git convoy feature prs",
+    )
+    for repo_row in feature.repos:
+        gitutil.checkout_branch(workspace / repo_row.path, branch)
+    if not develop_sync["ok"]:
+        raise GitConvoyError(
+            develop_sync.get("note")
+            or "develop sync failed; resolve conflicts, then git convoy feature prs"
+        )
     _push_feature_branches(workspace, feature)
     opened: list[dict] = []
     for repo_row in feature.repos:
@@ -475,7 +513,9 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
         "ok": True,
         "feature": feature.name,
         "merge_order": merge_sort(feature.repo_ids()),
+        "develop_sync": develop_sync,
         "note": (
+            "Merged latest stable/main into develop before opening PRs. "
             "Approve with: git convoy feature approve (Full mode). Merge only when all "
             "sibling PRs are approved, in merge_order. git-convoy does not merge."
         ),

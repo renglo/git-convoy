@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from gitconvoy import feature as feature_cmd
 from gitconvoy import gitutil
 from gitconvoy.cli import main
+from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, load, save
 from gitconvoy.workspace import find_workspace
 
@@ -56,6 +59,21 @@ def test_adopt_picks_up_existing_branch_with_commits(workspace: Path) -> None:
     assert data["adopted"][0]["action"] == "picked-up"
     assert gitutil.current_branch(schd) == "feature/blast-radius"
     assert load(workspace).features["blast-radius"].repo_ids() == ["schd"]
+
+
+def test_adopt_drops_bom_from_feature_sheet(workspace: Path) -> None:
+    feature_cmd.start(workspace, State(), "blast-radius")
+    state = load(workspace)
+    state.features["blast-radius"].add_repo("stanley-bom", "ops/stanley-bom")
+    state.features["blast-radius"].add_repo("schd", "extensions/schd")
+    save(workspace, state)
+    schd = workspace / "extensions" / "schd"
+    (schd / "handler.py").write_text("print('x')\n")
+    data = feature_cmd.adopt(workspace, load(workspace))
+    assert any(row["id"] == "stanley-bom" for row in data["dropped"])
+    assert all(row["id"] != "stanley-bom" for row in data["adopted"])
+    assert "stanley-bom" not in load(workspace).features["blast-radius"].repo_ids()
+    assert "schd" in load(workspace).features["blast-radius"].repo_ids()
 
 
 def test_start_picks_up_existing_feature_branch(workspace: Path) -> None:
@@ -332,3 +350,40 @@ def test_close_after_merge(workspace: Path, monkeypatch, capsys) -> None:
     state = load(workspace)
     assert state.current_feature is None
     assert "blast-radius" not in state.features
+
+
+def test_prs_syncs_develop_before_opening(workspace: Path, monkeypatch) -> None:
+    schd = _prepare_participant(workspace, monkeypatch)
+    git(schd, "checkout", "main")
+    (schd / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "2.0.0"\n'
+    )
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "stable on main")
+    git(schd, "tag", "v2.0.0")
+    assert not gitutil.is_ancestor(schd, "v2.0.0", "develop")
+    monkeypatch.setattr(feature_cmd, "_push_feature_branches", lambda _w, _f: [])
+    data = feature_cmd.prs(workspace, load(workspace), use_gh=False)
+    assert data["develop_sync"]["ok"] is True
+    assert gitutil.is_ancestor(schd, "v2.0.0", "develop")
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+
+
+def test_prs_refuses_on_develop_sync_conflict(workspace: Path, monkeypatch) -> None:
+    schd = _prepare_participant(workspace, monkeypatch)
+    git(schd, "checkout", "main")
+    (schd / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "2.0.0"\n'
+    )
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "stable on main")
+    git(schd, "tag", "v2.0.0")
+    git(schd, "checkout", "develop")
+    (schd / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "9.9.9"\n'
+    )
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "diverge develop")
+    with pytest.raises(GitConvoyError, match="develop sync failed"):
+        feature_cmd.prs(workspace, load(workspace), use_gh=False)
+    assert gitutil.current_branch(schd) == "feature/blast-radius"

@@ -235,3 +235,97 @@ def test_mergeback_refuses_before_publish(workspace: Path, monkeypatch) -> None:
     train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
     with pytest.raises(GitConvoyError, match="mergeback runs after train publish"):
         train_cmd.mergeback(workspace, state, push=False)
+
+
+def test_mergeback_heals_non_participant_repo(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    data_repo = init_repo(workspace / "extensions" / "data")
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    train_cmd.tag_rc(workspace, state, push=False)
+    git(data_repo, "checkout", "main")
+    (data_repo / "pyproject.toml").write_text(
+        '[project]\nname = "data"\nversion = "2.0.0"\n'
+    )
+    git(data_repo, "add", "-A")
+    git(data_repo, "commit", "-m", "hotfix on main")
+    git(data_repo, "tag", "v2.0.0")
+    assert not gitutil.is_ancestor(data_repo, "v2.0.0", "develop")
+    train_cmd.publish(workspace, state, push=False)
+    data_row = next(
+        row
+        for row in load(workspace).trains["2026-08-31"].repos
+        if row.id == "schd"
+    )
+    assert data_row.stable_tag
+    mb = train_cmd.mergeback(workspace, load(workspace), push=False)
+    healed = next(row for row in mb["repos"] if row["id"] == "data")
+    assert healed["status"] in {"merged", "already"}
+    assert gitutil.is_ancestor(data_repo, "v2.0.0", "develop")
+
+
+def test_tag_rc_syncs_develop_before_tagging(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "main")
+    (schd / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "2.0.0"\n'
+    )
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "stable on main")
+    git(schd, "tag", "v2.0.0")
+    before = gitutil.rev_parse(schd, "develop")
+    assert not gitutil.is_ancestor(schd, "v2.0.0", "develop")
+    data = train_cmd.tag_rc(workspace, state, push=False)
+    assert data["develop_sync"]["ok"] is True
+    assert gitutil.is_ancestor(schd, "v2.0.0", "develop")
+    assert gitutil.current_branch(schd) == "release/2026-08-31"
+    assert gitutil.rev_parse(schd, "develop") != before
+
+
+def test_tag_rc_again_bumps_rc_suffix(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    first = train_cmd.tag_rc(workspace, state, push=False)
+    schd_first = next(row for row in first["repos"] if row["id"] == "schd")
+    assert schd_first["tag"] == "v1.0.1-rc.1"
+    assert schd_first["version"] == "1.0.1rc1"
+
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "release/2026-08-31")
+    (schd / "fix.py").write_text("print('fix')\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "stabilization fix")
+
+    second = train_cmd.tag_rc(workspace, load(workspace), push=False)
+    schd_second = next(row for row in second["repos"] if row["id"] == "schd")
+    assert schd_second["tag"] == "v1.0.1-rc.2"
+    assert schd_second["version"] == "1.0.1rc2"
+    assert gitutil.rev_parse(schd, "refs/tags/v1.0.1-rc.2")
+    assert gitutil.rev_parse(schd, "HEAD") == gitutil.rev_parse(
+        schd, "refs/tags/v1.0.1-rc.2"
+    )
+    sheet = load(workspace).trains["2026-08-31"].repos[0]
+    assert sheet.rc_tag == "v1.0.1-rc.2"
+    assert sheet.to == "1.0.1rc2"
+
+
+def test_tag_rc_again_keeps_rc_when_head_matches_tag(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    train_cmd.tag_rc(workspace, state, push=False)
+    second = train_cmd.tag_rc(workspace, load(workspace), push=False)
+    schd_row = next(row for row in second["repos"] if row["id"] == "schd")
+    assert schd_row["tag"] == "v1.0.1-rc.1"
+    assert schd_row["version"] == "1.0.1rc1"
+    sheet = load(workspace).trains["2026-08-31"].repos[0]
+    assert sheet.rc_tag == "v1.0.1-rc.1"
+    assert sheet.to == "1.0.1rc1"

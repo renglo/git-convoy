@@ -8,13 +8,17 @@ from gitconvoy.workspace import FEATURE_SKIP_OPS, discover_repos, feature_repos
 from conftest import init_repo
 
 
-def test_feature_repos_includes_tenant_ops_excludes_tooling(workspace: Path) -> None:
+def test_feature_repos_includes_tenant_ops_excludes_tooling_and_bom(
+    workspace: Path,
+) -> None:
     init_repo(workspace / "ops" / "bootstrap")
     init_repo(workspace / "ops" / "stanley-bom", develop=False)
+    init_repo(workspace / "ops" / "stanley-wl")
     init_repo(workspace / "ops" / "publisher")
     ids = {repo.id for repo in feature_repos(workspace)}
     assert "bootstrap" in ids
-    assert "stanley-bom" in ids
+    assert "stanley-wl" in ids
+    assert "stanley-bom" not in ids
     assert "publisher" not in ids
     assert "renglo-lib" in ids
     assert "schd" in ids

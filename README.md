@@ -134,6 +134,18 @@ git convoy --json status
 
 `--workspace` overrides discovery if you are not in the workspace root.
 
+### Heal `develop` from `main` (any time)
+
+When `develop` has fallen behind tagged `main` — for example a repo was not on the last train, or you added a new extension after publish — merge stable back into `develop` without an active feature or train:
+
+```bash
+git convoy sync develop
+git convoy sync develop --repos data,console
+git convoy sync develop --no-push    # local merge only
+```
+
+For each product repo: fetch, fast-forward `main`, merge the latest `v*` stable tag (or `main` if none), push `origin/develop` when the remote exists. Skips repos with no `develop` branch. Continues past per-repo failures; re-run after resolving conflicts. Same logic used automatically by `feature prs`, `train tag-rc`, and `train publish` / `train mergeback`.
+
 No AWS, CodeArtifact, or BOM setup is required for Cycles 1–2.
 
 ---
@@ -173,7 +185,7 @@ Creates an empty feature sheet, sets it current, and checks out the integration 
 
 If `feature/blast-radius` already exists locally or on origin (you created it yourself, another machine, or a previous `start`/`adopt`), `feature start` checks that branch out and adds the repo to the sheet **only when it has work**: uncommitted files on that branch, or commits not already in `develop`. Empty leftover branches (created and then emptied) are left off the sheet; a clean checkout is returned to `develop`. Dirty work already on `feature/blast-radius` is kept. Dirty work on another branch is skipped (the existing feature branch is left as-is). It does **not** create `feature/blast-radius` in repos that have no such branch yet — that is `feature adopt`.
 
-Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `stanley-bom`, `stanley-wl`, …). Platform tooling in `ops/` (`publisher`, `launcher`, `extensions-service`, `git-convoy`) is excluded. Release trains still only cut product repos.
+Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `stanley-wl`, …). **`*-bom` is not a feature repo** — BOM pins land via `git convoy adopt` / `hotfix adopt` on `main` (that push deploys). Platform tooling in `ops/` (`publisher`, `launcher`, `extensions-service`, `git-convoy`) is also excluded. Release trains still only cut product repos.
 
 ### 2. Implement
 
@@ -260,7 +272,7 @@ git convoy feature prs          # Full: opens PRs via gh
 git convoy feature prs --no-gh  # Simple: compare URLs only
 ```
 
-Pushes each participant branch (same as `feature push`). With **Full** mode (`gh` logged in, no `--no-gh`), opens PRs onto `develop` and stores the URLs. In **Simple** mode, prints compare links for you to open in the browser.
+Pushes each participant branch (same as `feature push`). **Before opening PRs**, merges each participant’s latest stable tag (or `main`) into `develop` so hotfix tags and repos that sat out of the last train are absorbed — conflicts surface here, not on the train. With **Full** mode (`gh` logged in, no `--no-gh`), opens PRs onto `develop` and stores the URLs. In **Simple** mode, prints compare links for you to open in the browser.
 
 ### 8b. Approve PRs (Full mode)
 
@@ -461,7 +473,7 @@ Cycle 3 starts when you push **rc** tags and adopt onto staging. Prerequisites: 
 git convoy train tag-rc
 ```
 
-For each train participant: candidate tag (`v1.2.4-rc.1`), push `release/<name>` and the tag. **CI publishes rc packages to CodeArtifact.**
+For each train participant: merges latest stable/main into `develop` (catches hotfixes since the last rc), then candidate tag (`v1.2.4-rc.1`), push `release/<name>` and the tag. **CI publishes rc packages to CodeArtifact.** Develop sync failures are reported but tagging still proceeds — resolve conflicts during stabilization.
 
 Use `--no-push` to stay in cycle 2 (local tags only).
 
@@ -495,7 +507,7 @@ CLI output groups pins by repo and labels each line `registry`, `git`, or `fallb
 
 `adopt` only writes **`python` / `npm` pins** for repos whose publish CI succeeded (or heuristic says they publish). Others get **`repos.*.commit` only**.
 
-In **Simple** mode, watch Actions on each participant instead. If OIDC or publish failed, fix setup (section B) and re-tag (`tag-rc` again bumps rc suffix).
+In **Simple** mode, watch Actions on each participant instead. If OIDC or publish failed, fix setup (section B) and re-tag. When `release/<name>` has new commits past the current rc tag, `tag-rc` bumps the rc suffix for that repo (e.g. `rc.1` → `rc.2`) and leaves unchanged repos on their existing rc.
 
 **2. Write the staging BOM**
 
@@ -551,7 +563,7 @@ Prerequisites: cycle 3 complete and staging acceptable; setup sections A–C sti
 git convoy train publish
 ```
 
-Drops rc suffix (`1.2.4rc1` → `1.2.4`), merges `release/<name>` into `main`, tags `v1.2.4`, pushes `main` and the tag, then runs **`train mergeback`**: merge that tagged `main` into `develop` and push `develop`. Repos with no `develop` branch are left on `main`. **CI publishes stable packages.** Train status → **`published`** as soon as the stable tags exist, even if mergeback later fails.
+Drops rc suffix (`1.2.4rc1` → `1.2.4`), merges `release/<name>` into `main`, tags `v1.2.4`, pushes `main` and the tag, then runs **`train mergeback` automatically**: merge tagged `main` into `develop` for **every product repo** (train participants use the sheet’s stable tag; others use their latest stable tag or `main`) and push `develop`. Repos with no `develop` branch are left on `main`. **CI publishes stable packages.** Train status → **`published`** as soon as the stable tags exist, even if mergeback later fails.
 
 The develop merge is what lets the next **`train cut`** see new work. Cut includes a repo only when `develop` is ahead of the last stable tag **and** that tag is an ancestor of `develop`. If `develop` never receives the tagged `main`, the next cut reports nothing to ship even after you merge features.
 
@@ -562,7 +574,7 @@ git convoy train mergeback
 git convoy train mergeback 2026-08-30
 ```
 
-Mergeback is idempotent: already-synced repos are skipped (`already`). A conflict aborts the merge so the repo is not left mid-merge. It continues past per-repo failures so the rest of the set can still sync.
+Mergeback is idempotent: already-synced repos are skipped (`already`). A conflict aborts the merge so the repo is not left mid-merge. It continues past per-repo failures so the rest of the set can still sync. Re-run manually any time after publish to heal repos that were not on the train.
 
 Again:
 
@@ -662,6 +674,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | ------- | ----- | ------------ |
 | `git convoy init` | 1 | State file, gitignore, Cursor skill |
 | `git convoy status` | * | Current feature, train, dirty repos |
+| `git convoy sync develop` | * | Merge stable/`main` into `develop` for all product repos (no feature/train required) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
 | `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
 | `git convoy feature abandon` | 1 | Delete local `feature/<name>` (lossy) |
@@ -676,13 +689,13 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
 | `git convoy train show [NAME]` | 2 | Read train sheet |
 | `git convoy train delete` | 2 | Delete `release/<train>` branches |
-| `git convoy train tag-rc` | 3 | Push rc tags → registry (use `--no-push` for cycle 2 only) |
+| `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
 | `git convoy adopt` | 3 | Staging BOM — `(draft)` or `(refresh)`; Full mode runs verify + self-heal by default |
 | `git convoy adopt --require-verify` | 3–4 | Strict: refuse adopt when any publish workflow failed |
 | `git convoy adopt --no-verify` | 3–4 | Skip verify; local workflow heuristic only (Simple mode) |
 | `git convoy train publish` | 4 | Stable tags → registry; then mergeback into `develop` |
-| `git convoy train mergeback` | 4 | Retry merge of tagged `main` into `develop` |
+| `git convoy train mergeback` | 4 | Retry develop sync for all product repos (participants + non-participants) |
 | `git convoy adopt --production` | 4 | Stable pins + `production.enabled: true` |
 | `git convoy hotfix start NAME` | * | Branch or pick up `hotfix/<name>`; bump PATCH unless already bumped |
 | `git convoy hotfix commit` | * | Commit dirty hotfix participants |

@@ -193,6 +193,47 @@ def test_verify_failure_returns_full_report(workspace, monkeypatch) -> None:
     assert "schd" in text
 
 
+def test_verify_pending_shows_pending_not_failed(workspace, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State(current_train="2026-08-29")
+    train = Train(name="2026-08-29", branch="release/2026-08-29", status="stabilizing")
+    train.add_repo(
+        TrainRepo(id="schd", path="extensions/schd", rc_tag="v1.0.1-rc.1")
+    )
+    state.trains["2026-08-29"] = train
+    save(workspace, state)
+    monkeypatch.setattr("gitconvoy.ghutil.require_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(
+        "gitconvoy.train.tag_push_workflows",
+        lambda repo: ["publish-extension.yml"],
+    )
+    monkeypatch.setattr(
+        "gitconvoy.train.gitutil.github_slug",
+        lambda repo: "renglo/schd",
+    )
+    monkeypatch.setattr("gitconvoy.ghutil.tag_sha", lambda repo, tag: "abc1234")
+    monkeypatch.setattr(
+        "gitconvoy.ghutil.publish_runs_for_commit",
+        lambda slug, commit, workflow_files, cwd=None: [
+            {
+                "file": "publish-extension.yml",
+                "status": "pending",
+                "run_url": "https://github.com/renglo/schd/actions/runs/2",
+                "run": {"status": "in_progress"},
+            }
+        ],
+    )
+    data = train_cmd.verify(workspace, load(workspace))
+    assert data["ok"] is False
+    assert data["pending_count"] == 1
+    assert data["failed_count"] == 0
+    text = train_cmd.format_verify_text(data)
+    assert "pending (1):" in text
+    assert "failed (" not in text
+    assert "still running" in text
+    assert "Re-run with --wait" in text
+
+
 def test_verify_shows_succeeded_and_failed(workspace, monkeypatch) -> None:
     monkeypatch.chdir(workspace)
     api = workspace / "dev" / "renglo-api"

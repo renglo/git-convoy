@@ -451,13 +451,21 @@ def test_take_pins_tenant_wl_from_package_json(tmp_path: Path) -> None:
 def _fake_verify_result(repos: list[dict], *, train: str = "2026-W34") -> dict:
     verified = [row for row in repos if row.get("status") == "success"]
     skipped = [row for row in repos if row.get("status") == "skip"]
-    failed = [row for row in repos if row.get("status") not in {"success", "skip"}]
+    pending = [
+        row for row in repos if row.get("status") in {"pending", "missing"}
+    ]
+    failed = [
+        row
+        for row in repos
+        if row.get("status") not in {"success", "skip", "pending", "missing"}
+    ]
     return {
-        "ok": not failed,
+        "ok": not pending and not failed,
         "train": train,
         "tag_kind": "stable",
         "verified_count": len(verified),
         "skipped_count": len(skipped),
+        "pending_count": len(pending),
         "failed_count": len(failed),
         "repo_count": len(repos),
         "repos": repos,

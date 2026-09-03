@@ -47,6 +47,11 @@ class Repo:
     kind: str  # console | core | extension | ops
 
 
+def is_bom_repo_id(repo_id: str) -> bool:
+    """Tenant BOM repos (*-bom). Not feature participants — adopt/push deploys from main."""
+    return repo_id.endswith("-bom")
+
+
 def find_workspace(start: Path | None = None) -> Path:
     here = (start or Path.cwd()).resolve()
     for candidate in [here, *here.parents]:
@@ -102,11 +107,16 @@ def product_repos(workspace: Path) -> list[Repo]:
 
 
 def feature_repos(workspace: Path) -> list[Repo]:
-    """Product repos plus tenant ops (bootstrap, *-bom, *-wl). Excludes platform tooling."""
+    """Product repos plus tenant ops (bootstrap, *-wl). Excludes platform tooling and *-bom.
+
+    BOM changes belong on the adopt/hotfix-adopt path against main, not feature PRs —
+    merging *-bom to main triggers deploy workflows.
+    """
     return [
         repo
         for repo in discover_repos(workspace)
-        if repo.kind != "ops" or repo.id not in FEATURE_SKIP_OPS
+        if not is_bom_repo_id(repo.id)
+        and (repo.kind != "ops" or repo.id not in FEATURE_SKIP_OPS)
     ]
 
 

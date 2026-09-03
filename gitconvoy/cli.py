@@ -8,6 +8,7 @@ from gitconvoy import adopt as adopt_cmd
 from gitconvoy import commit as commit_cmd
 from gitconvoy import feature as feature_cmd
 from gitconvoy import hotfix as hotfix_cmd
+from gitconvoy import sync as sync_cmd
 from gitconvoy import train as train_cmd
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.initcmd import init
@@ -49,6 +50,8 @@ def _dispatch(workspace: Path, args: argparse.Namespace) -> tuple[dict, str]:
         return _adopt(workspace, state, args)
     if cmd == "hotfix":
         return _hotfix(workspace, state, args)
+    if cmd == "sync":
+        return _sync(workspace, args)
     raise GitConvoyError(f"unknown command: {cmd}")
 
 
@@ -143,7 +146,7 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
         return data, _cut_train_text(data)
     if sub == "tag-rc":
         data = train_cmd.tag_rc(workspace, state, push=not args.no_push)
-        return data, f"tagged rc for {data['train']}"
+        return data, _tag_rc_text(data)
     if sub == "publish":
         data = train_cmd.publish(workspace, state, push=not args.no_push)
         return data, _publish_text(data)
@@ -242,6 +245,23 @@ def _hotfix(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str
         )
         return data, _abandon_text(data)
     raise GitConvoyError(f"unknown hotfix command: {sub}")
+
+
+def _sync(workspace: Path, args: argparse.Namespace) -> tuple[dict, str]:
+    sub = args.sync_cmd
+    if sub == "develop":
+        repos = (
+            [item.strip() for item in args.repos.split(",") if item.strip()]
+            if args.repos
+            else None
+        )
+        data = sync_cmd.sync_product_repos(
+            workspace,
+            repo_ids=repos,
+            push=not args.no_push,
+        )
+        return data, sync_cmd.format_develop_sync_text(data, label="sync develop")
+    raise GitConvoyError(f"unknown sync command: {sub}")
 
 
 def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
@@ -593,6 +613,22 @@ def _parser() -> argparse.ArgumentParser:
     habandon.add_argument("name", nargs="?")
     habandon.add_argument("--yes", action="store_true")
     habandon.add_argument("--remote", action="store_true")
+
+    sync = sub.add_parser(
+        "sync",
+        help="Cross-repo git sync outside features and trains",
+    )
+    ssub = sync.add_subparsers(dest="sync_cmd", required=True)
+    develop = ssub.add_parser(
+        "develop",
+        help="Merge latest stable tag (or main) into develop for product repos",
+    )
+    develop.add_argument(
+        "--repos",
+        help="Comma-separated repo ids (default: all product repos)",
+    )
+    develop.add_argument("--no-push", action="store_true")
+
     return parser
 
 
@@ -673,6 +709,18 @@ def _close_text(data: dict) -> str:
         elif repo.get("on_origin"):
             bits.append(f"{feature_branch} still on origin")
         lines.append(f"  {repo['id']:20}  " + "; ".join(bits))
+    return "\n".join(lines)
+
+
+def _tag_rc_text(data: dict) -> str:
+    lines = [f"tagged rc for {data['train']}"]
+    sync = data.get("develop_sync") or {}
+    failed = sync.get("failed") or []
+    if failed:
+        lines.append("develop sync failed in: " + ", ".join(failed))
+        note = data.get("note") or sync.get("note")
+        if note:
+            lines.append(note)
     return "\n".join(lines)
 
 
@@ -881,6 +929,7 @@ def _adopt_text(data: dict, *, production: bool = False) -> str:
         lines.append(
             f"  verify: {verify.get('verified_count', 0)}/{verify.get('repo_count', 0)} "
             f"succeeded, {verify.get('skipped_count', 0)} skipped, "
+            f"{verify.get('pending_count', 0)} pending, "
             f"{verify.get('failed_count', 0)} fallback to git"
         )
     by_repo: dict[str, list[dict]] = {}

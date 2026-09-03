@@ -41,6 +41,17 @@ git convoy --json feature commit
 
 Do not guess membership by scanning dirty directories. The state file is `.gitconvoy/state.json` (gitignored).
 
+## Heal develop from main (no feature or train required)
+
+When `develop` is behind tagged `main` — repo not on the last train, new extension, post-hotfix drift:
+
+```bash
+git convoy --json sync develop
+git convoy --json sync develop --repos data,console
+```
+
+Merges latest stable tag (or `main`) into `develop` for every product repo. Same logic as the automatic step in `feature prs`, `train tag-rc`, and `train mergeback`. Re-run after resolving conflicts.
+
 ## After editing code
 
 Agents start on `develop`. After you change files:
@@ -51,7 +62,7 @@ git convoy --json feature adopt
 
 That creates `feature/<name>` only in repos that changed and resets local `develop` if you committed there. Do not commit feature work onto `develop`.
 
-If `feature/<name>` already exists (you created it, another checkout, or a previous start/adopt), `git convoy --json feature start NAME` checks those branches out and puts them on the sheet **only when they have work** (dirty files on the branch, or commits not in `develop`). Empty leftover branches stay off the sheet. Dirty work already on `feature/<name>` is kept. It still does not create the branch in untouched repos — that is `adopt`. `feature adopt` also drops empty `feature/<name>` participants already on the sheet.
+If `feature/<name>` already exists (you created it, another checkout, or a previous start/adopt), `git convoy --json feature start NAME` checks those branches out and puts them on the sheet **only when they have work** (dirty files on the branch, or commits not in `develop`). Empty leftover branches stay off the sheet. Dirty work already on `feature/<name>` is kept. It still does not create the branch in untouched repos — that is `adopt`. `feature adopt` also drops empty `feature/<name>` participants already on the sheet. Do **not** put `*-bom` on a feature sheet — BOM pins land via `git convoy adopt` / `hotfix adopt` on `main` (that push deploys).
 
 Then commit on the feature branch. `--json` without `--from` or `--header-only` prints a plan (never a prompt). Fill `header` and each repo `body`, send the same document back.
 
@@ -84,6 +95,8 @@ Refuses if any product repo is dirty. Run `git convoy --json feature commit` fir
 git convoy --json feature prs           # Full: opens PRs
 git convoy --json feature prs --no-gh   # Simple: compare URLs only
 ```
+
+Before opening PRs, merges each participant’s latest stable tag (or `main`) into `develop` so hotfixes and repos that sat out of the last train are absorbed. Conflicts block PR creation — resolve on `develop`, then re-run.
 
 Full mode — approve when CI is green (do not merge until every sibling is approved):
 
@@ -118,8 +131,8 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 ## Cycles (see README)
 
 - **1–2:** features and local release branches — git only (Full optional).
-- **3:** `train tag-rc` (push) → `train verify` (Full) or manual Actions → `adopt` → push BOM (staging).
-- **4:** `train publish` (merge to `main`, tag, then `train mergeback` into `develop`) → `train verify` (Full) or manual Actions → `adopt --production` → push BOM.
+- **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `adopt` → push BOM (staging).
+- **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `adopt --production` → push BOM.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.
 - **Hotfix** (parallel, not a fifth cycle): production PATCH without a new train. May touch several repos. PRs into `main`. Publish merges tagged `main` into `develop` and absorbs local `feature/*`.
 
@@ -143,6 +156,7 @@ git convoy --json hotfix adopt --bom ops/<system>-bom
 ## What not to do
 
 - Do not create `feature/<name>` in every repo.
+- Do not put `*-bom` on a feature branch or feature PR; deploy only via adopt on `main`.
 - Do not abandon a feature unless the user wants that work discarded.
 - Do not merge PRs through git-convoy (approve is OK in Full mode).
 - Do not query CodeArtifact or invent unpublished pins.

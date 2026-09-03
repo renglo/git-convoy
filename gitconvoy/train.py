@@ -6,6 +6,7 @@ from pathlib import Path
 
 from gitconvoy import ghutil
 from gitconvoy import gitutil, versions
+from gitconvoy.sync import DevelopSyncEntry, format_develop_sync_text, sync_repos_develop
 from gitconvoy.workflows import repo_publishes_on_tag, tag_push_workflows
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo, save
@@ -120,6 +121,12 @@ def cut(
 
 def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
     train = state.require_train()
+    develop_sync = _sync_train_develop(
+        workspace,
+        train,
+        push=push,
+        retry_hint="git convoy train tag-rc",
+    )
     tagged: list[dict] = []
     for repo_row in _ordered(train):
         repo_path = workspace / repo_row.path
@@ -129,6 +136,14 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
         if not current:
             raise GitConvoyError(f"{repo_row.id}: no version file")
         pep, npm = _ensure_rc(current)
+        tag = f"v{_tag_body(pep)}"
+        # Re-running tag-rc after more commits on release/<name> must mint a
+        # new rc. If HEAD still matches the existing tag, keep it (idempotent).
+        existing = gitutil.rev_parse(repo_path, f"refs/tags/{tag}")
+        head = gitutil.rev_parse(repo_path, "HEAD")
+        if existing and head and existing != head:
+            pep, npm = versions.next_rc(pep)
+            tag = f"v{_tag_body(pep)}"
         if pep != current or info.get("npm") not in {None, npm}:
             versions.write_version(repo_path, pep, npm)
             gitutil.run(repo_path, "add", "-A")
@@ -139,7 +154,6 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
                 f"Set {pep} for train {train.name}",
                 check=False,
             )
-        tag = f"v{_tag_body(pep)}"
         if not gitutil.rev_parse(repo_path, f"refs/tags/{tag}"):
             gitutil.run(repo_path, "tag", tag)
         if push:
@@ -150,69 +164,15 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
         tagged.append({"id": repo_row.id, "tag": tag, "version": pep})
     train.status = "stabilizing"
     save(workspace, state)
-    return {"ok": True, "train": train.name, "repos": tagged}
-
-
-def _sync_develop_from_main(
-    repo_path: Path, *, repo_id: str, push: bool, ref: str = "main"
-) -> dict:
-    """Merge tagged main (or a stable tag) into develop.
-
-    Repos with no develop branch are skipped. On merge conflict the merge is
-    aborted so the repo is not left mid-merge. Callers catch failures so the
-    rest of the set can still sync.
-    """
-    has_develop = gitutil.has_local_branch(
-        repo_path, "develop"
-    ) or gitutil.has_remote_branch(repo_path, "develop")
-    if not has_develop:
-        return {"status": "skipped", "synced": False}
-    gitutil.fetch(repo_path)
-    gitutil.checkout_branch(repo_path, "main")
-    if gitutil.rev_parse(repo_path, "origin/main"):
-        pulled = gitutil.run(
-            repo_path, "pull", "--ff-only", "origin", "main", check=False
-        )
-        if pulled.returncode != 0:
-            raise GitConvoyError(
-                f"{repo_id}: cannot fast-forward main from origin; "
-                "fix main, then git convoy train mergeback"
-            )
-    merge_ref = ref
-    if merge_ref != "main" and not gitutil.rev_parse(repo_path, merge_ref):
-        raise GitConvoyError(
-            f"{repo_id}: missing {merge_ref}; fetch tags, then git convoy train mergeback"
-        )
-    gitutil.checkout_branch(repo_path, "develop")
-    if gitutil.rev_parse(repo_path, "origin/develop"):
-        pulled = gitutil.run(
-            repo_path, "pull", "--ff-only", "origin", "develop", check=False
-        )
-        if pulled.returncode != 0:
-            raise GitConvoyError(
-                f"{repo_id}: cannot fast-forward develop from origin; "
-                "reconcile develop, then git convoy train mergeback"
-            )
-    if gitutil.is_dirty(repo_path):
-        raise GitConvoyError(
-            f"{repo_id} develop is dirty; commit or stash, then git convoy train mergeback"
-        )
-    already = gitutil.is_ancestor(repo_path, merge_ref, "develop")
-    if not already:
-        merged = gitutil.merge(repo_path, merge_ref)
-        if merged.returncode != 0:
-            gitutil.run(repo_path, "merge", "--abort", check=False)
-            raise GitConvoyError(
-                f"{repo_id}: merge {merge_ref} into develop failed "
-                "(merge aborted, repo left clean). "
-                "resolve on develop, then git convoy train mergeback"
-            )
-        status = "merged"
-    else:
-        status = "already"
-    if push:
-        gitutil.push(repo_path, "origin", "develop")
-    return {"status": status, "synced": True}
+    result = {
+        "ok": develop_sync["ok"],
+        "train": train.name,
+        "repos": tagged,
+        "develop_sync": develop_sync,
+    }
+    if not develop_sync["ok"]:
+        result["note"] = develop_sync.get("note")
+    return result
 
 
 def mergeback(
@@ -221,10 +181,11 @@ def mergeback(
     name: str | None = None,
     push: bool = True,
 ) -> dict:
-    """Merge each published participant's tagged main into develop.
+    """Merge tagged main into develop for every product repo.
 
-    Idempotent. Safe to re-run after a partial publish or a conflict. Continues
-    past per-repo failures so as many repos as possible get unstuck.
+    Train participants use the stable tag from the sheet; other repos use their
+    latest stable tag (or main). Idempotent. Safe to re-run after a partial
+    publish or a conflict. Continues past per-repo failures.
     """
     train = state.require_train(name)
     if train.status != "published":
@@ -232,36 +193,14 @@ def mergeback(
             f"train {train.name} is {train.status}; "
             "mergeback runs after train publish"
         )
-    rows: list[dict] = []
-    failed: list[str] = []
-    for repo_row in _ordered(train):
-        repo_path = workspace / repo_row.path
-        item: dict = {
-            "id": repo_row.id,
-            "path": repo_row.path,
-            "status": "failed",
-            "synced": False,
-        }
-        try:
-            result = _sync_develop_from_main(
-                repo_path,
-                repo_id=repo_row.id,
-                push=push,
-                ref=repo_row.stable_tag or "main",
-            )
-            item["status"] = result["status"]
-            item["synced"] = result["synced"]
-        except GitConvoyError as exc:
-            item["error"] = exc.message
-            failed.append(repo_row.id)
-        rows.append(item)
-    data: dict = {
-        "ok": not failed,
-        "train": train.name,
-        "repos": rows,
-        "failed": failed,
-    }
-    if failed:
+    data = _sync_all_product_develop(
+        workspace,
+        train,
+        push=push,
+        retry_hint="git convoy train mergeback",
+    )
+    data["train"] = train.name
+    if data.get("failed"):
         data["note"] = (
             "stable tags are on main; "
             "fix the failed repos, then: git convoy train mergeback"
@@ -270,23 +209,7 @@ def mergeback(
 
 
 def format_mergeback_text(data: dict) -> str:
-    failed = data.get("failed") or []
-    counts: dict[str, int] = {}
-    for row in data.get("repos") or []:
-        status = row.get("status") or "failed"
-        counts[status] = counts.get(status, 0) + 1
-    summary = ", ".join(
-        f"{counts[key]} {key}"
-        for key in ("merged", "already", "skipped", "failed")
-        if counts.get(key)
-    ) or "nothing to do"
-    lines = [f"mergeback {data['train']}: {summary}"]
-    for row in data.get("repos") or []:
-        extra = f"  {row['error']}" if row.get("error") else ""
-        lines.append(f"  {row['id']:20} {row['status']}{extra}")
-    if failed:
-        lines.append(data.get("note") or "re-run: git convoy train mergeback")
-    return "\n".join(lines)
+    return format_develop_sync_text(data, label=f"mergeback {data['train']}")
 
 
 def publish(workspace: Path, state: State, push: bool = True) -> dict:
@@ -434,24 +357,34 @@ def verify(
 
     verified = [row for row in rows if row.get("status") == "success"]
     skipped = [row for row in rows if row.get("status") == "skip"]
-    failed = [row for row in rows if row.get("status") not in {"success", "skip"}]
+    pending = [
+        row for row in rows if row.get("status") in {"pending", "missing"}
+    ]
+    failed = [
+        row
+        for row in rows
+        if row.get("status") not in {"success", "skip", "pending", "missing"}
+    ]
+    incomplete = pending + failed
     payload = {
-        "ok": not failed,
+        "ok": not incomplete,
         "train": train.name,
         "status": train.status,
         "tag_kind": "stable" if use_stable else "rc",
         "verified_count": len(verified),
         "skipped_count": len(skipped),
+        "pending_count": len(pending),
         "failed_count": len(failed),
         "repo_count": len(rows),
         "repos": rows,
     }
+    notes: list[str] = []
+    if pending and not wait:
+        notes.append("Re-run with --wait to poll for in-progress workflows.")
     if failed:
-        payload["note"] = (
-            " Re-run with --wait to poll for in-progress workflows."
-            if not wait
-            else ""
-        )
+        notes.append("Fix failed publish workflows, then re-run train verify.")
+    if notes:
+        payload["note"] = " ".join(notes)
     return payload
 
 
@@ -463,19 +396,17 @@ def format_verify_text(data: dict) -> str:
     groups = [
         ("succeeded", "success"),
         ("skipped", "skip"),
-        ("failed", None),
+        ("pending", "pending"),
+        ("waiting", "missing"),
+        ("failed", "failure"),
     ]
+    shown: set[str] = set()
     for label, status in groups:
-        if status is None:
-            bucket = [
-                row
-                for row in data.get("repos") or []
-                if row.get("status") not in {"success", "skip"}
-            ]
-        else:
-            bucket = [
-                row for row in data.get("repos") or [] if row.get("status") == status
-            ]
+        bucket = [
+            row for row in data.get("repos") or [] if row.get("status") == status
+        ]
+        for row in bucket:
+            shown.add(row["id"])
         if not bucket:
             continue
         lines.append(f"{label} ({len(bucket)}):")
@@ -490,6 +421,21 @@ def format_verify_text(data: dict) -> str:
             if detail and repo.get("status") != "success":
                 lines.append(f"    {detail}")
             elif detail and repo.get("status") == "success" and url == "":
+                lines.append(f"    {detail}")
+    other = [
+        row
+        for row in data.get("repos") or []
+        if row.get("id") not in shown
+        and row.get("status") not in {"success", "skip"}
+    ]
+    if other:
+        lines.append(f"unknown ({len(other)}):")
+        for repo in other:
+            wf = ", ".join(repo.get("workflows") or []) or "-"
+            tag = repo.get("tag") or "-"
+            lines.append(f"  {repo['id']:20} {tag:16} [{wf}]")
+            detail = repo.get("detail")
+            if detail:
                 lines.append(f"    {detail}")
     note = (data.get("note") or "").strip()
     if note:
@@ -645,6 +591,56 @@ def _ordered(train: Train) -> list[TrainRepo]:
     order = merge_sort([repo.id for repo in train.repos])
     by_id = {repo.id: repo for repo in train.repos}
     return [by_id[name] for name in order]
+
+
+def _sync_train_develop(
+    workspace: Path,
+    train: Train,
+    *,
+    push: bool,
+    retry_hint: str,
+) -> dict:
+    entries = [
+        DevelopSyncEntry(
+            id=repo_row.id,
+            rel=repo_row.path,
+            ref=repo_row.stable_tag,
+        )
+        for repo_row in _ordered(train)
+    ]
+    return sync_repos_develop(
+        workspace, entries, push=push, retry_hint=retry_hint
+    )
+
+
+def _sync_all_product_develop(
+    workspace: Path,
+    train: Train,
+    *,
+    push: bool,
+    retry_hint: str,
+) -> dict:
+    participant_refs = {
+        repo_row.id: repo_row.stable_tag for repo_row in train.repos
+    }
+    entries: list[DevelopSyncEntry] = []
+    seen: set[str] = set()
+    for repo_row in _ordered(train):
+        entries.append(
+            DevelopSyncEntry(
+                id=repo_row.id,
+                rel=repo_row.path,
+                ref=participant_refs.get(repo_row.id),
+            )
+        )
+        seen.add(repo_row.id)
+    for repo in sorted(product_repos(workspace), key=lambda row: row.id):
+        if repo.id in seen:
+            continue
+        entries.append(DevelopSyncEntry(id=repo.id, rel=repo.rel))
+    return sync_repos_develop(
+        workspace, entries, push=push, retry_hint=retry_hint
+    )
 
 
 def _delete_targets(workspace: Path, train: Train) -> list[Repo]:

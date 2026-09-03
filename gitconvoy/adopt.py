@@ -637,6 +637,7 @@ def _adopt_verify_context(
         "ran": True,
         "verified_count": result.get("verified_count", 0),
         "skipped_count": result.get("skipped_count", 0),
+        "pending_count": result.get("pending_count", 0),
         "failed_count": result.get("failed_count", 0),
         "repo_count": result.get("repo_count", 0),
     }
@@ -655,6 +656,8 @@ def _resolve_pin_strategy(
     if status == "success":
         return True, "registry"
     if status == "skip":
+        return _heuristic_pin_strategy(repo, workspace)
+    if status in {"pending", "missing"}:
         return _heuristic_pin_strategy(repo, workspace)
     return False, "fallback"
 
