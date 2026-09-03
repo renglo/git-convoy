@@ -30,6 +30,7 @@ MERGE_RANK = {
 # Platform tooling under ops/ — discovered by init but not part of feature sheets.
 FEATURE_SKIP_OPS = frozenset(
     {
+        "bom-helper",
         "extensions-service",
         "git-convoy",
         "gitconvoy",
