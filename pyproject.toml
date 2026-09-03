@@ -7,6 +7,7 @@ name = "git-convoy"
 version = "0.1.0"
 description = "Keep a convoy of git repositories together through features, release trains, and BOM adoption"
 readme = "README.md"
+license = { file = "LICENSE.txt" }
 requires-python = ">=3.12"
 authors = [{ name = "Renglo Team" }]
 dependencies = []
