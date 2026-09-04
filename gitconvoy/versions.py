@@ -114,6 +114,29 @@ def read_npm_package_name(repo: Path) -> str | None:
     return None
 
 
+def read_python_package_name(repo: Path) -> str | None:
+    """[project] name from pyproject.toml (root or package/). None if missing."""
+    for candidate in (repo / "pyproject.toml", repo / "package" / "pyproject.toml"):
+        if not candidate.is_file():
+            continue
+        try:
+            text = candidate.read_text()
+        except OSError:
+            return None
+        header = re.search(r"(?m)^\[project\]\s*$", text)
+        if not header:
+            return None
+        rest = text[header.end() :]
+        next_section = re.search(r"(?m)^\[", rest)
+        section = rest[: next_section.start()] if next_section else rest
+        match = re.search(r'(?m)^name\s*=\s*["\']([^"\']+)["\']', section)
+        if match:
+            name = match.group(1).strip()
+            return name or None
+        return None
+    return None
+
+
 def write_version(repo: Path, pep: str, npm: str) -> list[str]:
     changed: list[str] = []
     info = read_version(repo)

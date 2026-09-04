@@ -726,7 +726,7 @@ def _hotfix_package_targets(repo: TrainRepo, workspace: Path) -> list[tuple[str,
     info = versions.read_version(workspace / repo.path)
     targets: list[tuple[str, str]] = []
     if info.get("python"):
-        names = _python_package_names(repo.id)
+        names = _python_package_names(repo, workspace)
         if names:
             targets.append(("python", names[0]))
     if info.get("npm"):

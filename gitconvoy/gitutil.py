@@ -193,18 +193,24 @@ def last_stable_tag(repo: Path) -> str | None:
 
 
 def develop_ahead_of_stable(repo: Path) -> bool:
+    """True when the integration tip (develop, else main) should ride the next train.
+
+    Repos without a ``develop`` branch (e.g. white-label packs that integrate on
+    ``main``) are compared from ``main``, matching ``integration_branch``.
+    """
     fetch(repo)
-    develop = rev_parse(repo, "origin/develop") or rev_parse(repo, "develop")
-    if not develop:
+    tip_name = integration_branch(repo)
+    tip = rev_parse(repo, f"origin/{tip_name}") or rev_parse(repo, tip_name)
+    if not tip:
         return False
     tag = last_stable_tag(repo)
     if not tag:
         return True
     if not rev_parse(repo, tag):
         return True
-    return ahead_of(repo, develop, tag) or (
-        capture(repo, "rev-parse", develop) != capture(repo, "rev-parse", tag)
-        and is_ancestor(repo, tag, develop)
+    return ahead_of(repo, tip, tag) or (
+        capture(repo, "rev-parse", tip) != capture(repo, "rev-parse", tag)
+        and is_ancestor(repo, tag, tip)
     )
 
 
@@ -215,14 +221,31 @@ def origin_url(repo: Path) -> str | None:
 
 
 def github_slug(repo: Path) -> str | None:
+    """Return ``owner/repo`` for a GitHub origin URL.
+
+    Accepts ``https://github.com/...``, ``git@github.com:...``, and SSH config
+    aliases such as ``git@github-arbitium:Owner/repo.git`` (HostName github.com).
+    """
     url = origin_url(repo)
     if not url:
         return None
     url = url.rstrip("/")
     if url.endswith(".git"):
         url = url[:-4]
-    if url.startswith("git@github.com:"):
-        return url[len("git@github.com:") :]
+    if url.startswith("git@"):
+        # git@host:owner/repo — host may be github.com or an SSH alias.
+        _, _, path = url.partition(":")
+        if path and "/" in path and "://" not in path:
+            return path.lstrip("/")
+    if url.startswith("ssh://"):
+        # ssh://git@github.com/owner/repo
+        rest = url[len("ssh://") :]
+        if "@" in rest:
+            rest = rest.split("@", 1)[1]
+        if "/" in rest:
+            host, _, path = rest.partition("/")
+            if path and ("github.com" in host or host.startswith("github")):
+                return path
     if "github.com/" in url:
         return url.split("github.com/", 1)[1]
     return None
@@ -274,7 +297,11 @@ def pr_number(url: str | None) -> int | None:
 
 
 def pr_merge_status(repo: Path, branch: str, pr_url: str | None = None) -> str:
-    """Return merged | pending | uncommitted | closed | unknown for a participant PR/branch."""
+    """Return merged | pending | committed | uncommitted | closed | unknown for a participant.
+
+    ``pending`` means an open PR is waiting (via ``gh``, or a PR URL on the sheet).
+    ``committed`` means the feature branch has commits not in develop and no PR yet.
+    """
     gh = gh_bin()
     slug = github_slug(repo)
     number = pr_number(pr_url)
@@ -311,7 +338,10 @@ def pr_merge_status(repo: Path, branch: str, pr_url: str | None = None) -> str:
     if branch_merged_into(repo, branch):
         return "merged"
     if has_local_branch(repo, branch) or has_remote_branch(repo, branch):
-        return "pending"
+        # Sheet already has a PR URL but gh could not confirm state → treat as in review.
+        if pr_url:
+            return "pending"
+        return "committed"
     return "unknown"
 
 

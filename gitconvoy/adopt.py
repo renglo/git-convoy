@@ -513,12 +513,25 @@ def _invented_npm_name(repo_id: str) -> str:
     return f"@renglo/{short}"
 
 
-def _python_package_names(repo_id: str) -> list[str]:
+def _invented_python_name(repo_id: str) -> str | None:
     if repo_id == "console":
-        return []
+        return None
     short = repo_id.removeprefix("renglo-")
-    name = repo_id if repo_id.startswith("renglo-") else f"renglo-{short}"
-    return [name]
+    return repo_id if repo_id.startswith("renglo-") else f"renglo-{short}"
+
+
+def _python_package_names(repo: TrainRepo, workspace: Path) -> list[str]:
+    """Prefer [project] name from pyproject; keep invented as legacy BOM fallback."""
+    if repo.id == "console":
+        return []
+    invented = _invented_python_name(repo.id)
+    actual = versions.read_python_package_name(workspace / repo.path)
+    names: list[str] = []
+    if actual:
+        names.append(actual)
+    if invented and invented not in names:
+        names.append(invented)
+    return names
 
 
 def _npm_package_names(repo: TrainRepo, workspace: Path) -> list[str]:
@@ -541,7 +554,7 @@ def _package_targets(
     registry = repo_registry_ready(repo_root, repo.id)
     if registry is False or (repo.id == "console" and registry is not True):
         return []
-    python_names = _python_package_names(repo.id)
+    python_names = _python_package_names(repo, workspace)
     npm_names = _npm_package_names(repo, workspace)
     existing: list[tuple[str, str]] = []
     for name in python_names:
@@ -571,7 +584,7 @@ def _candidate_package_pins(
     workspace: Path,
 ) -> list[tuple[str, str]]:
     pins: list[tuple[str, str]] = []
-    for name in _python_package_names(repo.id):
+    for name in _python_package_names(repo, workspace):
         pins.append(("python", name))
     for name in _npm_package_names(repo, workspace):
         pins.append(("npm", name))

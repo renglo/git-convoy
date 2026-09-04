@@ -299,6 +299,7 @@ def test_show_reports_merged(workspace: Path, monkeypatch) -> None:
     assert data["repos"][0]["merge_status"] == "merged"
     assert data["status"] == "merged"
     assert data["merged_count"] == 1
+    assert "feature close" in (data.get("note") or "")
 
 
 def test_show_reports_pending(workspace: Path, monkeypatch) -> None:
@@ -307,6 +308,24 @@ def test_show_reports_pending(workspace: Path, monkeypatch) -> None:
     assert data["repos"][0]["merge_status"] == "pending"
     assert data["status"] == "in-review"
     assert data["merged_count"] == 0
+    assert "PRs open" in (data.get("note") or "")
+
+
+def test_show_reports_committed_after_commit(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    save(workspace, State())
+    assert main(["--json", "init"]) == 0
+    assert main(["--json", "feature", "start", "blast-radius"]) == 0
+    schd = workspace / "extensions" / "schd"
+    (schd / "handler.py").write_text("print('x')\n")
+    assert main(["--json", "feature", "adopt"]) == 0
+    gitutil.run(schd, "add", "-A")
+    gitutil.run(schd, "commit", "-m", "feat")
+    data = feature_cmd.show(workspace, load(workspace))
+    assert data["repos"][0]["merge_status"] == "committed"
+    assert data["status"] == "in-progress"
+    assert data["merged_count"] == 0
+    assert "feature prs" in (data.get("note") or "")
 
 
 def test_show_reports_uncommitted_when_dirty_and_undiverged(
@@ -327,6 +346,7 @@ def test_show_reports_uncommitted_when_dirty_and_undiverged(
     assert data["status"] == "in-progress"
     assert data["merged_count"] == 0
     assert load(workspace).features["blast-radius"].status == "in-progress"
+    assert "feature commit" in (data.get("note") or "")
 
 
 def test_close_requires_all_merged(workspace: Path, monkeypatch, capsys) -> None:

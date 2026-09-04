@@ -509,16 +509,30 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
         )
     feature.status = "in-review"
     save(workspace, state)
+    opened_prs = sum(1 for row in opened if row.get("pr"))
+    note = (
+        "Merged latest stable/main into develop before opening PRs. "
+        "Approve with: git convoy feature approve (Full mode). Merge only when all "
+        "sibling PRs are approved, in merge_order. git-convoy does not merge."
+    )
+    if use_gh and opened and opened_prs == 0:
+        note += (
+            " No PRs were opened via gh (check `gh auth status`); "
+            "compare URLs below open the PR form in the browser."
+        )
+    missing = [row["id"] for row in opened if not row.get("pr") and not row.get("compare")]
+    if missing:
+        note += (
+            " No GitHub URL for: "
+            + ", ".join(missing)
+            + " (origin remote not recognized as GitHub)."
+        )
     return {
         "ok": True,
         "feature": feature.name,
         "merge_order": merge_sort(feature.repo_ids()),
         "develop_sync": develop_sync,
-        "note": (
-            "Merged latest stable/main into develop before opening PRs. "
-            "Approve with: git convoy feature approve (Full mode). Merge only when all "
-            "sibling PRs are approved, in merge_order. git-convoy does not merge."
-        ),
+        "note": note,
         "repos": opened,
     }
 
@@ -672,7 +686,38 @@ def show(workspace: Path, state: State, name: str | None = None) -> dict:
         "merged_count": merged_count,
         "repos": rows,
         "merge_order": merge_sort(feature.repo_ids()),
+        "note": _show_next_steps(rows),
     }
+
+
+def _show_next_steps(rows: list[dict]) -> str:
+    """Human caption for what to do next after ``feature show``."""
+    if not rows:
+        return "No participants yet. Run: git convoy feature adopt"
+    statuses = {row["merge_status"] for row in rows}
+    if statuses <= {"merged"}:
+        return "All participants merged. Run: git convoy feature close"
+    if "uncommitted" in statuses:
+        return (
+            "Uncommitted changes on one or more participants. "
+            "Run: git convoy feature commit"
+        )
+    if "committed" in statuses and "pending" not in statuses:
+        return (
+            "Changes committed. Run: git convoy feature prs to open pull requests "
+            "for these changes."
+        )
+    if "pending" in statuses:
+        return (
+            "PRs open (or recorded). Approve with: git convoy feature approve "
+            "(Full mode), then merge in GitHub when every sibling is approved."
+        )
+    if "closed" in statuses:
+        return (
+            "One or more PRs were closed without merging. "
+            "Re-open or run: git convoy feature prs"
+        )
+    return ""
 
 
 def _merge_rows(workspace: Path, feature: Feature) -> list[dict]:

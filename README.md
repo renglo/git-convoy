@@ -205,15 +205,6 @@ For each feature repo that is dirty, has local commits on its integration branch
 
 Empty `feature/<name>` branches (no unique commits, clean tree) are not added. If they were already on the sheet, `adopt` drops them and checks out `develop`. Repos you did not touch are left alone.
 
-To throw away a test or abandoned feature (**deletes the branch and that work**):
-
-```bash
-git convoy feature abandon
-git convoy feature abandon blast-radius --yes
-```
-
-Checks out `develop` and deletes local `feature/<name>`. Does not touch origin unless you pass `--remote`. `--json` requires `--yes`.
-
 ### 4. Commit
 
 Dirty work stays uncommitted until you say so. `feature prs` does not commit.
@@ -235,46 +226,16 @@ git convoy --json feature commit --header "feat: …" --header-only
 
 `--header` alone still prints a plan (header prefilled). `--diff` adds patches to the plan. Only participant repos on `feature/<name>` are committed (`git add -A`). Dirty product repos not on the sheet: run `feature adopt` first.
 
-### 5. Push the feature branch (no PRs)
-
-End of day, or anytime you want the commits on GitHub without asking for review:
-
-```bash
-git convoy feature push
-```
-
-Pushes `feature/<name>` to `origin` for every participant. Does **not** open PRs. Uncommitted files stay local (commit first if you need them on the remote). `feature prs` also pushes; use `push` when the feature is not ready.
-
-### 6. Switch to another feature
-
-Commit or stash first. Then:
-
-```bash
-git convoy feature switch payload
-```
-
-Checks out `feature/payload` in that feature’s repos and `develop` everywhere else. Refuses if any product repo is dirty.
-
-Come back with `git convoy feature switch blast-radius`.
-
-### 7. Refresh from `develop`
-
-```bash
-git convoy feature refresh
-```
-
-Merges `origin/develop` into each participant. Stops if a conflict appears; you resolve it, then run refresh again.
-
-### 8. Open PRs
+### 5. Open PRs
 
 ```bash
 git convoy feature prs          # Full: opens PRs via gh
 git convoy feature prs --no-gh  # Simple: compare URLs only
 ```
 
-Pushes each participant branch (same as `feature push`). **Before opening PRs**, merges each participant’s latest stable tag (or `main`) into `develop` so hotfix tags and repos that sat out of the last train are absorbed — conflicts surface here, not on the train. With **Full** mode (`gh` logged in, no `--no-gh`), opens PRs onto `develop` and stores the URLs. In **Simple** mode, prints compare links for you to open in the browser.
+Pushes each participant branch (same as `feature push` in the [annex](#annex--optional-cycle-1-commands)). **Before opening PRs**, merges each participant’s latest stable tag (or `main`) into `develop` so hotfix tags and repos that sat out of the last train are absorbed — conflicts surface here, not on the train. With **Full** mode (`gh` logged in, no `--no-gh`), opens PRs onto `develop` and stores the URLs. In **Simple** mode, prints compare links for you to open in the browser.
 
-### 8b. Approve PRs (Full mode)
+### 6. Approve PRs (Full mode)
 
 When every sibling PR is ready and CI is green, approve the whole set from the terminal:
 
@@ -290,9 +251,9 @@ In **Simple** mode, approve in the GitHub UI instead.
 git convoy feature show
 ```
 
-Each participant shows `pending`, `uncommitted`, or `merged`. `uncommitted` means the feature branch has local changes that are not commits — the tip may still equal `develop`, so git would otherwise look merged. When every participant is merged, status becomes `merged` (`N/N merged` in the header). **Full** mode uses `gh` (works with squash merges). **Simple** mode checks whether the feature branch tip is contained in `develop`, and only after the tree is clean.
+Each participant shows `committed`, `pending`, `uncommitted`, or `merged`. `committed` means the feature branch has commits not yet in `develop` and no PR yet — next step is usually `feature prs`. `uncommitted` means the feature branch has local changes that are not commits — the tip may still equal `develop`, so git would otherwise look merged. `pending` means a PR is open (or recorded on the sheet). When every participant is merged, status becomes `merged` (`N/N merged` in the header). **Full** mode uses `gh` (works with squash merges). **Simple** mode checks whether the feature branch tip is contained in `develop`, and only after the tree is clean.
 
-### 9. Close the feature
+### 7. Close the feature
 
 After every PR is merged:
 
@@ -301,11 +262,56 @@ git convoy feature close
 git convoy feature close console-whitelabel-v1 --yes
 ```
 
-Checks out `develop`, pulls `origin/develop`, deletes local `feature/<name>`, and removes the feature sheet. Refuses if any participant is still `pending` or `uncommitted`. Pass `--remote` to delete `origin/feature/<name>` too. `--keep-branch` leaves local feature branches in place. `--json` requires `--yes`.
+Checks out `develop`, pulls `origin/develop`, deletes local `feature/<name>`, and removes the feature sheet. Refuses if any participant is still `committed`, `pending`, or `uncommitted`. Pass `--remote` to delete `origin/feature/<name>` too. `--keep-branch` leaves local feature branches in place. `--json` requires `--yes`.
 
-To throw away unmerged work instead, use `feature abandon` (lossy).
+To throw away unmerged work instead, see [`feature abandon`](#abandon-lossy) in the annex (lossy).
 
 When those PRs merge, the feature is on `develop`. Cycle 2 turns that `develop` into release branches.
+
+### Annex — Optional Cycle 1 commands
+
+These are useful but not on the golden path. Skip them until you need them.
+
+#### Push the feature branch (no PRs)
+
+End of day, or anytime you want the commits on GitHub without asking for review:
+
+```bash
+git convoy feature push
+```
+
+Pushes `feature/<name>` to `origin` for every participant. Does **not** open PRs. Uncommitted files stay local (commit first if you need them on the remote). `feature prs` also pushes; use `push` when the feature is not ready.
+
+#### Switch to another feature
+
+Commit or stash first. Then:
+
+```bash
+git convoy feature switch payload
+```
+
+Checks out `feature/payload` in that feature’s repos and `develop` everywhere else. Refuses if any product repo is dirty.
+
+Come back with `git convoy feature switch blast-radius`.
+
+#### Refresh from `develop`
+
+```bash
+git convoy feature refresh
+```
+
+Merges `origin/develop` into each participant. Stops if a conflict appears; you resolve it, then run refresh again.
+
+#### Abandon (lossy)
+
+To throw away a test or abandoned feature (**deletes the branch and that work**):
+
+```bash
+git convoy feature abandon
+git convoy feature abandon blast-radius --yes
+```
+
+Checks out `develop` and deletes local `feature/<name>`. Does not touch origin unless you pass `--remote`. `--json` requires `--yes`.
 
 ---
 
@@ -341,7 +347,7 @@ Nothing on `develop` for `schd` (Z has not merged). That repo sits this train ou
 git convoy train cut 2026-W34
 ```
 
-For each product repo ahead of its last stable tag, creates `release/2026-W34`, bumps one **patch** (override with `--bump minor|major` or `--no-bump`), and writes rc versions (`1.2.4rc1` / `1.2.4-rc.1`). Repos without `pyproject.toml` or `package.json` are skipped automatically.
+For each product repo whose integration branch (`develop`, or `main` when there is no `develop`) is ahead of its last stable tag, creates `release/2026-W34`, bumps one **patch** (override with `--bump minor|major` or `--no-bump`), and writes rc versions (`1.2.4rc1` / `1.2.4-rc.1`). Repos without `pyproject.toml` or `package.json` are skipped automatically.
 
 ```bash
 git convoy train cut 2026-W34 --repos renglo-lib,breakdown
@@ -398,25 +404,40 @@ Deploy the publisher CDK stack once in the publisher AWS account:
 ```bash
 cd ops/publisher/cdk
 # Edit publisher-config.json — see below
-cdk deploy renglo-publisher --app "python app.py" --profile <aws-profile>
+cdk deploy <publisher-name>-publisher --app "python app.py" --profile <aws-profile>
 ```
 
 In `ops/publisher/cdk/publisher-config.json`:
 
-- **`github_publish_repos`** — list every GitHub repo **by short name** that may publish when a tag is pushed (e.g. `claw`, `pes`, `console`, `stanley-wl`). Add a new name here whenever a new package repo joins the train, then **redeploy** the stack. Do not use `["*"]` unless you intentionally trust the whole org.
+- **`publisher_name`** — short id for this registry (e.g. `arbitium`). Drives stack name `<publisher-name>-publisher` and role `GitHubActionsPublishRole-<publisher-name>`.
+- **`github_org`** — GitHub org **exactly as shown in URLs** (OIDC is case-sensitive: `Arbitium`, not `arbitium`).
+- **`github_publish_repos`** — list every GitHub repo **by short name** that may publish when a tag is pushed (e.g. `claw`, `pes`, `console`, `stanley-wl`). Add a new name here whenever a new package repo joins the train, then **redeploy** the stack. Do not use `["*"]` unless you intentionally trust the whole org. The stack trusts both classic (`repo:org/name`) and GitHub's immutable (`repo:org@id/name@id`) OIDC subjects.
 - **`reader_aws_accounts`** — AWS account IDs allowed to **read** from CodeArtifact (your tenant deploy account).
 
-Verify the live OIDC trust (repo names must match):
+**Verify the stack is configured** (there is no `git convoy` command for this — use AWS; substitute your `publisher_name`):
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name <publisher-name>-publisher \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --query 'Stacks[0].{Status:StackStatus,Outputs:Outputs}' \
+  --output json
+```
+
+Expect `CREATE_COMPLETE` or `UPDATE_COMPLETE`, and outputs such as `OidcPublishRoleArn`. If the stack is missing, deploy it first. `UPDATE_ROLLBACK_COMPLETE` means the last deploy failed — fix config and redeploy.
+
+Then verify the live OIDC trust (org casing must match GitHub; immutable subjects need the `@*` patterns):
 
 ```bash
 aws iam get-role \
-  --role-name GitHubActionsPublishRole-renglo \
+  --role-name GitHubActionsPublishRole-<publisher-name> \
   --profile <aws-profile> \
   --query 'Role.AssumeRolePolicyDocument' \
   --output json
 ```
 
-Look for `repo:renglo/<name>:*` entries under `token.actions.githubusercontent.com:sub`.
+Look for both `repo:<github_org>/*:*` and `repo:<github_org>@*/*:*` under `token.actions.githubusercontent.com:sub`.
 
 ### B. Each train participant repo (GitHub)
 
@@ -453,9 +474,9 @@ Do not leave `npm` pins in the BOM for packages that failed publish CI — deplo
 Your tenant BOM repo (e.g. `ops/stanley-bom`) needs:
 
 - `bom/vX.Y.Z.json` — system versions and pins
-- `deploy_targets.yml` — which BOM file staging and production use (`production.enabled: false` until cycle 4)
+- `deploy_targets.yml` — which BOM file staging and production use (`production.enabled: false` until cycle 4); optional `registries:` list for foreign CodeArtifact publishers (same-account internal works with no list)
 - GitHub Actions workflows that deploy when `bom/` or `deploy_targets.yml` changes on `main`
-- CodeArtifact **read** access from the deploy account (via publisher `reader_aws_accounts` + IAM on the tenant side)
+- CodeArtifact **read** access: publisher `reader_aws_accounts` must include the tenant account; tenant launcher `package_registry.domain_owners` lists each foreign publisher AWS account (omit / `[]` for internal-only)
 
 git-convoy edits the BOM files locally; **you** commit and push the BOM repo so CI deploys.
 
@@ -565,7 +586,7 @@ git convoy train publish
 
 Drops rc suffix (`1.2.4rc1` → `1.2.4`), merges `release/<name>` into `main`, tags `v1.2.4`, pushes `main` and the tag, then runs **`train mergeback` automatically**: merge tagged `main` into `develop` for **every product repo** (train participants use the sheet’s stable tag; others use their latest stable tag or `main`) and push `develop`. Repos with no `develop` branch are left on `main`. **CI publishes stable packages.** Train status → **`published`** as soon as the stable tags exist, even if mergeback later fails.
 
-The develop merge is what lets the next **`train cut`** see new work. Cut includes a repo only when `develop` is ahead of the last stable tag **and** that tag is an ancestor of `develop`. If `develop` never receives the tagged `main`, the next cut reports nothing to ship even after you merge features.
+The develop merge is what lets the next **`train cut`** see new work. Cut includes a repo only when its integration branch (`develop`, or `main` when there is no `develop`) is ahead of the last stable tag **and** that tag is an ancestor of the tip. If `develop` never receives the tagged `main`, the next cut reports nothing to ship even after you merge features.
 
 If mergeback hits a conflict, a dirty `develop`, or a failed push, `train publish` still leaves the stable tags on `main` (and the train sheet `published`). Fix the failed repos and retry:
 

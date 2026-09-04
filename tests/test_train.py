@@ -45,6 +45,35 @@ def test_cut_skips_repos_without_version_file(workspace: Path, monkeypatch) -> N
     assert "webhook" not in repo_ids
 
 
+def test_cut_includes_main_only_repo_with_version(
+    workspace: Path, monkeypatch
+) -> None:
+    """White-label / main-only packs integrate on main; cut must still see them."""
+    monkeypatch.chdir(workspace)
+    wl = workspace / "dev" / "arbitium-wl"
+    wl.mkdir(parents=True)
+    git(wl, "init", "-b", "main")
+    git(wl, "config", "user.email", "test@example.com")
+    git(wl, "config", "user.name", "Test")
+    (wl / "package.json").write_text(
+        json.dumps({"name": "@arbitium/wl", "version": "0.0.1"}) + "\n"
+    )
+    git(wl, "add", "-A")
+    git(wl, "commit", "-m", "init")
+    (wl / "assets.txt").write_text("logo\n")
+    git(wl, "add", "-A")
+    git(wl, "commit", "-m", "custom assets")
+    assert not gitutil.has_local_branch(wl, "develop")
+    assert gitutil.develop_ahead_of_stable(wl)
+
+    state = State()
+    data = train_cmd.cut(workspace, state, "2026-09-03")
+    repo_ids = {repo["id"] for repo in data["repos"]}
+    assert "arbitium-wl" in repo_ids
+    assert gitutil.current_branch(wl) == "release/2026-09-03"
+    assert not gitutil.has_local_branch(wl, "develop")
+
+
 def test_cut_explicit_repo_requires_version_file(workspace: Path, monkeypatch) -> None:
     monkeypatch.chdir(workspace)
     _service_repo(workspace / "dev" / "webhook")

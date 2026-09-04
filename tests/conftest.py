@@ -21,7 +21,10 @@ def init_repo(path: Path, *, develop: bool = True) -> Path:
     git(path, "config", "user.email", "test@example.com")
     git(path, "config", "user.name", "Test")
     (path / "README.md").write_text("hello\n")
-    (path / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "1.0.0"\n')
+    pkg_name = path.name if path.name.startswith("renglo-") else f"renglo-{path.name}"
+    (path / "pyproject.toml").write_text(
+        f'[project]\nname = "{pkg_name}"\nversion = "1.0.0"\n'
+    )
     git(path, "add", "-A")
     git(path, "commit", "-m", "init")
     if develop:

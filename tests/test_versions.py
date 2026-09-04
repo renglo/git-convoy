@@ -1,6 +1,16 @@
 from pathlib import Path
 
-from gitconvoy.versions import bump, drop_rc, next_rc, parse, read_npm_package_name, with_rc
+from gitconvoy.state import TrainRepo
+from gitconvoy.adopt import _python_package_names
+from gitconvoy.versions import (
+    bump,
+    drop_rc,
+    next_rc,
+    parse,
+    read_npm_package_name,
+    read_python_package_name,
+    with_rc,
+)
 
 
 def test_bump_patch() -> None:
@@ -46,3 +56,37 @@ def test_read_npm_package_name_root(tmp_path: Path) -> None:
     repo.mkdir()
     (repo / "package.json").write_text('{"name":"@stanley/wl","version":"0.0.1"}\n')
     assert read_npm_package_name(repo) == "@stanley/wl"
+
+
+def test_read_python_package_name_root(tmp_path: Path) -> None:
+    repo = tmp_path / "lib"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "renglo-lib"\nversion = "1.0.0"\n'
+        'authors = [{name = "Team"}]\n'
+    )
+    assert read_python_package_name(repo) == "renglo-lib"
+
+
+def test_read_python_package_name_under_package(tmp_path: Path) -> None:
+    repo = tmp_path / "lab"
+    (repo / "package").mkdir(parents=True)
+    (repo / "package" / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools"]\n\n'
+        '[project]\nname = "arbitium-lab"\nversion = "0.0.4rc1"\n'
+    )
+    assert read_python_package_name(repo) == "arbitium-lab"
+
+
+def test_python_package_names_prefers_pyproject(tmp_path: Path) -> None:
+    workspace = tmp_path
+    root = workspace / "extensions" / "arbitiumlab"
+    (root / "package").mkdir(parents=True)
+    (root / "package" / "pyproject.toml").write_text(
+        '[project]\nname = "arbitium-lab"\nversion = "0.0.4rc1"\n'
+    )
+    repo = TrainRepo(id="arbitiumlab", path="extensions/arbitiumlab")
+    assert _python_package_names(repo, workspace) == [
+        "arbitium-lab",
+        "renglo-arbitiumlab",
+    ]

@@ -114,7 +114,7 @@ git convoy --json feature show
 git convoy --json feature close --yes
 ```
 
-`feature show` reports `pending`, `uncommitted`, or `merged` per repo. `uncommitted` is local work that has not been committed yet (the branch tip may still equal `develop`). `feature close` checks out `develop` and removes feature branches once every participant is merged.
+`feature show` reports `committed`, `pending`, `uncommitted`, or `merged` per repo. `committed` means commits exist on the feature branch but no PR yet — run `feature prs`. `uncommitted` is local work that has not been committed yet (the branch tip may still equal `develop`). `pending` means a PR is open or recorded. A `note` field captions the usual next step. `feature close` checks out `develop` and removes feature branches once every participant is merged.
 
 ## Publish verification (cycles 3–4, Full mode)
 

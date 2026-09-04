@@ -688,6 +688,9 @@ def _feature_show_text(data: dict) -> str:
         lines.append(
             f"  {repo['id']:20} {repo['path']:24} {status:12}{pr}"
         )
+    note = (data.get("note") or "").strip()
+    if note:
+        lines.append(note)
     return "\n".join(lines)
 
 

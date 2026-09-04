@@ -69,11 +69,7 @@ def cut(
         gitutil.fetch(repo.path)
         if gitutil.is_dirty(repo.path):
             raise GitConvoyError(f"{repo.id} is dirty; commit or stash before train cut")
-        if gitutil.rev_parse(repo.path, "origin/develop"):
-            gitutil.checkout(repo.path, "develop")
-            gitutil.run(repo.path, "pull", "--ff-only", "origin", "develop", check=False)
-        else:
-            gitutil.checkout_branch(repo.path, "develop")
+        gitutil.checkout_integration(repo.path)
         gitutil.checkout_branch(repo.path, branch)
         info = versions.read_version(repo.path)
         current = info.get("python") or info.get("npm")
