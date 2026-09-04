@@ -10,8 +10,8 @@ from typing import Callable
 
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
-from gitconvoy.state import Feature, Hotfix, State
-from gitconvoy.workspace import feature_repos, product_repos, merge_sort
+from gitconvoy.state import Aux, Feature, Hotfix, State
+from gitconvoy.workspace import aux_repos, feature_repos, product_repos, merge_sort
 
 InputFn = Callable[[str], str]
 WriteFn = Callable[[str], None]
@@ -109,6 +109,8 @@ def _plan(
     }
     if kind == "hotfix":
         payload["hotfix"] = sheet.name
+    if kind == "aux":
+        payload["aux"] = sheet.name
     return payload
 
 
@@ -282,17 +284,25 @@ def _targets(
     *,
     include_diff: bool,
     kind: str = "feature",
-) -> tuple[Feature | Hotfix, list[DirtyRepo]]:
+) -> tuple[Feature | Hotfix | Aux, list[DirtyRepo]]:
     if kind == "hotfix":
-        sheet: Feature | Hotfix = state.require_hotfix()
+        sheet: Feature | Hotfix | Aux = state.require_hotfix()
         scan = product_repos(workspace)
         hint = "run: git convoy hotfix start"
         label = "hotfix sheet"
+        dirty_label = "product"
+    elif kind == "aux":
+        sheet = state.require_aux()
+        scan = aux_repos(workspace)
+        hint = "run: git convoy aux adopt"
+        label = "aux sheet"
+        dirty_label = "aux"
     else:
         sheet = state.require_feature()
         scan = feature_repos(workspace)
         hint = "run: git convoy feature adopt"
         label = "feature sheet"
+        dirty_label = "product"
     products = {repo.id: repo for repo in scan}
     participant_ids = set(sheet.repo_ids())
     unadopted: list[str] = []
@@ -303,7 +313,7 @@ def _targets(
             unadopted.append(repo.id)
     if unadopted:
         raise GitConvoyError(
-            f"dirty product repos are not on the {label}: "
+            f"dirty {dirty_label} repos are not on the {label}: "
             + ", ".join(unadopted)
             + f". {hint}"
         )

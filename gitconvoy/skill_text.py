@@ -1,11 +1,12 @@
 SKILL_MARKDOWN = """---
 name: gitconvoy
 description: >-
-  Operate the git-convoy CLI for cross-repo features, release trains, hotfixes,
-  and BOM adoption. Use when the user mentions git convoy, git-convoy, gitconvoy,
-  a feature sheet, a release train, a production hotfix, which repos a feature
-  touches, what is on the current train, adopt onto a feature branch, commit
-  participant repos, refresh from develop, or staging/production pins.
+  Operate the git-convoy CLI for cross-repo features, aux (platform tooling),
+  release trains, hotfixes, and BOM adoption. Use when the user mentions git
+  convoy, git-convoy, gitconvoy, a feature sheet, an aux sheet, a release train,
+  a production hotfix, which repos a feature touches, what is on the current
+  train, adopt onto a feature or aux branch, commit participant repos, refresh
+  from develop, or staging/production pins.
 ---
 
 # git-convoy
@@ -29,6 +30,7 @@ Run from the workspace root (or pass `--workspace`). Always add `--json` when yo
 ```bash
 git convoy --json status
 git convoy --json feature show
+git convoy --json aux show
 git convoy --json train show
 git convoy --json hotfix show
 git convoy --json feature commit
@@ -37,9 +39,10 @@ git convoy --json feature commit
 - "What's on the current train?" → `git convoy --json train show`
 - "How many repos is this feature touching?" → `git convoy --json feature show` (`repo_count`)
 - "Which feature am I on?" → `git convoy --json status`
+- "Which aux am I on?" → `git convoy --json status` / `git convoy --json aux show`
 - "Which hotfix am I on?" → `git convoy --json status` / `git convoy --json hotfix show`
 
-Do not guess membership by scanning dirty directories. The state file is `.gitconvoy/state.json` (gitignored).
+Do not guess membership by scanning dirty directories. The state file is `.gitconvoy/state.json` (gitignored). Aux/product membership is `.gitconvoy/aux.toml` (written by `git convoy init` from each repo’s `gitconvoy.toml` `role`).
 
 ## Heal develop from main (no feature or train required)
 
@@ -116,6 +119,26 @@ git convoy --json feature close --yes
 
 `feature show` reports `committed`, `pending`, `uncommitted`, or `merged` per repo. `committed` means commits exist on the feature branch but no PR yet — run `feature prs`. `uncommitted` is local work that has not been committed yet (the branch tip may still equal `develop`). `pending` means a PR is open or recorded. A `note` field captions the usual next step. `feature close` checks out `develop` and removes feature branches once every participant is merged.
 
+## Aux (platform tooling, parallel to features)
+
+Use for ops tooling that must not ride product trains: launcher, bom-helper, git-convoy, publisher, bootstrap, extensions-service, etc. Repos declare `role = "aux"` in committed `gitconvoy.toml`; `git convoy init` refreshes local `.gitconvoy/aux.toml`. Default for unmarked repos is **product**.
+
+`aux *` is independent of the current feature/train/hotfix. It only touches aux repos. Branch prefix `aux/<name>`. PRs target `develop` (same as features). Optional `aux promote` opens develop→main when operators need the tip on main.
+
+```bash
+git convoy --json aux start codeartifact-mosaic
+git convoy --json aux adopt
+git convoy --json aux commit --header "fix: …" --header-only
+git convoy --json aux prs
+# merge PRs to develop in GitHub
+git convoy --json aux show
+git convoy --json aux close --yes
+# when main must pick it up:
+git convoy --json aux promote
+```
+
+Do **not** put aux repos on a feature sheet (and vice versa). Dirty product repos are ignored by `aux adopt`; dirty aux repos are ignored by `feature adopt`.
+
 ## Publish verification (cycles 3–4, Full mode)
 
 ```bash
@@ -156,6 +179,7 @@ git convoy --json hotfix adopt --bom ops/<system>-bom
 ## What not to do
 
 - Do not create `feature/<name>` in every repo.
+- Do not put aux (tooling) repos on a feature sheet; use `git convoy aux`.
 - Do not put `*-bom` on a feature branch or feature PR; deploy only via adopt on `main`.
 - Do not abandon a feature unless the user wants that work discarded.
 - Do not merge PRs through git-convoy (approve is OK in Full mode).

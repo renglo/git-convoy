@@ -43,6 +43,47 @@ def _bom_repo(root: Path) -> Path:
     return bom_repo
 
 
+def _write_tag_workflow(repo: Path) -> None:
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "publish.yml").write_text("on:\n  push:\n    tags:\n      - 'v*'\n")
+
+
+def _seed_train_packages(root: Path) -> None:
+    """Local package metadata so adopt can resolve real distribution names."""
+    lib = root / "dev" / "renglo-lib"
+    if not (lib / "pyproject.toml").is_file():
+        lib.mkdir(parents=True, exist_ok=True)
+        (lib / "pyproject.toml").write_text(
+            '[project]\nname = "renglo-lib"\nversion = "1.2.4"\n'
+        )
+    _write_tag_workflow(lib)
+
+    schd = root / "extensions" / "schd"
+    if not (schd / "pyproject.toml").is_file():
+        schd.mkdir(parents=True, exist_ok=True)
+        (schd / "pyproject.toml").write_text(
+            '[project]\nname = "renglo-schd"\nversion = "1.2.0"\n'
+        )
+    ui = schd / "ui"
+    if not (ui / "package.json").is_file():
+        ui.mkdir(parents=True, exist_ok=True)
+        (ui / "package.json").write_text(
+            '{"name":"@renglo/schd","version":"1.2.0"}\n'
+        )
+    _write_tag_workflow(schd)
+
+    # Console: known package name for clear/self-heal, but no tag-publish
+    # workflow → not registry-ready (npm pin is cleared on adopt).
+    console = root / "console"
+    if not (console / "package.json").is_file():
+        console.mkdir(parents=True, exist_ok=True)
+        (console / "package.json").write_text(
+            '{"name":"@renglo/console","version":"0.8.1"}\n'
+        )
+
+
+
 def _train(status: str = "published") -> State:
     state = State(current_train="2026-W34")
     train = Train(name="2026-W34", branch="release/2026-W34", status=status)
@@ -96,6 +137,7 @@ def test_draft_and_pin(tmp_path: Path) -> None:
 
 def test_take_drafts_pins_train_and_points(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
     data = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     assert data["version"] == "v1.4.1"
@@ -113,6 +155,7 @@ def test_take_drafts_pins_train_and_points(tmp_path: Path) -> None:
 
 def test_take_pins_rc_in_both_ecosystems(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="stabilizing")
     state.trains["2026-W34"].repos[1].to = "1.2.0rc1"
     state.trains["2026-W34"].repos[1].stable_tag = None
@@ -125,6 +168,7 @@ def test_take_pins_rc_in_both_ecosystems(tmp_path: Path) -> None:
 
 def test_take_refuses_train_without_versions(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="cut")
     for repo in state.trains["2026-W34"].repos:
         repo.to = None
@@ -136,6 +180,7 @@ def test_take_updates_bom_repo_shas(tmp_path: Path) -> None:
     from conftest import git, init_repo
 
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())
     src["repos"] = {
         "renglo/pes": {
@@ -145,7 +190,7 @@ def test_take_updates_bom_repo_shas(tmp_path: Path) -> None:
         }
     }
     (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
-    (tmp_path / "extensions").mkdir()
+    (tmp_path / "extensions").mkdir(exist_ok=True)
     pes = init_repo(tmp_path / "extensions" / "pes")
     subprocess.run(
         ["git", "-C", str(pes), "remote", "add", "origin", "git@github.com:renglo/pes.git"],
@@ -175,6 +220,7 @@ def test_take_updates_bom_repo_shas(tmp_path: Path) -> None:
 
 def test_take_refresh_same_train_updates_in_place(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="stabilizing")
     first = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     assert first["mode"] == "draft"
@@ -194,6 +240,7 @@ def test_take_refresh_same_train_updates_in_place(tmp_path: Path) -> None:
 
 def test_take_after_production_bumps_new_version(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="published")
     adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     adopt_cmd.promote(tmp_path, state, bom=str(bom_repo))
@@ -217,6 +264,7 @@ def test_take_after_production_bumps_new_version(tmp_path: Path) -> None:
 
 def test_take_same_train_refreshes_after_production(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="published")
     adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     adopt_cmd.promote(tmp_path, state, bom=str(bom_repo))
@@ -231,6 +279,7 @@ def test_take_same_train_refreshes_after_production(tmp_path: Path) -> None:
 
 def test_promote_refuses_stabilizing_train(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="stabilizing")
     state.trains["2026-W34"].repos[1].to = "1.2.0rc1"
     state.trains["2026-W34"].repos[1].stable_tag = None
@@ -244,6 +293,7 @@ def test_promote_refuses_stabilizing_train(tmp_path: Path) -> None:
 
 def test_promote_refreshes_rc_bom_and_enables_production(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="stabilizing")
     state.trains["2026-W34"].repos[1].to = "1.2.0rc1"
     state.trains["2026-W34"].repos[1].stable_tag = None
@@ -264,6 +314,7 @@ def test_promote_refreshes_rc_bom_and_enables_production(tmp_path: Path) -> None
 
 def test_take_cli_uses_current_train(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
     save(tmp_path, state)
     assert main(["--workspace", str(tmp_path), "--json", "adopt", "--bom", str(bom_repo)]) == 0
@@ -274,6 +325,7 @@ def test_take_cli_uses_current_train(tmp_path: Path) -> None:
 
 def test_take_named_subcommand(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
     save(tmp_path, state)
     assert (
@@ -295,6 +347,7 @@ def test_take_named_subcommand(tmp_path: Path) -> None:
 
 def test_promote_enables_production_on_current_bom(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
     data = adopt_cmd.promote(tmp_path, state, bom=str(bom_repo))
     assert data["version"] == "v1.4.1"
@@ -309,6 +362,7 @@ def test_promote_enables_production_on_current_bom(tmp_path: Path) -> None:
 
 def test_refresh_after_publish_sets_staging_description(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="stabilizing")
     adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     state.trains["2026-W34"].status = "published"
@@ -319,6 +373,7 @@ def test_refresh_after_publish_sets_staging_description(tmp_path: Path) -> None:
 
 def test_refresh_preserves_production_enabled(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train(status="published")
     adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     adopt_cmd.promote(tmp_path, state, bom=str(bom_repo))
@@ -331,6 +386,7 @@ def test_refresh_preserves_production_enabled(tmp_path: Path) -> None:
 
 def test_promote_cli_flag(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
     save(tmp_path, state)
     assert (
@@ -354,6 +410,7 @@ def test_promote_cli_flag(tmp_path: Path) -> None:
 
 def test_promote_named_subcommand(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
     save(tmp_path, state)
     assert (
@@ -393,16 +450,58 @@ def test_discovers_nested_bom_and_skips_vendor_dirs(tmp_path: Path) -> None:
 def test_refuses_when_several_bom_repos(tmp_path: Path) -> None:
     (tmp_path / "ops" / "acme-bom").mkdir(parents=True)
     (tmp_path / "other-bom").mkdir()
-    with pytest.raises(GitConvoyError, match="multiple \\*-bom repos"):
+    with pytest.raises(GitConvoyError, match="multiple BOM repos"):
         adopt_cmd.find_bom_repo(tmp_path)
+
+
+def test_discovers_bom_from_aux_toml_without_suffix(tmp_path: Path) -> None:
+    from gitconvoy import membership
+
+    bom = tmp_path / "ops" / "arbitium_bill_of_materials"
+    bom.mkdir(parents=True)
+    membership.write_membership(
+        tmp_path, aux=[], bom=["arbitium_bill_of_materials"]
+    )
+    found = adopt_cmd.find_bom_repo(tmp_path)
+    assert found.resolve() == bom.resolve()
+
+
+def test_aux_toml_bom_wins_over_suffix_walk(tmp_path: Path) -> None:
+    from gitconvoy import membership
+
+    listed = tmp_path / "ops" / "arbitium_bill_of_materials"
+    listed.mkdir(parents=True)
+    (tmp_path / "ops" / "example-bom").mkdir(parents=True)
+    membership.write_membership(
+        tmp_path, aux=[], bom=["arbitium_bill_of_materials"]
+    )
+    found = adopt_cmd.find_bom_repo(tmp_path)
+    assert found.resolve() == listed.resolve()
+
+
+def test_explicit_bom_overrides_aux_toml(tmp_path: Path) -> None:
+    from gitconvoy import membership
+
+    listed = tmp_path / "ops" / "arbitium_bill_of_materials"
+    listed.mkdir(parents=True)
+    other = tmp_path / "ops" / "other-materials"
+    other.mkdir(parents=True)
+    membership.write_membership(
+        tmp_path, aux=[], bom=["arbitium_bill_of_materials"]
+    )
+    found = adopt_cmd.find_bom_repo(tmp_path, explicit="ops/other-materials")
+    assert found.resolve() == other.resolve()
 
 
 def test_console_clears_npm_pin_without_tag_publish_workflow(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
     console = tmp_path / "console"
-    console.mkdir()
-    (console / "package.json").write_text('{"name":"console","version":"0.8.1"}\n')
+    console.mkdir(parents=True, exist_ok=True)
+    (console / "package.json").write_text(
+        '{"name":"@renglo/console","version":"0.8.1"}\n'
+    )
     data = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
     assert "@renglo/console" not in dest.get("npm", {})
@@ -413,6 +512,7 @@ def test_console_clears_npm_pin_without_tag_publish_workflow(tmp_path: Path) -> 
 
 def test_take_pins_tenant_wl_from_package_json(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())
     src["repos"] = {
         "renglo/stanley-wl": {
@@ -492,6 +592,7 @@ def test_adopt_verify_failure_self_heals_to_git(monkeypatch: pytest.MonkeyPatch,
         capture_output=True,
     )
     git(schd, "tag", "v1.2.0")
+    _seed_train_packages(tmp_path)
     state = _train()
 
     def fake_verify(workspace, state, name, **kwargs):
@@ -521,6 +622,7 @@ def test_adopt_verify_failure_self_heals_to_git(monkeypatch: pytest.MonkeyPatch,
 
 def test_adopt_require_verify_refuses_on_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
 
     def fake_verify(workspace, state, name, **kwargs):
@@ -536,6 +638,7 @@ def test_adopt_require_verify_refuses_on_failure(monkeypatch: pytest.MonkeyPatch
 
 def test_adopt_no_verify_skips_gh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
     state = _train()
 
     def boom(*args, **kwargs):
