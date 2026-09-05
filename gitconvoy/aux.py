@@ -7,22 +7,21 @@ from pathlib import Path
 from gitconvoy import ghutil
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
-from gitconvoy.state import Feature, State, save
+from gitconvoy.state import Aux, State, save
 from gitconvoy.sync import DevelopSyncEntry, sync_repos_develop
-from gitconvoy import membership
-from gitconvoy.workspace import Repo, feature_repos, is_bom_repo_id, merge_sort
+from gitconvoy.workspace import Repo, aux_repos, merge_sort
 
 
 def start(workspace: Path, state: State, name: str) -> dict:
     slug = _slug(name)
-    branch = f"feature/{slug}"
-    if slug not in state.features:
-        state.features[slug] = Feature(name=slug, branch=branch)
-    state.current_feature = slug
-    feature = state.features[slug]
+    branch = f"aux/{slug}"
+    if slug not in state.auxes:
+        state.auxes[slug] = Aux(name=slug, branch=branch)
+    state.current_aux = slug
+    feature = state.auxes[slug]
     checked: list[dict] = []
     picked: list[dict] = []
-    for repo in feature_repos(workspace):
+    for repo in aux_repos(workspace):
         gitutil.fetch(repo.path)
         current = gitutil.current_branch(repo.path)
         dirty = gitutil.is_dirty(repo.path)
@@ -50,7 +49,7 @@ def start(workspace: Path, state: State, name: str) -> dict:
                     {
                         "id": repo.id,
                         "path": repo.rel,
-                        "skipped": "empty-feature-branch",
+                        "skipped": "empty-aux-branch",
                         "branch": gitutil.current_branch(repo.path),
                         "existing_branch": branch,
                     }
@@ -58,7 +57,7 @@ def start(workspace: Path, state: State, name: str) -> dict:
                 continue
             feature.add_repo(repo.id, repo.rel)
             action = (
-                "already-on-feature" if current == branch else "picked-up"
+                "already-on-aux" if current == branch else "picked-up"
             )
             row = {
                 "id": repo.id,
@@ -92,22 +91,22 @@ def start(workspace: Path, state: State, name: str) -> dict:
     save(workspace, state)
     return {
         "ok": True,
-        "feature": slug,
+        "aux": slug,
         "branch": branch,
         "repos": picked,
         "repo_count": len(feature.repos),
         "workspace": checked,
-        "dropped": _drop_non_feature_sheet_repos(workspace, feature),
+        "dropped": _drop_non_aux_sheet_repos(workspace, feature),
     }
 
 
 def adopt(workspace: Path, state: State) -> dict:
-    feature = state.require_feature()
+    feature = state.require_aux()
     adopted: list[dict] = []
     skipped: list[dict] = []
     dropped: list[dict] = []
-    dropped.extend(_drop_non_feature_sheet_repos(workspace, feature))
-    for repo in feature_repos(workspace):
+    dropped.extend(_drop_non_aux_sheet_repos(workspace, feature))
+    for repo in aux_repos(workspace):
         result = _adopt_one(repo, feature)
         if result.get("adopted"):
             feature.add_repo(repo.id, repo.rel)
@@ -125,7 +124,7 @@ def adopt(workspace: Path, state: State) -> dict:
     save(workspace, state)
     return {
         "ok": True,
-        "feature": feature.name,
+        "aux": feature.name,
         "branch": feature.branch,
         "adopted": adopted,
         "skipped": skipped,
@@ -134,22 +133,19 @@ def adopt(workspace: Path, state: State) -> dict:
     }
 
 
-def _drop_non_feature_sheet_repos(workspace: Path, feature: Feature) -> list[dict]:
-    """Remove bom/aux rows that do not belong on a product feature sheet."""
+def _drop_non_aux_sheet_repos(workspace: Path, feature: Aux) -> list[dict]:
+    """Remove product/bom rows that do not belong on an aux sheet."""
+    allowed = {repo.id for repo in aux_repos(workspace)}
     dropped: list[dict] = []
     for row in list(feature.repos):
-        if is_bom_repo_id(row.id, workspace):
-            reason = "bom-not-a-feature-repo"
-        elif membership.is_aux_id(workspace, row.id):
-            reason = "aux-not-a-feature-repo"
-        else:
+        if row.id in allowed:
             continue
         feature.drop_repo(row.id)
         dropped.append(
             {
                 "id": row.id,
                 "path": row.path,
-                "reason": reason,
+                "reason": "not-an-aux-repo",
             }
         )
     return dropped
@@ -164,21 +160,36 @@ def _branch_has_work(repo: Path, branch: str) -> bool:
     return not gitutil.branch_merged_into(repo, branch)
 
 
-def _adopt_one(repo: Repo, feature: Feature) -> dict:
+def _fish_bases(repo_path: Path) -> list[str]:
+    """Branches aux adopt may take work from: develop and/or main when present."""
+    bases: list[str] = []
+    for name in ("develop", "main"):
+        if gitutil.has_local_branch(repo_path, name) or gitutil.has_remote_branch(
+            repo_path, name
+        ):
+            bases.append(name)
+    return bases
+
+
+def _adopt_one(repo: Repo, feature: Aux) -> dict:
     branch = feature.branch
     current = gitutil.current_branch(repo.path)
     dirty = gitutil.is_dirty(repo.path)
     gitutil.fetch(repo.path)
-    integration = gitutil.integration_branch(repo.path)
-    origin_int = gitutil.origin_integration(repo.path)
-    on_integration = current == integration
-    ahead = bool(
-        origin_int
-        and on_integration
-        and gitutil.ahead_of(repo.path, "HEAD", f"origin/{integration}")
-    )
+    bases = _fish_bases(repo.path)
+    if not bases:
+        bases = [gitutil.integration_branch(repo.path)]
+    on_base = current in bases
+    ahead = False
+    ahead_base: str | None = None
+    if on_base:
+        origin_tip = gitutil.rev_parse(repo.path, f"origin/{current}")
+        if origin_tip and gitutil.ahead_of(repo.path, "HEAD", f"origin/{current}"):
+            ahead = True
+            ahead_base = current
     exists = gitutil.has_branch(repo.path, branch)
     unique = exists and not gitutil.branch_merged_into(repo.path, branch)
+    allowed = ", ".join(bases) if bases else "develop/main"
 
     if current == branch:
         if dirty or unique:
@@ -186,7 +197,7 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
                 "id": repo.id,
                 "path": repo.rel,
                 "adopted": True,
-                "action": "already-on-feature",
+                "action": "already-on-aux",
                 "dirty": dirty,
             }
         if not dirty:
@@ -195,14 +206,14 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
             "id": repo.id,
             "path": repo.rel,
             "adopted": False,
-            "reason": "on-feature-no-changes",
+            "reason": "on-aux-no-changes",
             "drop": True,
         }
 
     if exists and unique and not dirty:
-        if not on_integration:
+        if not on_base:
             raise GitConvoyError(
-                f"{repo.id} has work on {current}, not {integration} or {branch}. "
+                f"{repo.id} has work on {current}, not {allowed} or {branch}. "
                 "commit/stash or checkout the right branch first"
             )
         gitutil.checkout_branch(repo.path, branch)
@@ -219,30 +230,31 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
             "id": repo.id,
             "path": repo.rel,
             "adopted": False,
-            "reason": "empty-feature-branch" if exists else "unchanged",
+            "reason": "empty-aux-branch" if exists else "unchanged",
             "branch": current,
             "drop": bool(exists),
         }
 
-    if not on_integration and current != branch:
+    if not on_base and current != branch:
         raise GitConvoyError(
-            f"{repo.id} has work on {current}, not {integration} or {branch}. "
+            f"{repo.id} has work on {current}, not {allowed} or {branch}. "
             "commit/stash or checkout the right branch first"
         )
 
     gitutil.checkout_branch(repo.path, branch)
 
-    if ahead and origin_int and gitutil.rev_parse(repo.path, f"refs/heads/{integration}"):
-        if not gitutil.is_ancestor(repo.path, f"origin/{integration}", branch):
+    if ahead and ahead_base and gitutil.rev_parse(repo.path, f"refs/heads/{ahead_base}"):
+        origin_ref = f"origin/{ahead_base}"
+        if not gitutil.is_ancestor(repo.path, origin_ref, branch):
             raise GitConvoyError(
-                f"{repo.id}: {integration} has diverged from origin/{integration}"
+                f"{repo.id}: {ahead_base} has diverged from {origin_ref}"
             )
-        gitutil.checkout(repo.path, integration)
-        if gitutil.rev_parse(repo.path, "HEAD") == origin_int:
+        gitutil.checkout(repo.path, ahead_base)
+        if gitutil.rev_parse(repo.path, "HEAD") == gitutil.rev_parse(repo.path, origin_ref):
             gitutil.checkout(repo.path, branch)
         else:
-            if gitutil.ahead_of(repo.path, integration, f"origin/{integration}"):
-                gitutil.reset_hard(repo.path, f"origin/{integration}")
+            if gitutil.ahead_of(repo.path, ahead_base, origin_ref):
+                gitutil.reset_hard(repo.path, origin_ref)
             gitutil.checkout(repo.path, branch)
 
     return {
@@ -251,8 +263,8 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
         "adopted": True,
         "action": "branched",
         "dirty": dirty,
-        "reset_integration": bool(ahead),
-        "integration_branch": integration,
+        "reset_base": ahead_base if ahead else None,
+        "fish_from": current if on_base else None,
     }
 
 
@@ -267,13 +279,13 @@ def abandon(
     input_fn=None,
     is_tty: bool | None = None,
 ) -> dict:
-    feature = state.require_feature(name)
+    feature = state.require_aux(name)
     branch = feature.branch
     targets = _abandon_targets(workspace, feature)
     if not yes:
         if as_json or not (sys.stdin.isatty() if is_tty is None else is_tty):
             raise GitConvoyError(
-                "abandon discards the feature branch; pass --yes to confirm"
+                "abandon discards the aux branch; pass --yes to confirm"
             )
         ids = ", ".join(item.id for item in targets) or "(none)"
         prompt = (
@@ -287,7 +299,7 @@ def abandon(
             return {
                 "ok": True,
                 "abandoned": False,
-                "feature": feature.name,
+                "aux": feature.name,
                 "branch": branch,
                 "repos": [],
             }
@@ -324,13 +336,13 @@ def abandon(
             }
         )
 
-    if state.current_feature == feature.name:
-        state.current_feature = None
-    state.features.pop(feature.name, None)
+    if state.current_aux == feature.name:
+        state.current_aux = None
+    state.auxes.pop(feature.name, None)
     save(workspace, state)
     still_on_origin = [row["id"] for row in removed if row["on_origin"]]
     note = (
-        "Local feature branches deleted. Check out the integration branch. "
+        "Local aux branches deleted. Check out the integration branch. "
         "Uncommitted work on those branches is gone."
     )
     if still_on_origin and not remote:
@@ -342,17 +354,17 @@ def abandon(
     return {
         "ok": True,
         "abandoned": True,
-        "feature": feature.name,
+        "aux": feature.name,
         "branch": branch,
         "note": note,
         "repos": removed,
     }
 
 
-def _abandon_targets(workspace: Path, feature: Feature):
+def _abandon_targets(workspace: Path, feature: Aux):
     from gitconvoy.workspace import Repo
 
-    products = feature_repos(workspace)
+    products = aux_repos(workspace)
     by_id = {repo.id: repo for repo in products}
     seen: set[str] = set()
     targets: list[Repo] = []
@@ -381,8 +393,8 @@ def _confirm_yes(input_fn, prompt: str) -> bool:
 
 def switch(workspace: Path, state: State, name: str) -> dict:
     slug = _slug(name)
-    feature = state.require_feature(slug)
-    repos = feature_repos(workspace)
+    feature = state.require_aux(slug)
+    repos = aux_repos(workspace)
     dirty = [
         {"id": repo.id, "path": repo.rel, "branch": gitutil.current_branch(repo.path)}
         for repo in repos
@@ -410,11 +422,11 @@ def switch(workspace: Path, state: State, name: str) -> dict:
                     "branch": integration,
                 }
             )
-    state.current_feature = slug
+    state.current_aux = slug
     save(workspace, state)
     return {
         "ok": True,
-        "feature": slug,
+        "aux": slug,
         "branch": feature.branch,
         "participants": feature.repo_ids(),
         "repos": switched,
@@ -422,7 +434,7 @@ def switch(workspace: Path, state: State, name: str) -> dict:
 
 
 def refresh(workspace: Path, state: State) -> dict:
-    feature = state.require_feature()
+    feature = state.require_aux()
     results: list[dict] = []
     conflicts: list[str] = []
     for repo_row in feature.repos:
@@ -446,18 +458,18 @@ def refresh(workspace: Path, state: State) -> dict:
             + ", ".join(conflicts)
             + ". resolve them, then re-run refresh"
         )
-    return {"ok": True, "feature": feature.name, "repos": results}
+    return {"ok": True, "aux": feature.name, "repos": results}
 
 
 def push(workspace: Path, state: State) -> dict:
-    feature = state.require_feature()
-    rows = _push_feature_branches(workspace, feature)
+    feature = state.require_aux()
+    rows = _push_aux_branches(workspace, feature)
     return {
         "ok": True,
-        "feature": feature.name,
+        "aux": feature.name,
         "branch": feature.branch,
         "note": (
-            "Pushed feature branches to origin. No PRs opened. "
+            "Pushed aux branches to origin. No PRs opened. "
             "Uncommitted files are not on the remote."
         ),
         "repos": rows,
@@ -465,7 +477,7 @@ def push(workspace: Path, state: State) -> dict:
 
 
 def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
-    feature = state.require_feature()
+    feature = state.require_aux()
     branch = feature.branch
     entries = [
         DevelopSyncEntry(id=repo_row.id, rel=repo_row.path)
@@ -475,16 +487,16 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
         workspace,
         entries,
         push=True,
-        retry_hint="git convoy feature prs",
+        retry_hint="git convoy aux prs",
     )
     for repo_row in feature.repos:
         gitutil.checkout_branch(workspace / repo_row.path, branch)
     if not develop_sync["ok"]:
         raise GitConvoyError(
             develop_sync.get("note")
-            or "develop sync failed; resolve conflicts, then git convoy feature prs"
+            or "develop sync failed; resolve conflicts, then git convoy aux prs"
         )
-    _push_feature_branches(workspace, feature)
+    _push_aux_branches(workspace, feature)
     opened: list[dict] = []
     for repo_row in feature.repos:
         repo_path = workspace / repo_row.path
@@ -517,7 +529,7 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     opened_prs = sum(1 for row in opened if row.get("pr"))
     note = (
         "Merged latest stable/main into develop before opening PRs. "
-        "Approve with: git convoy feature approve (Full mode). Merge only when all "
+        "Approve with: git convoy aux approve (Full mode). Merge only when all "
         "sibling PRs are approved, in merge_order. git-convoy does not merge."
     )
     if use_gh and opened and opened_prs == 0:
@@ -534,7 +546,7 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
         )
     return {
         "ok": True,
-        "feature": feature.name,
+        "aux": feature.name,
         "merge_order": merge_sort(feature.repo_ids()),
         "develop_sync": develop_sync,
         "note": note,
@@ -549,9 +561,9 @@ def approve(
     *,
     force: bool = False,
 ) -> dict:
-    feature = state.require_feature(name)
+    feature = state.require_aux(name)
     if not feature.repos:
-        raise GitConvoyError("feature has no participant repos; run feature adopt")
+        raise GitConvoyError("aux has no participant repos; run aux adopt")
     ghutil.require_gh()
     order = merge_sort(feature.repo_ids())
     by_id = {repo.id: repo for repo in feature.repos}
@@ -651,7 +663,7 @@ def approve(
     )
     payload = {
         "ok": not blocked,
-        "feature": feature.name,
+        "aux": feature.name,
         "branch": feature.branch,
         "merge_order": order,
         "approved_count": approved_count,
@@ -672,7 +684,7 @@ def approve(
 
 
 def show(workspace: Path, state: State, name: str | None = None) -> dict:
-    feature = state.require_feature(name)
+    feature = state.require_aux(name)
     rows = _merge_rows(workspace, feature)
     merged_count = sum(1 for row in rows if row["merge_status"] == "merged")
     if rows and merged_count == len(rows):
@@ -696,36 +708,36 @@ def show(workspace: Path, state: State, name: str | None = None) -> dict:
 
 
 def _show_next_steps(rows: list[dict]) -> str:
-    """Human caption for what to do next after ``feature show``."""
+    """Human caption for what to do next after ``aux show``."""
     if not rows:
-        return "No participants yet. Run: git convoy feature adopt"
+        return "No participants yet. Run: git convoy aux adopt"
     statuses = {row["merge_status"] for row in rows}
     if statuses <= {"merged"}:
-        return "All participants merged. Run: git convoy feature close"
+        return "All participants merged. Run: git convoy aux close"
     if "uncommitted" in statuses:
         return (
             "Uncommitted changes on one or more participants. "
-            "Run: git convoy feature commit"
+            "Run: git convoy aux commit"
         )
     if "committed" in statuses and "pending" not in statuses:
         return (
-            "Changes committed. Run: git convoy feature prs to open pull requests "
+            "Changes committed. Run: git convoy aux prs to open pull requests "
             "for these changes."
         )
     if "pending" in statuses:
         return (
-            "PRs open (or recorded). Approve with: git convoy feature approve "
+            "PRs open (or recorded). Approve with: git convoy aux approve "
             "(Full mode), then merge in GitHub when every sibling is approved."
         )
     if "closed" in statuses:
         return (
             "One or more PRs were closed without merging. "
-            "Re-open or run: git convoy feature prs"
+            "Re-open or run: git convoy aux prs"
         )
     return ""
 
 
-def _merge_rows(workspace: Path, feature: Feature) -> list[dict]:
+def _merge_rows(workspace: Path, feature: Aux) -> list[dict]:
     rows: list[dict] = []
     for repo in feature.repos:
         repo_path = workspace / repo.path
@@ -753,26 +765,26 @@ def close(
     input_fn=None,
     is_tty: bool | None = None,
 ) -> dict:
-    feature = state.require_feature(name)
+    feature = state.require_aux(name)
     rows = _merge_rows(workspace, feature)
     pending = [row for row in rows if row["merge_status"] != "merged"]
     if pending:
         raise GitConvoyError(
             "not all participants merged: "
             + ", ".join(f"{row['id']} ({row['merge_status']})" for row in pending)
-            + ". Run: git convoy feature show"
+            + ". Run: git convoy aux show"
         )
 
     if not yes:
         if as_json or not (sys.stdin.isatty() if is_tty is None else is_tty):
-            raise GitConvoyError("close removes the feature sheet; pass --yes to confirm")
+            raise GitConvoyError("close removes the aux sheet; pass --yes to confirm")
         ids = ", ".join(row["id"] for row in rows) or "(none)"
         prompt = (
             f"This will check out the integration branch in {len(rows)} repos ({ids}), "
             f"pull from origin, "
         )
         if keep_branch:
-            prompt += "and keep local feature branches. Continue? : "
+            prompt += "and keep local aux branches. Continue? : "
         else:
             prompt += (
                 f"delete local {feature.branch}"
@@ -784,7 +796,7 @@ def close(
             return {
                 "ok": True,
                 "closed": False,
-                "feature": feature.name,
+                "aux": feature.name,
                 "branch": feature.branch,
                 "repos": [],
             }
@@ -823,9 +835,9 @@ def close(
             }
         )
 
-    if state.current_feature == feature.name:
-        state.current_feature = None
-    state.features.pop(feature.name, None)
+    if state.current_aux == feature.name:
+        state.current_aux = None
+    state.auxes.pop(feature.name, None)
     save(workspace, state)
     still_on_origin = [row["id"] for row in cleaned if row["on_origin"]]
     note = "Checked out the integration branch and pulled from origin in every participant."
@@ -842,7 +854,7 @@ def close(
     return {
         "ok": True,
         "closed": True,
-        "feature": feature.name,
+        "aux": feature.name,
         "branch": feature.branch,
         "note": note,
         "repos": cleaned,
@@ -850,9 +862,9 @@ def close(
 
 
 
-def _push_feature_branches(workspace: Path, feature: Feature) -> list[dict]:
+def _push_aux_branches(workspace: Path, feature: Aux) -> list[dict]:
     if not feature.repos:
-        raise GitConvoyError("feature has no participant repos; run feature adopt")
+        raise GitConvoyError("aux has no participant repos; run aux adopt")
     rows: list[dict] = []
     failed: list[str] = []
     for repo_row in feature.repos:
@@ -878,7 +890,7 @@ def _push_feature_branches(workspace: Path, feature: Feature) -> list[dict]:
     return rows
 
 
-def _gh_create_pr(repo: Path, feature: Feature, slug: str) -> str | None:
+def _gh_create_pr(repo: Path, feature: Aux, slug: str) -> str | None:
     gh = gitutil.gh_bin()
     if not gh:
         return None
@@ -897,7 +909,7 @@ def _gh_create_pr(repo: Path, feature: Feature, slug: str) -> str | None:
             return rows[0].get("url")
     title = f"{feature.branch}"
     body = (
-        f"Part of cross-repo feature `{feature.name}`.\n\n"
+        f"Part of cross-repo aux change `{feature.name}`.\n\n"
         f"Participants: {', '.join(feature.repo_ids()) or '(this repo)'}\n\n"
         "Do not merge until every sibling PR is approved."
     )
@@ -928,10 +940,141 @@ def _gh_create_pr(repo: Path, feature: Feature, slug: str) -> str | None:
     return (created.stdout or "").strip() or None
 
 
+
+def promote(
+    workspace: Path,
+    state: State,
+    name: str | None = None,
+    *,
+    use_gh: bool = True,
+) -> dict:
+    """Open or link develop→main PRs for aux participants ahead of main."""
+    feature = state.require_aux(name)
+    if not feature.repos:
+        raise GitConvoyError("aux has no participant repos; run aux adopt")
+    opened: list[dict] = []
+    for repo_row in feature.repos:
+        repo_path = workspace / repo_row.path
+        gitutil.fetch(repo_path)
+        if not gitutil.has_local_branch(repo_path, "develop") and not gitutil.has_remote_branch(
+            repo_path, "develop"
+        ):
+            opened.append(
+                {
+                    "id": repo_row.id,
+                    "path": repo_row.path,
+                    "skipped": "no-develop",
+                }
+            )
+            continue
+        if not gitutil.has_local_branch(repo_path, "main") and not gitutil.has_remote_branch(
+            repo_path, "main"
+        ):
+            opened.append(
+                {
+                    "id": repo_row.id,
+                    "path": repo_row.path,
+                    "skipped": "no-main",
+                }
+            )
+            continue
+        develop_ref = (
+            "origin/develop"
+            if gitutil.has_remote_branch(repo_path, "develop")
+            else "develop"
+        )
+        main_ref = (
+            "origin/main" if gitutil.has_remote_branch(repo_path, "main") else "main"
+        )
+        if not gitutil.ahead_of(repo_path, develop_ref, main_ref):
+            opened.append(
+                {
+                    "id": repo_row.id,
+                    "path": repo_row.path,
+                    "skipped": "develop-not-ahead-of-main",
+                }
+            )
+            continue
+        slug = gitutil.github_slug(repo_path)
+        pr_url = None
+        compare = None
+        if slug:
+            compare = f"https://github.com/{slug}/compare/main...develop"
+            if use_gh and gitutil.gh_bin():
+                pr_url = _gh_create_promote_pr(repo_path, feature, slug)
+        opened.append(
+            {
+                "id": repo_row.id,
+                "path": repo_row.path,
+                "pr": pr_url,
+                "compare": compare,
+            }
+        )
+    note = (
+        "Promote opens develop→main PRs (or compare URLs) for participants "
+        "where develop is ahead of main. Merge those in GitHub when ready."
+    )
+    return {
+        "ok": True,
+        "aux": feature.name,
+        "note": note,
+        "repos": opened,
+    }
+
+
+def _gh_create_promote_pr(repo: Path, feature: Aux, slug: str) -> str | None:
+    gh = gitutil.gh_bin()
+    if not gh:
+        return None
+    existing = subprocess.run(
+        [gh, "pr", "list", "--repo", slug, "--head", "develop", "--base", "main", "--json", "url"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if existing.returncode == 0 and '"url"' in (existing.stdout or ""):
+        import json
+
+        rows = json.loads(existing.stdout)
+        if rows:
+            return rows[0].get("url")
+    title = f"Promote develop → main ({feature.name})"
+    body = (
+        f"Promote aux work from `{feature.name}` already on develop into main.\n\n"
+        f"Participants: {', '.join(feature.repo_ids()) or '(this repo)'}"
+    )
+    created = subprocess.run(
+        [
+            gh,
+            "pr",
+            "create",
+            "--repo",
+            slug,
+            "--base",
+            "main",
+            "--head",
+            "develop",
+            "--title",
+            title,
+            "--body",
+            body,
+        ],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        return None
+    return (created.stdout or "").strip() or None
+
+
+
 def _slug(name: str) -> str:
     slug = name.strip().replace(" ", "-")
-    if slug.startswith("feature/"):
-        slug = slug[len("feature/") :]
+    if slug.startswith("aux/"):
+        slug = slug[len("aux/") :]
     if not slug:
-        raise GitConvoyError("feature name is empty")
+        raise GitConvoyError("aux name is empty")
     return slug

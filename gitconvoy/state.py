@@ -100,13 +100,46 @@ class Hotfix:
 
 
 @dataclass
+class AuxRepo:
+    id: str
+    path: str
+    pr: str | None = None
+
+
+@dataclass
+class Aux:
+    name: str
+    branch: str
+    status: str = "in-progress"
+    repos: list[AuxRepo] = field(default_factory=list)
+
+    def repo_ids(self) -> list[str]:
+        return [repo.id for repo in self.repos]
+
+    def add_repo(self, repo_id: str, path: str) -> AuxRepo:
+        for repo in self.repos:
+            if repo.id == repo_id:
+                return repo
+        row = AuxRepo(id=repo_id, path=path)
+        self.repos.append(row)
+        return row
+
+    def drop_repo(self, repo_id: str) -> bool:
+        before = len(self.repos)
+        self.repos = [repo for repo in self.repos if repo.id != repo_id]
+        return len(self.repos) < before
+
+
+@dataclass
 class State:
     current_feature: str | None = None
     current_train: str | None = None
     current_hotfix: str | None = None
+    current_aux: str | None = None
     features: dict[str, Feature] = field(default_factory=dict)
     trains: dict[str, Train] = field(default_factory=dict)
     hotfixes: dict[str, Hotfix] = field(default_factory=dict)
+    auxes: dict[str, Aux] = field(default_factory=dict)
 
     def require_feature(self, name: str | None = None) -> Feature:
         key = name or self.current_feature
@@ -131,6 +164,14 @@ class State:
         if key not in self.hotfixes:
             raise GitConvoyError(f"unknown hotfix: {key}")
         return self.hotfixes[key]
+
+    def require_aux(self, name: str | None = None) -> Aux:
+        key = name or self.current_aux
+        if not key:
+            raise GitConvoyError("no current aux; run: git convoy aux start <name>")
+        if key not in self.auxes:
+            raise GitConvoyError(f"unknown aux: {key}")
+        return self.auxes[key]
 
 
 def state_path(workspace: Path) -> Path:
@@ -157,6 +198,7 @@ def _to_dict(state: State) -> dict[str, Any]:
         "current_feature": state.current_feature,
         "current_train": state.current_train,
         "current_hotfix": state.current_hotfix,
+        "current_aux": state.current_aux,
         "features": {
             name: {
                 "name": feat.name,
@@ -204,6 +246,15 @@ def _to_dict(state: State) -> dict[str, Any]:
                 ],
             }
             for name, item in state.hotfixes.items()
+        },
+        "auxes": {
+            name: {
+                "name": item.name,
+                "branch": item.branch,
+                "status": item.status,
+                "repos": [asdict(repo) for repo in item.repos],
+            }
+            for name, item in state.auxes.items()
         },
     }
 
@@ -261,11 +312,28 @@ def _from_dict(raw: dict[str, Any]) -> State:
                 for row in item.get("repos") or []
             ],
         )
+    auxes: dict[str, Aux] = {}
+    for name, item in (raw.get("auxes") or {}).items():
+        auxes[name] = Aux(
+            name=item.get("name", name),
+            branch=item.get("branch", f"aux/{name}"),
+            status=item.get("status", "in-progress"),
+            repos=[
+                AuxRepo(
+                    id=row["id"],
+                    path=row["path"],
+                    pr=row.get("pr"),
+                )
+                for row in item.get("repos") or []
+            ],
+        )
     return State(
         current_feature=raw.get("current_feature"),
         current_train=raw.get("current_train"),
         current_hotfix=raw.get("current_hotfix"),
+        current_aux=raw.get("current_aux"),
         features=features,
         trains=trains,
         hotfixes=hotfixes,
+        auxes=auxes,
     )

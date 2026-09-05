@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from gitconvoy.state import TrainRepo
 from gitconvoy.adopt import _python_package_names
 from gitconvoy.versions import (
@@ -86,7 +88,17 @@ def test_python_package_names_prefers_pyproject(tmp_path: Path) -> None:
         '[project]\nname = "arbitium-lab"\nversion = "0.0.4rc1"\n'
     )
     repo = TrainRepo(id="arbitiumlab", path="extensions/arbitiumlab")
-    assert _python_package_names(repo, workspace) == [
-        "arbitium-lab",
-        "renglo-arbitiumlab",
-    ]
+    assert _python_package_names(repo, workspace) == ["arbitium-lab"]
+
+
+def test_python_package_names_requires_name(tmp_path: Path) -> None:
+    from gitconvoy.errors import GitConvoyError
+
+    workspace = tmp_path
+    root = workspace / "extensions" / "orphan"
+    root.mkdir(parents=True)
+    (root / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n')
+    repo = TrainRepo(id="orphan", path="extensions/orphan")
+    with pytest.raises(GitConvoyError, match="missing \\[project\\] name"):
+        _python_package_names(repo, workspace)
+    assert _python_package_names(repo, workspace, required=False) == []

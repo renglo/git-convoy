@@ -5,6 +5,7 @@ from pathlib import Path
 
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.gitutil import is_git_repo
+from gitconvoy import membership
 from gitconvoy.state import STATE_DIRNAME, state_path
 
 SCAN_ROOTS = ("console", "dev", "extensions", "ops")
@@ -27,18 +28,6 @@ MERGE_RANK = {
     "console": 2,
 }
 
-# Platform tooling under ops/ — discovered by init but not part of feature sheets.
-FEATURE_SKIP_OPS = frozenset(
-    {
-        "bom-helper",
-        "extensions-service",
-        "git-convoy",
-        "gitconvoy",
-        "launcher",
-        "publisher",
-    }
-)
-
 
 @dataclass(frozen=True)
 class Repo:
@@ -48,8 +37,10 @@ class Repo:
     kind: str  # console | core | extension | ops
 
 
-def is_bom_repo_id(repo_id: str) -> bool:
-    """Tenant BOM repos (*-bom). Not feature participants — adopt/push deploys from main."""
+def is_bom_repo_id(repo_id: str, workspace: Path | None = None) -> bool:
+    """BOM repos: explicit .gitconvoy/aux.toml [bom], else *-bom id convention."""
+    if workspace is not None:
+        return membership.is_bom_id(workspace, repo_id)
     return repo_id.endswith("-bom")
 
 
@@ -84,8 +75,6 @@ def discover_repos(workspace: Path) -> list[Repo]:
         for child in sorted(folder.iterdir()):
             if child.name in SKIP_DIR_NAMES or not child.is_dir():
                 continue
-            if child.name in ("gitconvoy", "git-convoy"):
-                continue
             if not is_git_repo(child):
                 continue
             resolved = child.resolve()
@@ -104,20 +93,31 @@ def discover_repos(workspace: Path) -> list[Repo]:
 
 
 def product_repos(workspace: Path) -> list[Repo]:
-    return [repo for repo in discover_repos(workspace) if repo.kind != "ops"]
-
-
-def feature_repos(workspace: Path) -> list[Repo]:
-    """Product repos plus tenant ops (bootstrap, *-wl). Excludes platform tooling and *-bom.
-
-    BOM changes belong on the adopt/hotfix-adopt path against main, not feature PRs —
-    merging *-bom to main triggers deploy workflows.
-    """
+    """Repos eligible for features, trains, and hotfixes (not aux, not bom)."""
     return [
         repo
         for repo in discover_repos(workspace)
-        if not is_bom_repo_id(repo.id)
-        and (repo.kind != "ops" or repo.id not in FEATURE_SKIP_OPS)
+        if not membership.is_aux_id(workspace, repo.id)
+        and not is_bom_repo_id(repo.id, workspace)
+    ]
+
+
+def feature_repos(workspace: Path) -> list[Repo]:
+    """Same as product_repos — product cycle-1 participants."""
+    return product_repos(workspace)
+
+
+def aux_repos(workspace: Path) -> list[Repo]:
+    """Repos listed as aux in local membership (from gitconvoy.toml markers via init)."""
+    allowed = set(membership.load_membership(workspace)["aux"])
+    return [repo for repo in discover_repos(workspace) if repo.id in allowed]
+
+
+def bom_repos(workspace: Path) -> list[Repo]:
+    return [
+        repo
+        for repo in discover_repos(workspace)
+        if is_bom_repo_id(repo.id, workspace)
     ]
 
 

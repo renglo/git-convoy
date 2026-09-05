@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from gitconvoy import adopt as adopt_cmd
+from gitconvoy import aux as aux_cmd
 from gitconvoy import commit as commit_cmd
 from gitconvoy import feature as feature_cmd
 from gitconvoy import hotfix as hotfix_cmd
@@ -44,6 +45,8 @@ def _dispatch(workspace: Path, args: argparse.Namespace) -> tuple[dict, str]:
         return data, _status_text(data)
     if cmd == "feature":
         return _feature(workspace, state, args)
+    if cmd == "aux":
+        return _aux(workspace, state, args)
     if cmd == "train":
         return _train(workspace, state, args)
     if cmd == "adopt":
@@ -129,6 +132,87 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
         data = feature_cmd.show(workspace, state, args.name)
         return data, _feature_show_text(data)
     raise GitConvoyError(f"unknown feature command: {sub}")
+
+
+def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
+    sub = args.aux_cmd
+    if sub == "start":
+        data = aux_cmd.start(workspace, state, args.name)
+        n = data.get("repo_count") or 0
+        if n:
+            names = ", ".join(item["id"] for item in data["repos"]) or f"{n} repos"
+            return (
+                data,
+                f"aux {data['aux']} started ({data['branch']}): picked up {names}",
+            )
+        return data, f"aux {data['aux']} started ({data['branch']})"
+    if sub == "adopt":
+        data = aux_cmd.adopt(workspace, state)
+        names = ", ".join(item["id"] for item in data["adopted"]) or "(none)"
+        dropped = ", ".join(item["id"] for item in data.get("dropped") or [])
+        text = f"adopted {data['repo_count']} repos: {names}"
+        if dropped:
+            text += f"; dropped empty {dropped}"
+        return data, text
+    if sub == "abandon":
+        data = aux_cmd.abandon(
+            workspace,
+            state,
+            args.name,
+            yes=args.yes,
+            remote=args.remote,
+            as_json=args.json,
+        )
+        return data, _abandon_text(data)
+    if sub == "close":
+        data = aux_cmd.close(
+            workspace,
+            state,
+            args.name,
+            yes=args.yes,
+            remote=args.remote,
+            keep_branch=args.keep_branch,
+            as_json=args.json,
+        )
+        return data, _close_text(data)
+    if sub == "switch":
+        data = aux_cmd.switch(workspace, state, args.name)
+        return data, f"switched to {data['aux']} ({', '.join(data['participants']) or 'no participants'})"
+    if sub == "refresh":
+        data = aux_cmd.refresh(workspace, state)
+        return data, f"refreshed {data['aux']} from origin/develop"
+    if sub == "commit":
+        data = commit_cmd.commit(
+            workspace,
+            state,
+            plan=args.plan,
+            from_file=args.from_file,
+            header=args.header,
+            header_only=args.header_only,
+            include_diff=args.diff,
+            as_json=args.json,
+            kind="aux",
+        )
+        if data.get("printed"):
+            return data, "\n"
+        return data, _commit_text(data)
+    if sub == "push":
+        data = aux_cmd.push(workspace, state)
+        return data, _push_text(data)
+    if sub == "prs":
+        data = aux_cmd.prs(workspace, state, use_gh=not args.no_gh)
+        return data, _prs_text(data)
+    if sub == "approve":
+        data = aux_cmd.approve(workspace, state, args.name, force=args.force)
+        return data, _approve_text(data)
+    if sub == "promote":
+        data = aux_cmd.promote(workspace, state, args.name, use_gh=not args.no_gh)
+        return data, _promote_text(data)
+    if sub == "show":
+        data = aux_cmd.show(workspace, state, args.name)
+        return data, _feature_show_text(data)
+    raise GitConvoyError(f"unknown aux command: {sub}")
+
 
 
 def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
@@ -335,7 +419,7 @@ def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
 
 
 def _add_take_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--bom", help="Path to *-bom repo")
+    parser.add_argument("--bom", help="BOM repo path (default: .gitconvoy/aux.toml [bom], else *-bom)")
     parser.add_argument("--train", help="Train to pin (default: current)")
     parser.add_argument(
         "--from",
@@ -370,8 +454,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Machine-readable output")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("init", help="Create local state, gitignore, and Cursor skill")
-    sub.add_parser("status", help="Current feature, train, and dirty repos")
+    sub.add_parser("init", help="Create local state, membership, gitignore, and Cursor skill")
+    sub.add_parser("status", help="Current feature, aux, train, hotfix, and dirty repos")
 
     feature = sub.add_parser("feature", help="Feature sheet commands")
     fsub = feature.add_subparsers(dest="feature_cmd", required=True)
@@ -459,6 +543,76 @@ def _parser() -> argparse.ArgumentParser:
     )
     show = fsub.add_parser("show", help="Print the feature sheet")
     show.add_argument("name", nargs="?")
+
+    aux = sub.add_parser("aux", help="Auxiliary (platform tooling) sheet commands")
+    asub = aux.add_subparsers(dest="aux_cmd", required=True)
+    astart = asub.add_parser(
+        "start",
+        help="Create the aux sheet; pick up existing aux/<name>; otherwise checkout integration",
+    )
+    astart.add_argument("name")
+    asub.add_parser(
+        "adopt",
+        help="Move local aux-repo changes from develop or main onto aux/<name>",
+    )
+    aabandon = asub.add_parser(
+        "abandon",
+        help="Delete local aux/<name> branches (discards that work)",
+    )
+    aabandon.add_argument("name", nargs="?")
+    aabandon.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    aabandon.add_argument(
+        "--remote",
+        action="store_true",
+        help="Also delete origin/aux/<name>",
+    )
+    aclose = asub.add_parser(
+        "close",
+        help="After all PRs merge: checkout develop and remove aux branches",
+    )
+    aclose.add_argument("name", nargs="?")
+    aclose.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    aclose.add_argument(
+        "--remote",
+        action="store_true",
+        help="Also delete origin/aux/<name>",
+    )
+    aclose.add_argument(
+        "--keep-branch",
+        action="store_true",
+        help="Keep local aux/<name> branches",
+    )
+    acommit = asub.add_parser("commit", help="Commit dirty aux participant repos")
+    acommit.add_argument("--plan", action="store_true", help="Print the commit plan; do not commit")
+    acommit.add_argument("--from", dest="from_file", help="Apply a filled plan (JSON file, or - for stdin)")
+    acommit.add_argument("--header", help="Commit subject (required with --header-only)")
+    acommit.add_argument(
+        "--header-only",
+        action="store_true",
+        help="Commit every dirty participant with only --header",
+    )
+    acommit.add_argument("--diff", action="store_true", help="Include full patches in the plan")
+    aswitch = asub.add_parser("switch", help="Checkout an aux sheet's participant repos")
+    aswitch.add_argument("name")
+    asub.add_parser("refresh", help="Merge origin/develop into participant branches")
+    asub.add_parser("push", help="Push aux/<name> to origin (no PRs)")
+    aprs = asub.add_parser("prs", help="Push branches and open PRs into develop (gh if available)")
+    aprs.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
+    aapprove = asub.add_parser("approve", help="Approve sibling PRs via gh (Full mode)")
+    aapprove.add_argument("name", nargs="?")
+    aapprove.add_argument(
+        "--force",
+        action="store_true",
+        help="Approve even when CI checks are failing or pending",
+    )
+    apromote = asub.add_parser(
+        "promote",
+        help="Open develop→main PRs for participants ahead of main",
+    )
+    apromote.add_argument("name", nargs="?")
+    apromote.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
+    ashow = asub.add_parser("show", help="Print the aux sheet")
+    ashow.add_argument("name", nargs="?")
 
     train = sub.add_parser("train", help="Release train commands")
     tsub = train.add_subparsers(dest="train_cmd", required=True)
@@ -552,11 +706,11 @@ def _parser() -> argparse.ArgumentParser:
         "production",
         help="Promote the current BOM to production",
     )
-    production.add_argument("--bom", help="Path to *-bom repo")
+    production.add_argument("--bom", help="BOM repo path (override aux.toml)")
     draft = asub.add_parser("draft", help="Copy last version object to a new draft")
     draft.add_argument("--from", dest="from_version", required=True)
     draft.add_argument("--to", dest="to_version", required=True)
-    draft.add_argument("--bom", help="Path to *-bom repo")
+    draft.add_argument("--bom", help="BOM repo path (override aux.toml)")
     draft.add_argument("--train")
     draft.add_argument("--description")
     pin = asub.add_parser("pin", help="Set one package pin on a draft")
@@ -603,7 +757,7 @@ def _parser() -> argparse.ArgumentParser:
         "adopt",
         help="Draft next BOM, pin only hotfix packages, staging only",
     )
-    hadopt.add_argument("--bom", help="Path to *-bom repo")
+    hadopt.add_argument("--bom", help="BOM repo path (override aux.toml)")
     hadopt.add_argument("--from", dest="from_version")
     hadopt.add_argument("--to", dest="to_version")
     hadopt.add_argument("--description")
@@ -639,6 +793,12 @@ def _init_text(data: dict) -> str:
         f"skill:     {data['skill']}",
         f"repos:     {data['repo_count']}",
     ]
+    if data.get("membership"):
+        lines.append(f"membership:{data['membership']}")
+        aux = ", ".join(data.get("aux") or []) or "(none)"
+        bom = ", ".join(data.get("bom") or []) or "(none)"
+        lines.append(f"aux:       {aux}")
+        lines.append(f"bom:       {bom}")
     for repo in data["repos"]:
         lines.append(f"  {repo['kind']:10} {repo['id']:20} {repo['path']}")
     return "\n".join(lines)
@@ -655,6 +815,15 @@ def _status_text(data: dict) -> str:
             lines.append("           " + ", ".join(feat["repos"]))
     else:
         lines.append("feature:   (none)")
+    if data.get("aux"):
+        item = data["aux"]
+        lines.append(
+            f"aux:       {item['name']}  ({item['repo_count']} repos)  {item['branch']}"
+        )
+        if item["repos"]:
+            lines.append("           " + ", ".join(item["repos"]))
+    else:
+        lines.append("aux:       (none)")
     if data["train"]:
         train = data["train"]
         lines.append(
@@ -695,22 +864,23 @@ def _feature_show_text(data: dict) -> str:
 
 
 def _close_text(data: dict) -> str:
+    name = _sheet_name(data)
     if not data.get("closed"):
-        return f"{data['feature']}  not closed"
-    feature_branch = data.get("branch") or "feature/<name>"
+        return f"{name}  not closed"
+    branch = data.get("branch") or "feature/<name>"
     lines = [
-        f"{data['feature']}  closed  {feature_branch}",
+        f"{name}  closed  {branch}",
         data.get("note") or "",
     ]
     for repo in data.get("repos") or []:
         checked_out = repo.get("branch") or "develop"
         bits = [f"checked out {checked_out}"]
         if repo.get("deleted_local"):
-            bits.append(f"deleted local {feature_branch}")
+            bits.append(f"deleted local {branch}")
         if repo.get("deleted_remote"):
-            bits.append(f"deleted origin {feature_branch}")
+            bits.append(f"deleted origin {branch}")
         elif repo.get("on_origin"):
-            bits.append(f"{feature_branch} still on origin")
+            bits.append(f"{branch} still on origin")
         lines.append(f"  {repo['id']:20}  " + "; ".join(bits))
     return "\n".join(lines)
 
@@ -784,8 +954,21 @@ def _train_show_text(data: dict) -> str:
 
 
 def _sheet_name(data: dict) -> str:
-    return data.get("feature") or data.get("hotfix") or "?"
+    return data.get("feature") or data.get("hotfix") or data.get("aux") or "?"
 
+
+def _promote_text(data: dict) -> str:
+    lines = [f"{data.get('aux') or '?'}  promote  {len(data.get('repos') or [])} repos"]
+    note = (data.get("note") or "").strip()
+    if note:
+        lines.append(note)
+    for repo in data.get("repos") or []:
+        if repo.get("skipped"):
+            lines.append(f"  {repo['id']:20} skipped ({repo['skipped']})")
+            continue
+        url = repo.get("pr") or repo.get("compare") or ""
+        lines.append(f"  {repo['id']:20} {url}")
+    return "\n".join(lines)
 
 def _abandon_text(data: dict) -> str:
     name = _sheet_name(data)
@@ -814,9 +997,10 @@ def _abandon_text(data: dict) -> str:
 
 def _commit_text(data: dict) -> str:
     repos = data.get("repos") or []
+    name = _sheet_name(data)
     if data.get("mode") == "plan":
         lines = [
-            f"{data['feature']}  {data['branch']}  plan  {len(repos)} repos",
+            f"{name}  {data['branch']}  plan  {len(repos)} repos",
         ]
         if data.get("header"):
             lines.append(f"header:    {data['header']}")
@@ -826,7 +1010,7 @@ def _commit_text(data: dict) -> str:
             lines.append(f"  {repo['id']:20} {repo.get('stat') or ''}")
         return "\n".join(lines)
     lines = [
-        f"{data['feature']}  committed {len(repos)} repos",
+        f"{name}  committed {len(repos)} repos",
     ]
     if data.get("header"):
         lines.append(f"header:    {data['header']}")
@@ -892,7 +1076,7 @@ def _hotfix_show_text(data: dict) -> str:
 
 def _prs_text(data: dict) -> str:
     lines = [
-        f"{data['feature']} PRs",
+        f"{_sheet_name(data)} PRs",
         "merge order: " + " → ".join(data["merge_order"]),
         data["note"],
     ]
@@ -904,7 +1088,7 @@ def _prs_text(data: dict) -> str:
 
 def _approve_text(data: dict) -> str:
     lines = [
-        f"{data['feature']}  approved {data['approved_count']}/{data['repo_count']} PRs",
+        f"{_sheet_name(data)}  approved {data['approved_count']}/{data['repo_count']} PRs",
         "merge order: " + " → ".join(data["merge_order"]),
         data["note"],
     ]

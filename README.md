@@ -636,6 +636,33 @@ A manual staging check on **stable** pins before enabling production is recommen
 
 ---
 
+## Aux — Platform tooling (parallel to features)
+
+Use **`git convoy aux`** for platform/tooling repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, extensions-service, etc.).
+
+Membership:
+
+1. Each aux repo commits `gitconvoy.toml` with `role = "aux"` (BOM repos use `role = "bom"`). Unmarked repos are **product**.
+2. `git convoy init` writes local `.gitconvoy/aux.toml` from those markers (workspace-local, not versioned).
+3. `git convoy adopt` (and hotfix adopt) defaults to the single repo listed under `[bom]` in that file — any directory name is fine. Pass `--bom PATH` only to override. If `[bom]` is empty, discovery falls back to a `*-bom` directory name.
+
+Lifecycle mirrors Cycle 1 on **aux repos only**. Branch prefix `aux/<name>`. PRs target `develop`. Independent of the current feature/train/hotfix. Optional `aux promote` opens develop→main when main must pick up the tip.
+
+```bash
+git convoy aux start codeartifact-mosaic
+git convoy aux adopt
+git convoy aux commit --header "fix: …" --header-only
+git convoy aux prs
+# merge PRs to develop in GitHub
+git convoy aux show
+git convoy aux close --yes
+git convoy aux promote          # optional: develop → main
+```
+
+`feature adopt` ignores dirty aux repos; `aux adopt` ignores dirty product repos.
+
+---
+
 ## Hotfix — Production emergency
 
 Do not wait for the next train. A hotfix can touch **more than one product repo**. PRs go to **`main`**. After tags land, the patch is merged into **`develop`** and absorbed into local in-progress **`feature/*`** branches so every branch in process gets it.
@@ -693,8 +720,8 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 
 | Command | Cycle | What it does |
 | ------- | ----- | ------------ |
-| `git convoy init` | 1 | State file, gitignore, Cursor skill |
-| `git convoy status` | * | Current feature, train, dirty repos |
+| `git convoy init` | 1 | State file, membership (`aux.toml`), gitignore, Cursor skill |
+| `git convoy status` | * | Current feature, aux, train, hotfix, dirty repos |
 | `git convoy sync develop` | * | Merge stable/`main` into `develop` for all product repos (no feature/train required) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
 | `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
@@ -707,17 +734,29 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy feature approve` | 1 | Approve sibling PRs (Full; requires `gh`) |
 | `git convoy feature show [NAME]` | 1 | Feature sheet + merge status |
 | `git convoy feature close` | 1 | After all PRs merged |
+| `git convoy aux start NAME` | * | Aux sheet; pick up existing `aux/NAME`; else checkout integration |
+| `git convoy aux adopt` | * | Branch changed **aux** repos onto `aux/NAME` (from develop or main) |
+| `git convoy aux abandon` | * | Delete local `aux/<name>` (lossy) |
+| `git convoy aux commit` | * | Commit dirty aux participants |
+| `git convoy aux push` | * | Push `aux/<name>` (no PRs) |
+| `git convoy aux switch NAME` | * | Checkout that aux’s repos |
+| `git convoy aux refresh` | * | Merge `origin/develop` into aux participants |
+| `git convoy aux prs` | * | Push and open PRs into develop (Full); `--no-gh` for compare URLs |
+| `git convoy aux approve` | * | Approve sibling PRs (Full) |
+| `git convoy aux promote` | * | Open develop→main PRs when develop is ahead |
+| `git convoy aux show [NAME]` | * | Aux sheet + merge status |
+| `git convoy aux close` | * | After all PRs merged |
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
 | `git convoy train show [NAME]` | 2 | Read train sheet |
 | `git convoy train delete` | 2 | Delete `release/<train>` branches |
 | `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
-| `git convoy adopt` | 3 | Staging BOM — `(draft)` or `(refresh)`; Full mode runs verify + self-heal by default |
+| `git convoy adopt` | 3 | Staging BOM from `.gitconvoy/aux.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)` |
 | `git convoy adopt --require-verify` | 3–4 | Strict: refuse adopt when any publish workflow failed |
 | `git convoy adopt --no-verify` | 3–4 | Skip verify; local workflow heuristic only (Simple mode) |
 | `git convoy train publish` | 4 | Stable tags → registry; then mergeback into `develop` |
 | `git convoy train mergeback` | 4 | Retry develop sync for all product repos (participants + non-participants) |
-| `git convoy adopt --production` | 4 | Stable pins + `production.enabled: true` |
+| `git convoy adopt --production` | 4 | Stable pins + `production.enabled: true` (same BOM default as `adopt`) |
 | `git convoy hotfix start NAME` | * | Branch or pick up `hotfix/<name>`; bump PATCH unless already bumped |
 | `git convoy hotfix commit` | * | Commit dirty hotfix participants |
 | `git convoy hotfix push` | * | Push `hotfix/<name>` (no PRs) |

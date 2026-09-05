@@ -51,15 +51,27 @@ def status(workspace: Path, state: State) -> dict:
             "repo_count": len(item.repos),
             "repos": [repo.id for repo in item.repos],
         }
+    aux = None
+    if state.current_aux and state.current_aux in state.auxes:
+        item = state.auxes[state.current_aux]
+        aux = {
+            "name": item.name,
+            "branch": item.branch,
+            "status": item.status,
+            "repo_count": len(item.repos),
+            "repos": item.repo_ids(),
+        }
     return {
         "ok": True,
         "workspace": str(workspace),
         "current_feature": state.current_feature,
         "current_train": state.current_train,
         "current_hotfix": state.current_hotfix,
+        "current_aux": state.current_aux,
         "feature": feature,
         "hotfix": hotfix,
         "train": train,
+        "aux": aux,
         "dirty": dirty,
         "repos": repos,
     }

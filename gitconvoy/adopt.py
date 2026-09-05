@@ -9,8 +9,9 @@ from gitconvoy import gitutil, versions
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo
 from gitconvoy import ghutil
+from gitconvoy import membership
 from gitconvoy.workflows import repo_registry_ready
-from gitconvoy.workspace import SKIP_DIR_NAMES
+from gitconvoy.workspace import SKIP_DIR_NAMES, discover_repos
 
 _BOM_SKIP = SKIP_DIR_NAMES | {"gitconvoy", "git-convoy"}
 
@@ -28,11 +29,70 @@ def find_bom_repo(workspace: Path, explicit: str | None = None) -> Path:
         return matches[0]
     if len(matches) > 1:
         names = ", ".join(_bom_label(workspace, path) for path in matches)
-        raise GitConvoyError(f"multiple *-bom repos ({names}); pass --bom")
-    raise GitConvoyError("no *-bom repo found; pass --bom")
+        raise GitConvoyError(f"multiple BOM repos ({names}); pass --bom")
+    raise GitConvoyError(
+        "no BOM repo found; list one under [bom] in .gitconvoy/aux.toml "
+        "(git convoy init), use a *-bom directory, or pass --bom"
+    )
 
 
 def _discover_bom_repos(workspace: Path) -> list[Path]:
+    """Prefer `.gitconvoy/aux.toml` [bom]; else legacy `*-bom` directory names."""
+    listed = membership.load_membership(workspace)["bom"]
+    if listed:
+        return _resolve_membership_bom(workspace, listed)
+    return _discover_bom_repos_by_suffix(workspace)
+
+
+def _resolve_membership_bom(workspace: Path, listed: list[str]) -> list[Path]:
+    by_id = {repo.id: repo.path for repo in discover_repos(workspace)}
+    found: list[Path] = []
+    missing: list[str] = []
+    for repo_id in listed:
+        path = by_id.get(repo_id)
+        if path is None:
+            matches = _find_dirs_named(workspace, repo_id)
+            if len(matches) == 1:
+                path = matches[0]
+            elif len(matches) > 1:
+                labels = ", ".join(_bom_label(workspace, item) for item in matches)
+                raise GitConvoyError(
+                    f"BOM id {repo_id!r} matches multiple directories ({labels}); "
+                    "pass --bom"
+                )
+        if path is None:
+            missing.append(repo_id)
+            continue
+        found.append(path)
+    if missing:
+        raise GitConvoyError(
+            "BOM repo(s) listed in .gitconvoy/aux.toml not found in workspace: "
+            + ", ".join(missing)
+        )
+    return found
+
+
+def _find_dirs_named(workspace: Path, name: str) -> list[Path]:
+    found: list[Path] = []
+
+    def walk(root: Path) -> None:
+        try:
+            children = sorted(root.iterdir(), key=lambda item: item.name)
+        except OSError:
+            return
+        for child in children:
+            if not child.is_dir() or child.name in _BOM_SKIP:
+                continue
+            if child.name == name:
+                found.append(child)
+                continue
+            walk(child)
+
+    walk(workspace)
+    return found
+
+
+def _discover_bom_repos_by_suffix(workspace: Path) -> list[Path]:
     found: list[Path] = []
 
     def walk(root: Path) -> None:
@@ -506,43 +566,48 @@ def _pep_and_npm(version: str) -> tuple[str, str]:
     return versions.with_rc(version, rc)
 
 
-def _invented_npm_name(repo_id: str) -> str:
-    if repo_id == "console":
-        return "@renglo/console"
-    short = repo_id.removeprefix("renglo-")
-    return f"@renglo/{short}"
-
-
-def _invented_python_name(repo_id: str) -> str | None:
-    if repo_id == "console":
-        return None
-    short = repo_id.removeprefix("renglo-")
-    return repo_id if repo_id.startswith("renglo-") else f"renglo-{short}"
-
-
-def _python_package_names(repo: TrainRepo, workspace: Path) -> list[str]:
-    """Prefer [project] name from pyproject; keep invented as legacy BOM fallback."""
+def _python_package_names(
+    repo: TrainRepo,
+    workspace: Path,
+    *,
+    required: bool = True,
+) -> list[str]:
+    """Python distribution names from pyproject only (no invented fallbacks)."""
     if repo.id == "console":
         return []
-    invented = _invented_python_name(repo.id)
     actual = versions.read_python_package_name(workspace / repo.path)
-    names: list[str] = []
     if actual:
-        names.append(actual)
-    if invented and invented not in names:
-        names.append(invented)
-    return names
+        return [actual]
+    if not required:
+        return []
+    info = versions.read_version(workspace / repo.path)
+    if info.get("python"):
+        raise GitConvoyError(
+            f"{repo.id}: missing [project] name in pyproject.toml "
+            "(package/ or root); cannot pin python package"
+        )
+    return []
 
 
-def _npm_package_names(repo: TrainRepo, workspace: Path) -> list[str]:
-    invented = _invented_npm_name(repo.id)
+def _npm_package_names(
+    repo: TrainRepo,
+    workspace: Path,
+    *,
+    required: bool = True,
+) -> list[str]:
+    """npm package names from package.json only (no invented fallbacks)."""
     actual = versions.read_npm_package_name(workspace / repo.path)
-    names: list[str] = []
     if actual:
-        names.append(actual)
-    if invented not in names:
-        names.append(invented)
-    return names
+        return [actual]
+    info = versions.read_version(workspace / repo.path)
+    if not info.get("npm"):
+        return []
+    if not required:
+        return []
+    raise GitConvoyError(
+        f"{repo.id}: missing name in ui/package.json or package.json; "
+        "cannot pin npm package"
+    )
 
 
 def _package_targets(
@@ -552,7 +617,7 @@ def _package_targets(
 ) -> list[tuple[str, str]]:
     repo_root = workspace / repo.path
     registry = repo_registry_ready(repo_root, repo.id)
-    if registry is False or (repo.id == "console" and registry is not True):
+    if registry is not True:
         return []
     python_names = _python_package_names(repo, workspace)
     npm_names = _npm_package_names(repo, workspace)
@@ -584,9 +649,9 @@ def _candidate_package_pins(
     workspace: Path,
 ) -> list[tuple[str, str]]:
     pins: list[tuple[str, str]] = []
-    for name in _python_package_names(repo, workspace):
+    for name in _python_package_names(repo, workspace, required=False):
         pins.append(("python", name))
-    for name in _npm_package_names(repo, workspace):
+    for name in _npm_package_names(repo, workspace, required=False):
         pins.append(("npm", name))
     return pins
 
@@ -680,7 +745,7 @@ def _heuristic_pin_strategy(
     workspace: Path,
 ) -> tuple[bool, str]:
     registry = repo_registry_ready(workspace / repo.path, repo.id)
-    if registry is False or (repo.id == "console" and registry is not True):
+    if registry is not True:
         return False, "git"
     return True, "registry"
 
