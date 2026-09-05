@@ -8,8 +8,10 @@ from gitconvoy import ghutil
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import Aux, State, save
-from gitconvoy.sync import DevelopSyncEntry, sync_repos_develop
 from gitconvoy.workspace import Repo, aux_repos, merge_sort
+
+# Aux PRs land on main (hotfix-style). Close merges main back into develop.
+_AUX_PR_BASE = "main"
 
 
 def start(workspace: Path, state: State, name: str) -> dict:
@@ -23,6 +25,12 @@ def start(workspace: Path, state: State, name: str) -> dict:
     picked: list[dict] = []
     for repo in aux_repos(workspace):
         gitutil.fetch(repo.path)
+        ensured = gitutil.ensure_develop(repo.path, push=bool(gitutil.origin_url(repo.path)))
+        if ensured.get("status") == "failed":
+            raise GitConvoyError(
+                f"{repo.id}: cannot ensure develop"
+                + (f" ({ensured.get('error')})" if ensured.get("error") else "")
+            )
         current = gitutil.current_branch(repo.path)
         dirty = gitutil.is_dirty(repo.path)
         exists = gitutil.has_branch(repo.path, branch)
@@ -152,11 +160,14 @@ def _drop_non_aux_sheet_repos(workspace: Path, feature: Aux) -> list[dict]:
 
 
 def _branch_has_work(repo: Path, branch: str) -> bool:
-    """Dirty on this branch, or commits not already contained in develop/main."""
+    """Dirty on this branch, or commits not already contained in main."""
     if gitutil.is_dirty(repo) and gitutil.current_branch(repo) == branch:
         return True
     if not gitutil.has_branch(repo, branch):
         return False
+    main_tip = gitutil.rev_parse(repo, "origin/main") or gitutil.rev_parse(repo, "main")
+    if main_tip:
+        return not gitutil.branch_merged_into(repo, branch, base=main_tip)
     return not gitutil.branch_merged_into(repo, branch)
 
 
@@ -439,14 +450,25 @@ def refresh(workspace: Path, state: State) -> dict:
     conflicts: list[str] = []
     for repo_row in feature.repos:
         repo_path = workspace / repo_row.path
-        integration = gitutil.integration_branch(repo_path)
+        ensured = gitutil.ensure_develop(repo_path, push=bool(gitutil.origin_url(repo_path)))
+        if ensured.get("status") == "failed":
+            raise GitConvoyError(
+                f"{repo_row.id}: cannot ensure develop"
+                + (f" ({ensured.get('error')})" if ensured.get("error") else "")
+            )
         gitutil.checkout_branch(repo_path, feature.branch)
         gitutil.fetch(repo_path)
-        merged = gitutil.merge(repo_path, f"origin/{integration}")
+        main_ref = (
+            "origin/main"
+            if gitutil.has_remote_branch(repo_path, "main")
+            else "main"
+        )
+        merged = gitutil.merge(repo_path, main_ref)
         item = {
             "id": repo_row.id,
             "path": repo_row.path,
             "ok": merged.returncode == 0,
+            "ref": main_ref,
         }
         if merged.returncode != 0:
             item["error"] = (merged.stderr or merged.stdout or "").strip()
@@ -479,23 +501,37 @@ def push(workspace: Path, state: State) -> dict:
 def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     feature = state.require_aux()
     branch = feature.branch
-    entries = [
-        DevelopSyncEntry(id=repo_row.id, rel=repo_row.path)
-        for repo_row in feature.repos
-    ]
-    develop_sync = sync_repos_develop(
-        workspace,
-        entries,
-        push=True,
-        retry_hint="git convoy aux prs",
-    )
+    ensured_rows: list[dict] = []
     for repo_row in feature.repos:
-        gitutil.checkout_branch(workspace / repo_row.path, branch)
-    if not develop_sync["ok"]:
-        raise GitConvoyError(
-            develop_sync.get("note")
-            or "develop sync failed; resolve conflicts, then git convoy aux prs"
+        repo_path = workspace / repo_row.path
+        ensured = gitutil.ensure_develop(
+            repo_path, push=bool(gitutil.origin_url(repo_path))
         )
+        if ensured.get("status") == "failed":
+            raise GitConvoyError(
+                f"{repo_row.id}: cannot ensure develop"
+                + (f" ({ensured.get('error')})" if ensured.get("error") else "")
+                + "; fix, then git convoy aux prs"
+            )
+        ensured_rows.append(
+            {
+                "id": repo_row.id,
+                "path": repo_row.path,
+                "status": ensured.get("status"),
+                "created": bool(ensured.get("created")),
+            }
+        )
+        gitutil.checkout_branch(repo_path, "main")
+        if gitutil.rev_parse(repo_path, "origin/main"):
+            pulled = gitutil.run(
+                repo_path, "pull", "--ff-only", "origin", "main", check=False
+            )
+            if pulled.returncode != 0:
+                raise GitConvoyError(
+                    f"{repo_row.id}: cannot fast-forward main from origin; "
+                    "fix main, then git convoy aux prs"
+                )
+        gitutil.checkout_branch(repo_path, branch)
     _push_aux_branches(workspace, feature)
     opened: list[dict] = []
     for repo_row in feature.repos:
@@ -509,9 +545,8 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
                 repo_row.pr = created
         compare = None
         if slug:
-            integration = gitutil.integration_branch(repo_path)
             compare = (
-                f"https://github.com/{slug}/compare/{integration}...{feature.branch}"
+                f"https://github.com/{slug}/compare/{_AUX_PR_BASE}...{feature.branch}"
             )
         opened.append(
             {
@@ -528,9 +563,10 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     save(workspace, state)
     opened_prs = sum(1 for row in opened if row.get("pr"))
     note = (
-        "Merged latest stable/main into develop before opening PRs. "
-        "Approve with: git convoy aux approve (Full mode). Merge only when all "
-        "sibling PRs are approved, in merge_order. git-convoy does not merge."
+        "PRs target main. Approve with: git convoy aux approve (Full mode). "
+        "Merge only when all sibling PRs are approved, in merge_order. "
+        "git-convoy does not merge. After merge: git convoy aux close "
+        "(merges main → develop)."
     )
     if use_gh and opened and opened_prs == 0:
         note += (
@@ -547,8 +583,10 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     return {
         "ok": True,
         "aux": feature.name,
+        "branch": branch,
+        "base": _AUX_PR_BASE,
         "merge_order": merge_sort(feature.repo_ids()),
-        "develop_sync": develop_sync,
+        "ensure_develop": ensured_rows,
         "note": note,
         "repos": opened,
     }
@@ -587,7 +625,9 @@ def approve(
                 }
             )
             continue
-        merge_status = gitutil.pr_merge_status(repo_path, feature.branch, repo_row.pr)
+        merge_status = gitutil.pr_merge_status(
+            repo_path, feature.branch, repo_row.pr, base=_AUX_PR_BASE
+        )
         if merge_status == "merged":
             rows.append(
                 {
@@ -671,7 +711,8 @@ def approve(
         "repos": rows,
         "note": (
             "Merge only when every sibling PR is approved, in merge_order. "
-            "git-convoy does not merge."
+            "Merge into main. git-convoy does not merge. "
+            "After merge: git convoy aux close."
         ),
     }
     if blocked:
@@ -713,7 +754,10 @@ def _show_next_steps(rows: list[dict]) -> str:
         return "No participants yet. Run: git convoy aux adopt"
     statuses = {row["merge_status"] for row in rows}
     if statuses <= {"merged"}:
-        return "All participants merged. Run: git convoy aux close"
+        return (
+            "All participants merged into main. "
+            "Run: git convoy aux close (merges main → develop)"
+        )
     if "uncommitted" in statuses:
         return (
             "Uncommitted changes on one or more participants. "
@@ -741,7 +785,9 @@ def _merge_rows(workspace: Path, feature: Aux) -> list[dict]:
     rows: list[dict] = []
     for repo in feature.repos:
         repo_path = workspace / repo.path
-        merge_status = gitutil.pr_merge_status(repo_path, feature.branch, repo.pr)
+        merge_status = gitutil.pr_merge_status(
+            repo_path, feature.branch, repo.pr, base=_AUX_PR_BASE
+        )
         rows.append(
             {
                 "id": repo.id,
@@ -751,6 +797,54 @@ def _merge_rows(workspace: Path, feature: Aux) -> list[dict]:
             }
         )
     return rows
+
+
+def _merge_main_into_develop(repo: Path, repo_id: str, *, push_remote: bool) -> dict:
+    """Merge main into develop after aux work landed on main (hotfix-style)."""
+    ensured = gitutil.ensure_develop(repo, push=push_remote and bool(gitutil.origin_url(repo)))
+    if ensured.get("status") == "failed":
+        return {
+            "status": "failed",
+            "synced": False,
+            "error": ensured.get("error") or f"{repo_id}: cannot ensure develop",
+        }
+    gitutil.checkout_branch(repo, "main")
+    if gitutil.rev_parse(repo, "origin/main"):
+        pulled = gitutil.run(
+            repo, "pull", "--ff-only", "origin", "main", check=False
+        )
+        if pulled.returncode != 0:
+            return {
+                "status": "failed",
+                "synced": False,
+                "error": f"{repo_id}: cannot fast-forward main",
+            }
+    gitutil.checkout_branch(repo, "develop")
+    if gitutil.rev_parse(repo, "origin/develop"):
+        pulled = gitutil.run(
+            repo, "pull", "--ff-only", "origin", "develop", check=False
+        )
+        if pulled.returncode != 0:
+            return {
+                "status": "failed",
+                "synced": False,
+                "error": f"{repo_id}: cannot fast-forward develop",
+            }
+    if gitutil.is_ancestor(repo, "main", "develop"):
+        return {"status": "already", "synced": True}
+    merged = gitutil.merge(repo, "main")
+    if merged.returncode != 0:
+        gitutil.run(repo, "merge", "--abort", check=False)
+        return {
+            "status": "failed",
+            "synced": False,
+            "error": (merged.stderr or merged.stdout or "").strip(),
+        }
+    if push_remote and gitutil.origin_url(repo) and (
+        gitutil.rev_parse(repo, "origin/develop") or ensured.get("created")
+    ):
+        gitutil.push(repo, "origin", "develop")
+    return {"status": "merged", "synced": True}
 
 
 def close(
@@ -770,7 +864,7 @@ def close(
     pending = [row for row in rows if row["merge_status"] != "merged"]
     if pending:
         raise GitConvoyError(
-            "not all participants merged: "
+            "not all participants merged into main: "
             + ", ".join(f"{row['id']} ({row['merge_status']})" for row in pending)
             + ". Run: git convoy aux show"
         )
@@ -780,8 +874,8 @@ def close(
             raise GitConvoyError("close removes the aux sheet; pass --yes to confirm")
         ids = ", ".join(row["id"] for row in rows) or "(none)"
         prompt = (
-            f"This will check out the integration branch in {len(rows)} repos ({ids}), "
-            f"pull from origin, "
+            f"This will merge main → develop in {len(rows)} repos ({ids}), "
+            f"check out develop, "
         )
         if keep_branch:
             prompt += "and keep local aux branches. Continue? : "
@@ -801,7 +895,8 @@ def close(
                 "repos": [],
             }
 
-    cleaned: list[dict] = []
+    mergeback_rows: list[dict] = []
+    mergeback_failed: list[str] = []
     for row in rows:
         repo_path = workspace / row["path"]
         gitutil.fetch(repo_path)
@@ -812,9 +907,36 @@ def close(
                 f"{row['id']} has uncommitted changes on {feature.branch}; "
                 "commit or stash before close"
             )
-        integration = gitutil.checkout_integration(repo_path)
+        mergeback = _merge_main_into_develop(
+            repo_path,
+            row["id"],
+            push_remote=True,
+        )
+        item = {
+            "id": row["id"],
+            "path": row["path"],
+            "merge_status": row["merge_status"],
+            "mergeback": mergeback,
+        }
+        if mergeback.get("status") == "failed":
+            item["error"] = mergeback.get("error")
+            mergeback_failed.append(row["id"])
+        mergeback_rows.append(item)
+
+    if mergeback_failed:
+        raise GitConvoyError(
+            "main → develop mergeback failed in: "
+            + ", ".join(mergeback_failed)
+            + ". resolve on develop, then re-run: git convoy aux close --yes"
+        )
+
+    cleaned: list[dict] = []
+    for item in mergeback_rows:
+        repo_path = workspace / item["path"]
         deleted_local = False
         if not keep_branch and gitutil.has_local_branch(repo_path, feature.branch):
+            if gitutil.current_branch(repo_path) == feature.branch:
+                gitutil.checkout_branch(repo_path, "develop")
             gitutil.delete_branch(repo_path, feature.branch)
             deleted_local = True
         on_origin = gitutil.has_remote_branch(repo_path, feature.branch)
@@ -822,13 +944,13 @@ def close(
         if remote and on_origin:
             gitutil.delete_remote_branch(repo_path, feature.branch)
             deleted_remote = True
+        if gitutil.current_branch(repo_path) != "develop":
+            gitutil.checkout_branch(repo_path, "develop")
         cleaned.append(
             {
-                "id": row["id"],
-                "path": row["path"],
-                "merge_status": row["merge_status"],
+                **item,
                 "branch": gitutil.current_branch(repo_path),
-                "integration_branch": integration,
+                "integration_branch": "develop",
                 "deleted_local": deleted_local,
                 "deleted_remote": deleted_remote,
                 "on_origin": on_origin and not deleted_remote,
@@ -839,8 +961,10 @@ def close(
         state.current_aux = None
     state.auxes.pop(feature.name, None)
     save(workspace, state)
-    still_on_origin = [row["id"] for row in cleaned if row["on_origin"]]
-    note = "Checked out the integration branch and pulled from origin in every participant."
+    still_on_origin = [row["id"] for row in cleaned if row.get("on_origin")]
+    note = (
+        "Merged main → develop and checked out develop in every participant."
+    )
     if keep_branch:
         note += f" Local {feature.branch} branches kept."
     else:
@@ -911,9 +1035,9 @@ def _gh_create_pr(repo: Path, feature: Aux, slug: str) -> str | None:
     body = (
         f"Part of cross-repo aux change `{feature.name}`.\n\n"
         f"Participants: {', '.join(feature.repo_ids()) or '(this repo)'}\n\n"
-        "Do not merge until every sibling PR is approved."
+        "Merge into **main**. Do not merge until every sibling PR is approved. "
+        "After merge: `git convoy aux close` (merges main → develop)."
     )
-    integration = gitutil.integration_branch(repo)
     created = subprocess.run(
         [
             gh,
@@ -922,7 +1046,7 @@ def _gh_create_pr(repo: Path, feature: Aux, slug: str) -> str | None:
             "--repo",
             slug,
             "--base",
-            integration,
+            _AUX_PR_BASE,
             "--head",
             feature.branch,
             "--title",
@@ -1011,8 +1135,9 @@ def promote(
             }
         )
     note = (
-        "Promote opens develop→main PRs (or compare URLs) for participants "
-        "where develop is ahead of main. Merge those in GitHub when ready."
+        "Promote is recovery only: opens develop→main PRs (or compare URLs) when "
+        "develop is already ahead of main. Normal aux flow is aux prs → merge to "
+        "main → aux close (main → develop)."
     )
     return {
         "ok": True,

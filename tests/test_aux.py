@@ -81,3 +81,73 @@ def test_aux_adopt_fishes_dirty_work_from_main(workspace: Path) -> None:
     assert adopted["extensions-service"].get("fish_from") == "main"
     assert git(svc, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "aux/initial-aux"
     assert (svc / "SERVICE.md").read_text() == "main-side change\n"
+
+
+def test_aux_start_creates_missing_develop(workspace: Path) -> None:
+    helper = init_repo(workspace / "ops" / "bom-helper", develop=False)
+    (helper / "gitconvoy.toml").write_text('role = "aux"\n')
+    git(helper, "add", "gitconvoy.toml")
+    git(helper, "commit", "-m", "marker")
+    membership.refresh_membership(workspace, discover_repos(workspace))
+
+    assert git(helper, "branch", "--list", "develop").stdout.strip() == ""
+    aux_cmd.start(workspace, State(), "tools")
+    assert git(helper, "rev-parse", "--abbrev-ref", "develop").stdout.strip() == "develop"
+
+
+def test_aux_prs_compare_targets_main(workspace: Path, monkeypatch) -> None:
+    _aux_workspace(workspace)
+    launcher = workspace / "ops" / "launcher"
+    (launcher / "TOOL.md").write_text("aux change\n")
+    state = State()
+    aux_cmd.start(workspace, state, "codeartifact")
+    aux_cmd.adopt(workspace, state)
+    state = load(workspace)
+    from gitconvoy import commit as commit_cmd
+
+    commit_cmd.commit(
+        workspace,
+        state,
+        header="fix: aux",
+        header_only=True,
+        kind="aux",
+    )
+    monkeypatch.setattr(
+        "gitconvoy.aux.gitutil.github_slug", lambda _repo: "renglo/launcher"
+    )
+    monkeypatch.setattr("gitconvoy.aux.gitutil.push", lambda *args, **kwargs: None)
+    data = aux_cmd.prs(workspace, load(workspace), use_gh=False)
+    assert data["base"] == "main"
+    assert data["repos"][0]["compare"].endswith("compare/main...aux/codeartifact")
+
+
+def test_aux_close_merges_main_into_develop(workspace: Path) -> None:
+    _aux_workspace(workspace)
+    launcher = workspace / "ops" / "launcher"
+    (launcher / "TOOL.md").write_text("ship it\n")
+    state = State()
+    aux_cmd.start(workspace, state, "ship")
+    aux_cmd.adopt(workspace, state)
+    state = load(workspace)
+    from gitconvoy import commit as commit_cmd
+
+    commit_cmd.commit(
+        workspace,
+        state,
+        header="fix: ship",
+        header_only=True,
+        kind="aux",
+    )
+    # Simulate PR merge into main without going through GitHub.
+    git(launcher, "checkout", "main")
+    git(launcher, "merge", "--no-edit", "aux/ship")
+    git(launcher, "checkout", "aux/ship")
+    state = load(workspace)
+    data = aux_cmd.close(workspace, state, yes=True, keep_branch=True)
+    assert data["closed"] is True
+    assert data["repos"][0]["mergeback"]["status"] in {"merged", "already"}
+    assert git(launcher, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
+    # Aux tip is now an ancestor of develop.
+    tip = git(launcher, "rev-parse", "aux/ship").stdout.strip()
+    merge_base = git(launcher, "merge-base", tip, "develop").stdout.strip()
+    assert tip == merge_base
