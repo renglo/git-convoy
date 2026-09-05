@@ -23,8 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     as_json = args.json
-    workspace = find_workspace(Path(args.workspace) if args.workspace else None)
     try:
+        workspace = find_workspace(Path(args.workspace) if args.workspace else None)
         payload, text = _dispatch(workspace, args)
     except GitConvoyError as exc:
         return fail(exc.message, as_json)

@@ -2,9 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from gitconvoy import gitutil
 from gitconvoy import membership
-from gitconvoy.workspace import aux_repos, discover_repos, feature_repos, product_repos
+from gitconvoy.errors import GitConvoyError
+from gitconvoy.workspace import (
+    aux_repos,
+    discover_repos,
+    feature_repos,
+    find_workspace,
+    product_repos,
+)
 
 from conftest import init_repo
 
@@ -53,6 +62,31 @@ def test_bom_id_fallback_without_membership(workspace: Path) -> None:
     init_repo(workspace / "ops" / "stanley-bom", develop=False)
     ids = {repo.id for repo in feature_repos(workspace)}
     assert "stanley-bom" not in ids
+
+
+def _raise_cwd(cls: type[Path]) -> Path:
+    raise FileNotFoundError(2, "No such file or directory")
+
+
+def test_find_workspace_falls_back_to_pwd(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "extensions").mkdir()
+    monkeypatch.setattr(
+        "gitconvoy.workspace.Path.cwd",
+        classmethod(_raise_cwd),
+    )
+    monkeypatch.setenv("PWD", str(tmp_path))
+    assert find_workspace() == tmp_path.resolve()
+
+
+def test_find_workspace_missing_cwd_errors(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "gitconvoy.workspace.Path.cwd",
+        classmethod(_raise_cwd),
+    )
+    monkeypatch.delenv("PWD", raising=False)
+    with pytest.raises(GitConvoyError, match="current directory no longer exists"):
+        find_workspace()
 
 
 def test_integration_branch_prefers_develop_else_main(workspace: Path) -> None:

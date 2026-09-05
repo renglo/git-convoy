@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,13 +46,39 @@ def is_bom_repo_id(repo_id: str, workspace: Path | None = None) -> bool:
 
 
 def find_workspace(start: Path | None = None) -> Path:
-    here = (start or Path.cwd()).resolve()
+    here = _resolve_start(start)
     for candidate in [here, *here.parents]:
         if state_path(candidate).exists():
             return candidate
         if _looks_like_workspace(candidate):
             return candidate
     return here
+
+
+def _resolve_start(start: Path | None) -> Path:
+    base = start if start is not None else _cwd()
+    try:
+        return base.resolve()
+    except FileNotFoundError:
+        if base.is_absolute() and base.exists():
+            return base
+        raise GitConvoyError(_MISSING_CWD) from None
+
+
+def _cwd() -> Path:
+    try:
+        return Path.cwd()
+    except FileNotFoundError:
+        pwd = os.environ.get("PWD", "")
+        candidate = Path(pwd) if pwd else None
+        if candidate is not None and candidate.exists():
+            return candidate
+        raise GitConvoyError(_MISSING_CWD) from None
+
+
+_MISSING_CWD = (
+    "current directory no longer exists; cd to the workspace root or pass --workspace"
+)
 
 
 def _looks_like_workspace(path: Path) -> bool:
