@@ -277,6 +277,38 @@ def checkout_integration(repo: Path) -> str:
     return branch
 
 
+def ensure_develop(repo: Path, *, push: bool = True) -> dict:
+    """Create ``develop`` from ``main`` when missing.
+
+    Returns ``{"status": "already"|"created"|"failed", "created": bool, ...}``.
+    Leaves HEAD on ``develop`` when creating; otherwise does not change branches
+    except checking out a remote-only ``develop`` into a local tracking branch.
+    """
+    fetch(repo)
+    if has_local_branch(repo, "develop"):
+        return {"status": "already", "created": False}
+    if has_remote_branch(repo, "develop"):
+        checkout_branch(repo, "develop")
+        return {"status": "already", "created": False}
+    main_tip = rev_parse(repo, "origin/main") or rev_parse(repo, "main")
+    if not main_tip:
+        return {"status": "failed", "created": False, "error": "no main branch"}
+    checkout_branch(repo, "main")
+    if rev_parse(repo, "origin/main"):
+        run(repo, "pull", "--ff-only", "origin", "main", check=False)
+    checkout(repo, "develop", create=True)
+    if push and origin_url(repo):
+        push_cmd = ["-u", "origin", "develop"]
+        result = run(repo, "push", *push_cmd, check=False)
+        if result.returncode != 0:
+            return {
+                "status": "failed",
+                "created": True,
+                "error": (result.stderr or result.stdout or "push develop failed").strip(),
+            }
+    return {"status": "created", "created": True}
+
+
 def branch_merged_into(repo: Path, branch: str, base: str | None = None) -> bool:
     """True when every commit on branch is contained in the integration branch."""
     fetch(repo)
@@ -296,11 +328,19 @@ def pr_number(url: str | None) -> int | None:
     return int(tail) if tail.isdigit() else None
 
 
-def pr_merge_status(repo: Path, branch: str, pr_url: str | None = None) -> str:
+def pr_merge_status(
+    repo: Path,
+    branch: str,
+    pr_url: str | None = None,
+    *,
+    base: str | None = None,
+) -> str:
     """Return merged | pending | committed | uncommitted | closed | unknown for a participant.
 
     ``pending`` means an open PR is waiting (via ``gh``, or a PR URL on the sheet).
-    ``committed`` means the feature branch has commits not in develop and no PR yet.
+    ``committed`` means the feature branch has commits not in the merge base and no PR yet.
+    ``base`` overrides the default integration tip (develop, else main) for the
+    ancestor check — pass ``main`` for aux/hotfix sheets that land on main.
     """
     gh = gh_bin()
     slug = github_slug(repo)
@@ -335,7 +375,12 @@ def pr_merge_status(repo: Path, branch: str, pr_url: str | None = None) -> str:
                 return "closed"
     if is_dirty(repo):
         return "uncommitted"
-    if branch_merged_into(repo, branch):
+    if base:
+        merge_base = rev_parse(repo, f"origin/{base}") or rev_parse(repo, base)
+        merged = bool(merge_base) and branch_merged_into(repo, branch, base=merge_base)
+    else:
+        merged = branch_merged_into(repo, branch)
+    if merged:
         return "merged"
     if has_local_branch(repo, branch) or has_remote_branch(repo, branch):
         # Sheet already has a PR URL but gh could not confirm state → treat as in review.

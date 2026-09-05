@@ -123,18 +123,16 @@ git convoy --json feature close --yes
 
 Use for ops tooling that must not ride product trains: launcher, bom-helper, git-convoy, publisher, bootstrap, extensions-service, etc. Repos declare `role = "aux"` in committed `gitconvoy.toml`; `git convoy init` refreshes local `.gitconvoy/aux.toml`. Default for unmarked repos is **product**.
 
-`aux *` is independent of the current feature/train/hotfix. It only touches aux repos. Branch prefix `aux/<name>`. PRs target `develop` (same as features). Optional `aux promote` opens develop→main when operators need the tip on main.
+`aux *` is independent of the current feature/train/hotfix. It only touches aux repos. Branch prefix `aux/<name>`. PRs target **`main`** (hotfix-style, one PR). `aux close` merges **`main` → `develop`**. Missing `develop` is created from `main`. `aux promote` is recovery only.
 
 ```bash
 git convoy --json aux start codeartifact-mosaic
 git convoy --json aux adopt
 git convoy --json aux commit --header "fix: …" --header-only
 git convoy --json aux prs
-# merge PRs to develop in GitHub
+# merge PRs to main in GitHub
 git convoy --json aux show
 git convoy --json aux close --yes
-# when main must pick it up:
-git convoy --json aux promote
 ```
 
 Do **not** put aux repos on a feature sheet (and vice versa). Dirty product repos are ignored by `aux adopt`; dirty aux repos are ignored by `feature adopt`.

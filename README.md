@@ -646,17 +646,16 @@ Membership:
 2. `git convoy init` writes local `.gitconvoy/aux.toml` from those markers (workspace-local, not versioned).
 3. `git convoy adopt` (and hotfix adopt) defaults to the single repo listed under `[bom]` in that file — any directory name is fine. Pass `--bom PATH` only to override. If `[bom]` is empty, discovery falls back to a `*-bom` directory name.
 
-Lifecycle mirrors Cycle 1 on **aux repos only**. Branch prefix `aux/<name>`. PRs target `develop`. Independent of the current feature/train/hotfix. Optional `aux promote` opens develop→main when main must pick up the tip.
+Lifecycle is hotfix-style on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`main`** (one review). `aux close` merges **`main` → `develop`** so develop stays current — no second PR. Missing `develop` branches are created from `main`. Independent of the current feature/train/hotfix. `aux promote` is recovery only when develop is already ahead of main.
 
 ```bash
 git convoy aux start codeartifact-mosaic
 git convoy aux adopt
 git convoy aux commit --header "fix: …" --header-only
 git convoy aux prs
-# merge PRs to develop in GitHub
+# merge PRs to main in GitHub
 git convoy aux show
-git convoy aux close --yes
-git convoy aux promote          # optional: develop → main
+git convoy aux close --yes      # main → develop; remove aux branches
 ```
 
 `feature adopt` ignores dirty aux repos; `aux adopt` ignores dirty product repos.
@@ -740,12 +739,12 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy aux commit` | * | Commit dirty aux participants |
 | `git convoy aux push` | * | Push `aux/<name>` (no PRs) |
 | `git convoy aux switch NAME` | * | Checkout that aux’s repos |
-| `git convoy aux refresh` | * | Merge `origin/develop` into aux participants |
-| `git convoy aux prs` | * | Push and open PRs into develop (Full); `--no-gh` for compare URLs |
+| `git convoy aux refresh` | * | Merge `origin/main` into aux participants |
+| `git convoy aux prs` | * | Push and open PRs into **main** (Full); `--no-gh` for compare URLs |
 | `git convoy aux approve` | * | Approve sibling PRs (Full) |
-| `git convoy aux promote` | * | Open develop→main PRs when develop is ahead |
+| `git convoy aux promote` | * | Recovery: develop→main when develop is already ahead |
 | `git convoy aux show [NAME]` | * | Aux sheet + merge status |
-| `git convoy aux close` | * | After all PRs merged |
+| `git convoy aux close` | * | After merge to main: main→develop; remove aux branches |
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
 | `git convoy train show [NAME]` | 2 | Read train sheet |
 | `git convoy train delete` | 2 | Delete `release/<train>` branches |

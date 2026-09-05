@@ -180,7 +180,7 @@ def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
         return data, f"switched to {data['aux']} ({', '.join(data['participants']) or 'no participants'})"
     if sub == "refresh":
         data = aux_cmd.refresh(workspace, state)
-        return data, f"refreshed {data['aux']} from origin/develop"
+        return data, f"refreshed {data['aux']} from origin/main"
     if sub == "commit":
         data = commit_cmd.commit(
             workspace,
@@ -568,7 +568,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     aclose = asub.add_parser(
         "close",
-        help="After all PRs merge: checkout develop and remove aux branches",
+        help="After PRs merge into main: merge main→develop and remove aux branches",
     )
     aclose.add_argument("name", nargs="?")
     aclose.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
@@ -594,9 +594,9 @@ def _parser() -> argparse.ArgumentParser:
     acommit.add_argument("--diff", action="store_true", help="Include full patches in the plan")
     aswitch = asub.add_parser("switch", help="Checkout an aux sheet's participant repos")
     aswitch.add_argument("name")
-    asub.add_parser("refresh", help="Merge origin/develop into participant branches")
+    asub.add_parser("refresh", help="Merge origin/main into participant aux branches")
     asub.add_parser("push", help="Push aux/<name> to origin (no PRs)")
-    aprs = asub.add_parser("prs", help="Push branches and open PRs into develop (gh if available)")
+    aprs = asub.add_parser("prs", help="Push branches and open PRs into main (gh if available)")
     aprs.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
     aapprove = asub.add_parser("approve", help="Approve sibling PRs via gh (Full mode)")
     aapprove.add_argument("name", nargs="?")
@@ -607,7 +607,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     apromote = asub.add_parser(
         "promote",
-        help="Open develop→main PRs for participants ahead of main",
+        help="Recovery: open develop→main PRs when develop is already ahead",
     )
     apromote.add_argument("name", nargs="?")
     apromote.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
