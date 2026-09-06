@@ -10,7 +10,7 @@ from typing import Callable
 
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
-from gitconvoy.state import Aux, Feature, Hotfix, State
+from gitconvoy.state import Aux, Feature, Hotfix, State, Train
 from gitconvoy.workspace import aux_repos, feature_repos, product_repos, merge_sort
 
 InputFn = Callable[[str], str]
@@ -111,6 +111,8 @@ def _plan(
         payload["hotfix"] = sheet.name
     if kind == "aux":
         payload["aux"] = sheet.name
+    if kind == "train":
+        payload["train"] = sheet.name
     return payload
 
 
@@ -131,14 +133,12 @@ def _apply(
         header_only=header_only,
     )
     if not dirty:
-        return {
-            "ok": True,
-            "mode": "commit",
-            "feature": sheet.name,
-            "branch": sheet.branch,
-            "header": (payload_header or "").strip(),
-            "repos": [],
-        }
+        return _commit_result(
+            sheet,
+            kind,
+            header=(payload_header or "").strip(),
+            repos=[],
+        )
     message_header = format_commit_message(payload_header, "")
     committed = []
     for item in dirty:
@@ -152,14 +152,35 @@ def _apply(
                 "message": message,
             }
         )
-    return {
+    return _commit_result(sheet, kind, header=message_header, repos=committed)
+
+
+def _commit_result(
+    sheet: Feature | Hotfix | Aux | Train,
+    kind: str,
+    *,
+    header: str,
+    repos: list[dict],
+    printed: bool = False,
+) -> dict:
+    payload = {
         "ok": True,
         "mode": "commit",
         "feature": sheet.name,
         "branch": sheet.branch,
-        "header": message_header,
-        "repos": committed,
+        "kind": kind,
+        "header": header,
+        "repos": repos,
     }
+    if kind == "hotfix":
+        payload["hotfix"] = sheet.name
+    elif kind == "aux":
+        payload["aux"] = sheet.name
+    elif kind == "train":
+        payload["train"] = sheet.name
+    if printed:
+        payload["printed"] = True
+    return payload
 
 
 def _interactive(
@@ -284,9 +305,9 @@ def _targets(
     *,
     include_diff: bool,
     kind: str = "feature",
-) -> tuple[Feature | Hotfix | Aux, list[DirtyRepo]]:
+) -> tuple[Feature | Hotfix | Aux | Train, list[DirtyRepo]]:
     if kind == "hotfix":
-        sheet: Feature | Hotfix | Aux = state.require_hotfix()
+        sheet: Feature | Hotfix | Aux | Train = state.require_hotfix()
         scan = product_repos(workspace)
         hint = "run: git convoy hotfix start"
         label = "hotfix sheet"
@@ -297,6 +318,12 @@ def _targets(
         hint = "run: git convoy aux adopt"
         label = "aux sheet"
         dirty_label = "aux"
+    elif kind == "train":
+        sheet = state.require_train()
+        scan = product_repos(workspace)
+        hint = "run: git convoy train adopt"
+        label = "train sheet"
+        dirty_label = "product"
     else:
         sheet = state.require_feature()
         scan = feature_repos(workspace)

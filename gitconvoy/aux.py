@@ -8,7 +8,7 @@ from gitconvoy import ghutil
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import Aux, State, save
-from gitconvoy.workspace import Repo, aux_repos, merge_sort
+from gitconvoy.workspace import Repo, aux_repos, merge_sort, product_repos, require_repo
 
 # Aux PRs land on main (hotfix-style). Close merges main back into develop.
 _AUX_PR_BASE = "main"
@@ -108,14 +108,24 @@ def start(workspace: Path, state: State, name: str) -> dict:
     }
 
 
-def adopt(workspace: Path, state: State) -> dict:
+def adopt(
+    workspace: Path,
+    state: State,
+    repo_ids: list[str] | None = None,
+) -> dict:
     feature = state.require_aux()
     adopted: list[dict] = []
     skipped: list[dict] = []
     dropped: list[dict] = []
     dropped.extend(_drop_non_aux_sheet_repos(workspace, feature))
-    for repo in aux_repos(workspace):
-        result = _adopt_one(repo, feature)
+    if repo_ids:
+        chosen = [_require_aux(workspace, repo_id) for repo_id in repo_ids]
+        force = True
+    else:
+        chosen = aux_repos(workspace)
+        force = False
+    for repo in chosen:
+        result = _adopt_one(repo, feature, force=force)
         if result.get("adopted"):
             feature.add_repo(repo.id, repo.rel)
             adopted.append(result)
@@ -139,6 +149,19 @@ def adopt(workspace: Path, state: State) -> dict:
         "dropped": dropped,
         "repo_count": len(feature.repos),
     }
+
+
+def _require_aux(workspace: Path, repo_id: str) -> Repo:
+    try:
+        return require_repo(aux_repos(workspace), repo_id)
+    except GitConvoyError:
+        if any(
+            row.id == repo_id or row.rel == repo_id for row in product_repos(workspace)
+        ):
+            raise GitConvoyError(
+                f"{repo_id} is a product repo; aux adopt --repos only takes aux ids"
+            ) from None
+        raise
 
 
 def _drop_non_aux_sheet_repos(workspace: Path, feature: Aux) -> list[dict]:
@@ -182,7 +205,7 @@ def _fish_bases(repo_path: Path) -> list[str]:
     return bases
 
 
-def _adopt_one(repo: Repo, feature: Aux) -> dict:
+def _adopt_one(repo: Repo, feature: Aux, *, force: bool = False) -> dict:
     branch = feature.branch
     current = gitutil.current_branch(repo.path)
     dirty = gitutil.is_dirty(repo.path)
@@ -203,7 +226,7 @@ def _adopt_one(repo: Repo, feature: Aux) -> dict:
     allowed = ", ".join(bases) if bases else "develop/main"
 
     if current == branch:
-        if dirty or unique:
+        if dirty or unique or force:
             return {
                 "id": repo.id,
                 "path": repo.rel,
@@ -237,6 +260,22 @@ def _adopt_one(repo: Repo, feature: Aux) -> dict:
         }
 
     if not dirty and not ahead:
+        if force:
+            if not on_base and current != branch:
+                raise GitConvoyError(
+                    f"{repo.id} has work on {current}, not {allowed} or {branch}. "
+                    "commit/stash or checkout the right branch first"
+                )
+            gitutil.checkout_branch(repo.path, branch)
+            return {
+                "id": repo.id,
+                "path": repo.rel,
+                "adopted": True,
+                "action": "branched",
+                "dirty": False,
+                "forced": True,
+                "fish_from": current if on_base else None,
+            }
         return {
             "id": repo.id,
             "path": repo.rel,

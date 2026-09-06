@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from gitconvoy import aux as aux_cmd
 from gitconvoy import membership
+from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, load, save
 from gitconvoy.workspace import discover_repos
 
@@ -59,6 +62,34 @@ def test_aux_parallel_to_feature(workspace: Path) -> None:
     state = load(workspace)
     assert state.current_feature == "demo"
     assert state.current_aux == "tooling"
+
+
+def test_aux_adopt_repos_includes_clean_aux(workspace: Path) -> None:
+    _aux_workspace(workspace)
+    state = State()
+    aux_cmd.start(workspace, state, "npm-always-auth")
+    helper = workspace / "ops" / "bom-helper"
+    launcher = workspace / "ops" / "launcher"
+
+    data = aux_cmd.adopt(workspace, state, repo_ids=["bom-helper"])
+    assert {row["id"] for row in data["adopted"]} == {"bom-helper"}
+    assert "launcher" not in {row["id"] for row in data["adopted"]}
+    state = load(workspace)
+    assert state.require_aux().repo_ids() == ["bom-helper"]
+    assert git(helper, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == (
+        "aux/npm-always-auth"
+    )
+    assert git(launcher, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != (
+        "aux/npm-always-auth"
+    )
+
+
+def test_aux_adopt_repos_rejects_product(workspace: Path) -> None:
+    _aux_workspace(workspace)
+    state = State()
+    aux_cmd.start(workspace, state, "tools")
+    with pytest.raises(GitConvoyError, match="product repo"):
+        aux_cmd.adopt(workspace, state, repo_ids=["renglo-lib"])
 
 
 def test_aux_adopt_fishes_dirty_work_from_main(workspace: Path) -> None:

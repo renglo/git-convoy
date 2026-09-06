@@ -147,7 +147,12 @@ def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
             )
         return data, f"aux {data['aux']} started ({data['branch']})"
     if sub == "adopt":
-        data = aux_cmd.adopt(workspace, state)
+        repos = (
+            [item.strip() for item in args.repos.split(",") if item.strip()]
+            if args.repos
+            else None
+        )
+        data = aux_cmd.adopt(workspace, state, repo_ids=repos)
         names = ", ".join(item["id"] for item in data["adopted"]) or "(none)"
         dropped = ", ".join(item["id"] for item in data.get("dropped") or [])
         text = f"adopted {data['repo_count']} repos: {names}"
@@ -228,6 +233,29 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
             no_bump=args.no_bump,
         )
         return data, _cut_train_text(data)
+    if sub == "adopt":
+        repos = (
+            [item.strip() for item in args.repos.split(",") if item.strip()]
+            if args.repos
+            else None
+        )
+        data = train_cmd.adopt(workspace, state, repo_ids=repos)
+        return data, _adopt_train_text(data)
+    if sub == "commit":
+        data = commit_cmd.commit(
+            workspace,
+            state,
+            plan=args.plan,
+            from_file=args.from_file,
+            header=args.header,
+            header_only=args.header_only,
+            include_diff=args.diff,
+            as_json=args.json,
+            kind="train",
+        )
+        if data.get("printed"):
+            return data, "\n"
+        return data, _commit_text(data)
     if sub == "tag-rc":
         data = train_cmd.tag_rc(workspace, state, push=not args.no_push)
         return data, _tag_rc_text(data)
@@ -551,9 +579,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Create the aux sheet; pick up existing aux/<name>; otherwise checkout integration",
     )
     astart.add_argument("name")
-    asub.add_parser(
+    aadopt = asub.add_parser(
         "adopt",
         help="Move local aux-repo changes from develop or main onto aux/<name>",
+    )
+    aadopt.add_argument(
+        "--repos",
+        help="Comma-separated aux ids (force-include even when clean)",
     )
     aabandon = asub.add_parser(
         "abandon",
@@ -621,6 +653,24 @@ def _parser() -> argparse.ArgumentParser:
     cut.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
     cut.add_argument("--no-bump", action="store_true")
     cut.add_argument("--repos", help="Comma-separated repo ids (skip discovery)")
+    tadopt = tsub.add_parser(
+        "adopt",
+        help="Add dirty product repos (or --repos) to the current train; no version bump",
+    )
+    tadopt.add_argument(
+        "--repos",
+        help="Comma-separated product repo ids (force-include even when clean)",
+    )
+    tcommit = tsub.add_parser("commit", help="Commit dirty train participant repos")
+    tcommit.add_argument("--plan", action="store_true", help="Print the commit plan; do not commit")
+    tcommit.add_argument("--from", dest="from_file", help="Apply a filled plan (JSON file, or - for stdin)")
+    tcommit.add_argument("--header", help="Commit subject (required with --header-only)")
+    tcommit.add_argument(
+        "--header-only",
+        action="store_true",
+        help="Commit every dirty participant with only --header",
+    )
+    tcommit.add_argument("--diff", action="store_true", help="Include full patches in the plan")
     tag = tsub.add_parser("tag-rc", help="Tag vX.Y.Z-rc.N and optionally push")
     tag.add_argument("--no-push", action="store_true")
     pub = tsub.add_parser(
@@ -908,6 +958,17 @@ def _cut_train_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _adopt_train_text(data: dict) -> str:
+    names = ", ".join(item["id"] for item in data.get("adopted") or []) or "(none)"
+    lines = [
+        f"adopted {data.get('repo_count') or 0} repos onto train {data['train']}: {names}"
+    ]
+    note = data.get("note")
+    if note:
+        lines.append(note)
+    return "\n".join(lines)
+
+
 def _publish_text(data: dict) -> str:
     tags = ", ".join(item["tag"] for item in data.get("repos") or [])
     lines = [f"published {data['train']}: {tags}"]
@@ -954,7 +1015,13 @@ def _train_show_text(data: dict) -> str:
 
 
 def _sheet_name(data: dict) -> str:
-    return data.get("feature") or data.get("hotfix") or data.get("aux") or "?"
+    return (
+        data.get("feature")
+        or data.get("hotfix")
+        or data.get("aux")
+        or data.get("train")
+        or "?"
+    )
 
 
 def _promote_text(data: dict) -> str:

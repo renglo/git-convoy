@@ -110,8 +110,8 @@ def is_aux_id(workspace: Path, repo_id: str) -> bool:
 
 def is_bom_id(workspace: Path, repo_id: str) -> bool:
     membership = load_membership(workspace)
-    if membership["bom"]:
-        return repo_id in set(membership["bom"])
+    if repo_id in set(membership["bom"]):
+        return True
     return repo_id.endswith("-bom")
 
 

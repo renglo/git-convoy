@@ -64,15 +64,15 @@ def test_adopt_picks_up_existing_branch_with_commits(workspace: Path) -> None:
 def test_adopt_drops_bom_from_feature_sheet(workspace: Path) -> None:
     feature_cmd.start(workspace, State(), "blast-radius")
     state = load(workspace)
-    state.features["blast-radius"].add_repo("stanley-bom", "ops/stanley-bom")
+    state.features["blast-radius"].add_repo("example-bom", "ops/example-bom")
     state.features["blast-radius"].add_repo("schd", "extensions/schd")
     save(workspace, state)
     schd = workspace / "extensions" / "schd"
     (schd / "handler.py").write_text("print('x')\n")
     data = feature_cmd.adopt(workspace, load(workspace))
-    assert any(row["id"] == "stanley-bom" for row in data["dropped"])
-    assert all(row["id"] != "stanley-bom" for row in data["adopted"])
-    assert "stanley-bom" not in load(workspace).features["blast-radius"].repo_ids()
+    assert any(row["id"] == "example-bom" for row in data["dropped"])
+    assert all(row["id"] != "example-bom" for row in data["adopted"])
+    assert "example-bom" not in load(workspace).features["blast-radius"].repo_ids()
     assert "schd" in load(workspace).features["blast-radius"].repo_ids()
 
 

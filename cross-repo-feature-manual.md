@@ -36,7 +36,7 @@ Every business system chooses its own cadence. A train can sit in the registry u
 
 ## State you keep by hand
 
-Git does not remember “which repos belong to feature X” or “which repos are on train week-34.” You do. A spreadsheet or a text file is enough. Keep these files in the Stanley workspace (or any shared place the next laptop can see). Commit them if more than one person will run the process.
+Git does not remember “which repos belong to feature X” or “which repos are on train week-34.” You do. A spreadsheet or a text file is enough. Keep these files in the workspace (or any shared place the next laptop can see). Commit them if more than one person will run the process.
 
 ### Feature sheet
 
@@ -328,7 +328,7 @@ Status → `published`.
 
 # Part 2 — Adoption
 
-A **Renglo Implementation** is a running system that installs these packages. It has a `<name>-bom` repo (example: `stanley-bom`). That repo holds one **version object** per system version.
+A **Renglo Implementation** is a running system that installs these packages. It has a `<name>-bom` repo (example: `example-bom`). That repo holds one **version object** per system version.
 
 The system version (`v0.0.9`, `2026-W34`, …) is not any package’s semver. The version object is the bill of materials: every dependency and the exact pin. You can rebuild that system by installing only those pins. A package that did not move keeps the previous pin.
 
@@ -349,14 +349,14 @@ Compatibility is not computed from version numbers. It is whatever **staging** a
 4. Put a sentence in the draft’s description: train id, or “hotfix `renglo-lib` only,” plus anything you pinned back last time.
 5. Point the deploy config at this draft. Turn **production off** so a push cannot skip staging. Do **not** deploy production.
 
-Work in the `<name>-bom` repo (example: `stanley-bom`). Today that repo still pins git commits under `repos`. The target shape is package pins under `python` / `npm` (see [package-registry-migration.md](package-registry-migration.md)). The git steps are the same either way; the examples below use package pins.
+Work in the `<name>-bom` repo (example: `example-bom`). Today that repo still pins git commits under `repos`. The target shape is package pins under `python` / `npm` (see [package-registry-migration.md](package-registry-migration.md)). The git steps are the same either way; the examples below use package pins.
 
 ### Example — take train `2026-W34`
 
 Production is on system version `v1.4.0`. The train sheet says `renglo-lib`, `renglo-api`, and `breakdown` published; nothing else moved.
 
 ```bash
-cd ops/stanley-bom
+cd ops/example-bom
 git checkout main
 git pull origin main
 
@@ -416,8 +416,8 @@ handlers_bom: 0.0.3
 handlers_compute: lambda_only
 
 tenants:
-  stanley:
-    id: stanley0731
+  example:
+    id: example0731
     aws_account: "339713094352"
     aws_region: us-east-1
     stages:
@@ -460,7 +460,7 @@ Repeat: edit draft → stage → pin-back or fix → stage. The draft is not sta
 ### Example — first staging deploy
 
 ```bash
-cd ops/stanley-bom
+cd ops/example-bom
 git checkout main
 
 git add bom/v1.5.0.json deploy_targets.yml
@@ -579,8 +579,8 @@ handlers_bom: 0.0.3
 handlers_compute: lambda_only
 
 tenants:
-  stanley:
-    id: stanley0731
+  example:
+    id: example0731
     aws_account: "339713094352"
     aws_region: us-east-1
     stages:

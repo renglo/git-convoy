@@ -30,7 +30,7 @@ def _bom_repo(root: Path) -> Path:
         + "\n"
     )
     (bom_repo / "deploy_targets.yml").write_text(
-        "bom: 1.4.0\n\ntenants:\n  stanley:\n    stages:\n"
+        "bom: 1.4.0\n\ntenants:\n  acme:\n    stages:\n"
         "      staging:\n        enabled: true\n"
         "      production:\n        enabled: true\n"
     )

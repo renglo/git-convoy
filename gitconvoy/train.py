@@ -10,7 +10,14 @@ from gitconvoy.sync import DevelopSyncEntry, format_develop_sync_text, sync_repo
 from gitconvoy.workflows import repo_publishes_on_tag, tag_push_workflows
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo, save
-from gitconvoy.workspace import Repo, merge_sort, product_repos, require_repo
+from gitconvoy.workspace import (
+    Repo,
+    aux_repos,
+    bom_repos,
+    merge_sort,
+    product_repos,
+    require_repo,
+)
 
 
 def _has_version(repo: Path) -> bool:
@@ -115,8 +122,173 @@ def cut(
     }
 
 
+def adopt(
+    workspace: Path,
+    state: State,
+    repo_ids: list[str] | None = None,
+) -> dict:
+    """Add product repos to the current train without bumping versions.
+
+    Default: dirty product repos on develop/main or ``release/<train>``.
+    ``--repos`` force-includes those ids even when clean. Aux and BOM are
+    ignored. Does not rewrite ``from``/``to`` for repos already on the sheet.
+    """
+    train = state.require_train()
+    if train.status not in {"cut", "stabilizing"}:
+        raise GitConvoyError(
+            f"train {train.name} is {train.status}; "
+            "adopt only runs while the train is cut or stabilizing"
+        )
+    products = product_repos(workspace)
+    skipped: list[dict] = []
+    if repo_ids:
+        chosen = [_require_product(workspace, repo_id) for repo_id in repo_ids]
+        for repo in chosen:
+            if not _has_version(repo.path):
+                raise GitConvoyError(
+                    f"{repo.id}: no version file; cannot add this repo to a release train"
+                )
+    else:
+        chosen = []
+        for repo in products:
+            if not gitutil.is_dirty(repo.path):
+                continue
+            if not _has_version(repo.path):
+                skipped.append(
+                    {
+                        "id": repo.id,
+                        "path": repo.rel,
+                        "reason": "no-version-file",
+                    }
+                )
+                continue
+            chosen.append(repo)
+    if not chosen:
+        if skipped:
+            ids = ", ".join(item["id"] for item in skipped)
+            raise GitConvoyError(
+                "no dirty publishable product repos "
+                f"(skipped without version files: {ids}); pass --repos to force"
+            )
+        raise GitConvoyError(
+            "no dirty product repos; pass --repos to add a clean product repo "
+            "to the train"
+        )
+
+    adopted: list[dict] = []
+    force = bool(repo_ids)
+    for repo in chosen:
+        result = _adopt_one(repo, train, force=force)
+        if result.get("adopted"):
+            _ensure_train_row(repo, train)
+            adopted.append(result)
+            continue
+        skipped.append(result)
+    save(workspace, state)
+    return {
+        "ok": True,
+        "train": train.name,
+        "branch": train.branch,
+        "adopted": adopted,
+        "skipped": skipped,
+        "repo_count": len(train.repos),
+        "note": (
+            "No versions bumped. Commit with git convoy train commit, "
+            "then git convoy train tag-rc."
+        ),
+    }
+
+
+def _refuse_dirty_train(workspace: Path, train: Train) -> None:
+    dirty = [
+        row.id
+        for row in train.repos
+        if gitutil.is_dirty(workspace / row.path)
+    ]
+    if not dirty:
+        return
+    verb = "is" if len(dirty) == 1 else "are"
+    raise GitConvoyError(
+        f"{', '.join(dirty)} {verb} dirty on {train.branch}. "
+        "run: git convoy train commit"
+    )
+
+
+def _ensure_train_row(repo: Repo, train: Train) -> None:
+    for existing in train.repos:
+        if existing.id == repo.id:
+            return
+    info = versions.read_version(repo.path)
+    current = info.get("python") or info.get("npm")
+    train.add_repo(
+        TrainRepo(
+            id=repo.id,
+            path=repo.rel,
+            from_version=current,
+            to=None,
+        )
+    )
+
+
+def _require_product(workspace: Path, repo_id: str) -> Repo:
+    try:
+        return require_repo(product_repos(workspace), repo_id)
+    except GitConvoyError:
+        if any(row.id == repo_id or row.rel == repo_id for row in aux_repos(workspace)):
+            raise GitConvoyError(
+                f"{repo_id} is an aux repo; train adopt only takes product repos"
+            ) from None
+        if any(row.id == repo_id or row.rel == repo_id for row in bom_repos(workspace)):
+            raise GitConvoyError(
+                f"{repo_id} is a BOM repo; do not put *-bom on a train"
+            ) from None
+        raise
+
+
+def _adopt_one(repo: Repo, train: Train, *, force: bool = False) -> dict:
+    branch = train.branch
+    current = gitutil.current_branch(repo.path)
+    dirty = gitutil.is_dirty(repo.path)
+    gitutil.fetch(repo.path)
+    integration = gitutil.integration_branch(repo.path)
+    if current not in {integration, branch}:
+        raise GitConvoyError(
+            f"{repo.id} has work on {current}, not {integration} or {branch}. "
+            "commit/stash or checkout the right branch first"
+        )
+
+    if current == branch:
+        return {
+            "id": repo.id,
+            "path": repo.rel,
+            "adopted": True,
+            "action": "already-on-train",
+            "dirty": dirty,
+        }
+
+    if not dirty and not force:
+        return {
+            "id": repo.id,
+            "path": repo.rel,
+            "adopted": False,
+            "reason": "unchanged",
+            "branch": current,
+        }
+
+    gitutil.checkout_branch(repo.path, branch)
+    return {
+        "id": repo.id,
+        "path": repo.rel,
+        "adopted": True,
+        "action": "branched",
+        "dirty": gitutil.is_dirty(repo.path),
+        "integration_branch": integration,
+    }
+
+
 def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
     train = state.require_train()
+    _refuse_dirty_train(workspace, train)
     develop_sync = _sync_train_develop(
         workspace,
         train,
@@ -131,15 +303,7 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
         current = info.get("python") or info.get("npm")
         if not current:
             raise GitConvoyError(f"{repo_row.id}: no version file")
-        pep, npm = _ensure_rc(current)
-        tag = f"v{_tag_body(pep)}"
-        # Re-running tag-rc after more commits on release/<name> must mint a
-        # new rc. If HEAD still matches the existing tag, keep it (idempotent).
-        existing = gitutil.rev_parse(repo_path, f"refs/tags/{tag}")
-        head = gitutil.rev_parse(repo_path, "HEAD")
-        if existing and head and existing != head:
-            pep, npm = versions.next_rc(pep)
-            tag = f"v{_tag_body(pep)}"
+        pep, npm, tag = _choose_rc(repo_path, current)
         if pep != current or info.get("npm") not in {None, npm}:
             versions.write_version(repo_path, pep, npm)
             gitutil.run(repo_path, "add", "-A")
@@ -150,7 +314,14 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
                 f"Set {pep} for train {train.name}",
                 check=False,
             )
-        if not gitutil.rev_parse(repo_path, f"refs/tags/{tag}"):
+        head = gitutil.rev_parse(repo_path, "HEAD")
+        existing = _existing_tag_commit(repo_path, tag)
+        if existing and head and existing != head:
+            raise GitConvoyError(
+                f"{repo_row.id}: {tag} already points at {existing[:7]}, not HEAD. "
+                "re-run: git convoy train tag-rc"
+            )
+        if not existing:
             gitutil.run(repo_path, "tag", tag)
         if push:
             gitutil.push(repo_path, "-u", "origin", train.branch)
@@ -672,6 +843,55 @@ def _ensure_rc(version: str) -> tuple[str, str]:
     if rc is None:
         return versions.with_rc(version, 1)
     return versions.with_rc(version, rc)
+
+
+def _choose_rc(repo: Path, current: str) -> tuple[str, str, str]:
+    """Pick the next unused rc version and ``v*`` tag for this repo.
+
+    Skips tags that already exist locally or on origin (unless they already
+    point at HEAD — idempotent re-run). If this X.Y.Z was already released
+    (``vX.Y.Z`` exists), start at the next patch ``rc.1``.
+    """
+    gitutil.fetch(repo)
+    major, minor, patch, _rc = versions.parse(current)
+    if _existing_tag_commit(repo, f"v{major}.{minor}.{patch}"):
+        pep, npm = versions.with_rc(versions.bump(current, "patch"), 1)
+    else:
+        pep, npm = _ensure_rc(current)
+    head = gitutil.rev_parse(repo, "HEAD")
+    for _ in range(100):
+        tag = f"v{_tag_body(pep)}"
+        taken = _existing_tag_commit(repo, tag)
+        if not taken or taken == head:
+            return pep, npm, tag
+        pep, npm = versions.next_rc(pep)
+    raise GitConvoyError(
+        f"{repo.name}: could not find a free rc tag after {current}"
+    )
+
+
+def _existing_tag_commit(repo: Path, tag: str) -> str | None:
+    """Commit SHA for ``tag`` locally or on origin. None if unused."""
+    local = gitutil.rev_parse(repo, f"{tag}^{{}}") or gitutil.rev_parse(
+        repo, f"refs/tags/{tag}"
+    )
+    if local:
+        return local
+    result = gitutil.run(repo, "ls-remote", "--tags", "origin", tag, check=False)
+    peeled: str | None = None
+    lightweight: str | None = None
+    suffix = f"refs/tags/{tag}"
+    for line in (result.stdout or "").splitlines():
+        sha, _, ref = line.partition("\t")
+        sha = sha.strip()
+        ref = ref.strip()
+        if not sha:
+            continue
+        if ref == f"{suffix}^{{}}":
+            peeled = sha
+        elif ref == suffix:
+            lightweight = sha
+    return peeled or lightweight
 
 
 def _tag_body(pep: str) -> str:
