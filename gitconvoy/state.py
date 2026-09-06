@@ -60,6 +60,9 @@ class Train:
     features: list[str] = field(default_factory=list)
     repos: list[TrainRepo] = field(default_factory=list)
 
+    def repo_ids(self) -> list[str]:
+        return [repo.id for repo in self.repos]
+
     def add_repo(self, row: TrainRepo) -> None:
         for existing in self.repos:
             if existing.id == row.id:

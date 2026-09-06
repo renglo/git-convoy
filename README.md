@@ -185,7 +185,7 @@ Creates an empty feature sheet, sets it current, and checks out the integration 
 
 If `feature/blast-radius` already exists locally or on origin (you created it yourself, another machine, or a previous `start`/`adopt`), `feature start` checks that branch out and adds the repo to the sheet **only when it has work**: uncommitted files on that branch, or commits not already in `develop`. Empty leftover branches (created and then emptied) are left off the sheet; a clean checkout is returned to `develop`. Dirty work already on `feature/blast-radius` is kept. Dirty work on another branch is skipped (the existing feature branch is left as-is). It does **not** create `feature/blast-radius` in repos that have no such branch yet — that is `feature adopt`.
 
-Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `stanley-wl`, …). **`*-bom` is not a feature repo** — BOM pins land via `git convoy adopt` / `hotfix adopt` on `main` (that push deploys). Platform tooling in `ops/` (`publisher`, `launcher`, `extensions-service`, `git-convoy`) is also excluded. Release trains still only cut product repos.
+Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `<tenant>-wl`, …). **`*-bom` is not a feature repo** — BOM pins land via `git convoy adopt` / `hotfix adopt` on `main` (that push deploys). Platform tooling in `ops/` (`publisher`, `launcher`, `extensions-service`, `git-convoy`) is also excluded. Release trains still only cut product repos.
 
 ### 2. Implement
 
@@ -357,6 +357,24 @@ git convoy train cut 2026-W34 --repos renglo-lib,breakdown
 
 Fix bugs on `release/<name>`. Bugfixes only — no new features. Commit in each participant repo as usual (`git commit`). Merge fixes back to `develop` when appropriate so the next train does not lose them.
 
+To add a product repo that was left off the cut (dirty work on `develop`/`main`, or a named clean repo), without bumping versions:
+
+```bash
+git convoy train adopt
+git convoy train adopt --repos console,lab
+```
+
+Creates or checks out `release/<name>` from the current integration branch and adds the repo to the train sheet. Refuses dirty work on `feature/*` (or any other branch). Ignores aux and BOM.
+
+Commit stabilize work through convoy — do not leave the tool to guess which repos are dirty:
+
+```bash
+git convoy train commit
+git convoy train commit --header "fix: …" --header-only
+```
+
+`train tag-rc` still sets the rc version later. It **refuses** if any train participant is dirty and tells you to run `train commit`.
+
 Repeat **`train cut`** only after **`train delete`** if you need to abandon the cut entirely.
 
 You can inspect the sheet at any time:
@@ -395,7 +413,7 @@ When the release branch set is ready, stop here — or continue to **cycle 3** t
 
 Cycles 3 and 4 need infrastructure git-convoy does not configure. Do this once per installation (or extend it when a **new repo** joins the train).
 
-Full detail: [`ops/publisher/README.md`](../publisher/README.md) and your `*-bom` repo README (example: `ops/stanley-bom/README.md`).
+Full detail: [`ops/publisher/README.md`](../publisher/README.md) and your `*-bom` repo README (example: `ops/example-bom/README.md`).
 
 ### A. Publisher stack (CodeArtifact + OIDC publish role)
 
@@ -411,7 +429,7 @@ In `ops/publisher/cdk/publisher-config.json`:
 
 - **`publisher_name`** — short id for this registry (e.g. `arbitium`). Drives stack name `<publisher-name>-publisher` and role `GitHubActionsPublishRole-<publisher-name>`.
 - **`github_org`** — GitHub org **exactly as shown in URLs** (OIDC is case-sensitive: `Arbitium`, not `arbitium`).
-- **`github_publish_repos`** — list every GitHub repo **by short name** that may publish when a tag is pushed (e.g. `claw`, `pes`, `console`, `stanley-wl`). Add a new name here whenever a new package repo joins the train, then **redeploy** the stack. Do not use `["*"]` unless you intentionally trust the whole org. The stack trusts both classic (`repo:org/name`) and GitHub's immutable (`repo:org@id/name@id`) OIDC subjects.
+- **`github_publish_repos`** — list every GitHub repo **by short name** that may publish when a tag is pushed (e.g. `claw`, `pes`, `console`, `example-wl`). Add a new name here whenever a new package repo joins the train, then **redeploy** the stack. Do not use `["*"]` unless you intentionally trust the whole org. The stack trusts both classic (`repo:org/name`) and GitHub's immutable (`repo:org@id/name@id`) OIDC subjects.
 - **`reader_aws_accounts`** — AWS account IDs allowed to **read** from CodeArtifact (your tenant deploy account).
 
 **Verify the stack is configured** (there is no `git convoy` command for this — use AWS; substitute your `publisher_name`):
@@ -448,7 +466,7 @@ For **every repo** on the train that publishes packages, on **that GitHub repo**
 | Repo layout | Workflow file |
 | ----------- | ------------- |
 | Python only (`pyproject.toml` at root) | `publish-python.yml` → `.github/workflows/publish.yml` |
-| npm only (`package.json` at root, e.g. `stanley-wl`) | `publish-npm.yml` → `.github/workflows/publish.yml` |
+| npm only (`package.json` at root, e.g. `example-wl`) | `publish-npm.yml` → `.github/workflows/publish.yml` |
 | Extension (`package/` and/or `ui/`) | `publish-extension.yml` → `.github/workflows/publish.yml` (skips a missing tree) |
 
 Workflows run on **`v*` tag push** (what `train tag-rc` and `train publish` push).
@@ -463,7 +481,7 @@ Workflows run on **`v*` tag push** (what `train tag-rc` and `train publish` push
 
 **3. Confirm publish succeeded** after each `tag-rc` / `publish` push — GitHub Actions on that repo must succeed. git-convoy only pushes tags. In **Full** mode, `train verify` polls workflow conclusions via `gh`. In **Simple** mode, watch Actions manually. A failed publish workflow means the BOM must not assume that version exists.
 
-Optional: pin by package in the BOM (`python` / `npm` sections) instead of cloning private git SHAs — see your BOM README for `@stanley/wl` and extension packages.
+Optional: pin by package in the BOM (`python` / `npm` sections) instead of cloning private git SHAs — see your BOM README for `@<tenant>/wl` and extension packages.
 
 **Console** is special today: it is a Vite app deployed from a **git clone** (`repos.renglo/console`), not from CodeArtifact. Until console has a working tag-publish workflow, `adopt` keeps **repos-only** pins and **removes** any stale `npm.@renglo/console` entry. A starter workflow lives at `console/.github/workflows/publish-npm.yml`; enabling it requires renaming the package to `@renglo/console`, adding `console` to `github_publish_repos`, redeploying the publisher stack, and setting the repo Actions variables above. After the first green `train verify`, `adopt` will write the npm pin instead.
 
@@ -471,7 +489,7 @@ Do not leave `npm` pins in the BOM for packages that failed publish CI — deplo
 
 ### C. BOM repo (staging / production deploy)
 
-Your tenant BOM repo (e.g. `ops/stanley-bom`) needs:
+Your tenant BOM repo (e.g. `ops/example-bom`) needs:
 
 - `bom/vX.Y.Z.json` — system versions and pins
 - `deploy_targets.yml` — which BOM file staging and production use (`production.enabled: false` until cycle 4); optional `registries:` list for foreign CodeArtifact publishers (same-account internal works with no list)
@@ -495,6 +513,8 @@ git convoy train tag-rc
 ```
 
 For each train participant: merges latest stable/main into `develop` (catches hotfixes since the last rc), then candidate tag (`v1.2.4-rc.1`), push `release/<name>` and the tag. **CI publishes rc packages to CodeArtifact.** Develop sync failures are reported but tagging still proceeds — resolve conflicts during stabilization.
+
+`tag-rc` will not reuse a `v*` tag that already exists locally or on origin (unless it already points at HEAD). It walks `rc.N` until it finds a free tag. If `vX.Y.Z` was already released, it starts at `vX.Y.Z+1-rc.1` instead of minting another `X.Y.Z-rc.N`.
 
 Use `--no-push` to stay in cycle 2 (local tags only).
 
@@ -625,6 +645,16 @@ git push origin HEAD
 
 CI runs **staging deploy → smoke check → production deploy** in one workflow. Production is blocked if staging fails. Watch GitHub Actions (or failure notifications).
 
+**3. Return to a neutral workspace**
+
+Once production is up, the published train is finished. Do not `tag-rc` or `adopt` it again. Clear the sheet and leftover `release/<name>` branches:
+
+```bash
+git convoy train delete --yes
+```
+
+That unsets `current_train`, removes the train sheet, and checks participants out to `develop`/`main`. It does **not** unpublish packages or disable production. Pass `--remote` if `origin/release/<name>` is still present. The next ship starts with a new `train cut`.
+
 #### Optional safe path
 
 A manual staging check on **stable** pins before enabling production is recommended, not required:
@@ -646,20 +676,22 @@ Membership:
 2. `git convoy init` writes local `.gitconvoy/aux.toml` from those markers (workspace-local, not versioned).
 3. `git convoy adopt` (and hotfix adopt) defaults to the single repo listed under `[bom]` in that file — any directory name is fine. Pass `--bom PATH` only to override. If `[bom]` is empty, discovery falls back to a `*-bom` directory name.
 
-Lifecycle mirrors Cycle 1 on **aux repos only**. Branch prefix `aux/<name>`. PRs target `develop`. Independent of the current feature/train/hotfix. Optional `aux promote` opens develop→main when main must pick up the tip.
+Lifecycle is hotfix-style on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`main`** (one review). `aux close` merges **`main` → `develop`** so develop stays current — no second PR. Missing `develop` branches are created from `main`. Independent of the current feature/train/hotfix. `aux promote` is recovery only when develop is already ahead of main.
 
 ```bash
 git convoy aux start codeartifact-mosaic
 git convoy aux adopt
+git convoy aux adopt --repos bom-helper,git-convoy
 git convoy aux commit --header "fix: …" --header-only
 git convoy aux prs
-# merge PRs to develop in GitHub
+# merge PRs to main in GitHub
 git convoy aux show
-git convoy aux close --yes
-git convoy aux promote          # optional: develop → main
+git convoy aux close --yes      # main → develop; remove aux branches
 ```
 
-`feature adopt` ignores dirty aux repos; `aux adopt` ignores dirty product repos.
+`aux prs` moves leftover local-`main` commits onto `aux/<name>`, then resets local `main` to `origin/main`. A cherry-pick conflict leaves the repo in the cherry-pick: resolve, `git add`, `git cherry-pick --continue`, then re-run `aux prs`.
+
+`feature adopt` ignores dirty aux repos; `aux adopt` ignores dirty product repos. Pass `--repos` to force-include named aux ids even when they are clean.
 
 ---
 
@@ -735,20 +767,22 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy feature show [NAME]` | 1 | Feature sheet + merge status |
 | `git convoy feature close` | 1 | After all PRs merged |
 | `git convoy aux start NAME` | * | Aux sheet; pick up existing `aux/NAME`; else checkout integration |
-| `git convoy aux adopt` | * | Branch changed **aux** repos onto `aux/NAME` (from develop or main) |
+| `git convoy aux adopt [--repos …]` | * | Branch changed **aux** repos onto `aux/NAME` (from develop or main); `--repos` force-includes |
 | `git convoy aux abandon` | * | Delete local `aux/<name>` (lossy) |
 | `git convoy aux commit` | * | Commit dirty aux participants |
 | `git convoy aux push` | * | Push `aux/<name>` (no PRs) |
 | `git convoy aux switch NAME` | * | Checkout that aux’s repos |
-| `git convoy aux refresh` | * | Merge `origin/develop` into aux participants |
-| `git convoy aux prs` | * | Push and open PRs into develop (Full); `--no-gh` for compare URLs |
+| `git convoy aux refresh` | * | Merge `origin/main` into aux participants |
+| `git convoy aux prs` | * | Push and open PRs into **main** (Full); `--no-gh` for compare URLs. Absorbs leftover local-`main` commits onto `aux/<name>` |
 | `git convoy aux approve` | * | Approve sibling PRs (Full) |
-| `git convoy aux promote` | * | Open develop→main PRs when develop is ahead |
+| `git convoy aux promote` | * | Recovery: develop→main when develop is already ahead |
 | `git convoy aux show [NAME]` | * | Aux sheet + merge status |
-| `git convoy aux close` | * | After all PRs merged |
+| `git convoy aux close` | * | After merge to main: main→develop; remove aux branches |
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
+| `git convoy train adopt [--repos …]` | 2 | Late-join dirty (or named) product repos; no version bump |
+| `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/aux commit) |
 | `git convoy train show [NAME]` | 2 | Read train sheet |
-| `git convoy train delete` | 2 | Delete `release/<train>` branches |
+| `git convoy train delete` | 2, 4 | Delete `release/<train>` branches; after publish, return status to no current train |
 | `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
 | `git convoy adopt` | 3 | Staging BOM from `.gitconvoy/aux.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)` |

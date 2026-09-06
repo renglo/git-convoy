@@ -56,8 +56,8 @@ def test_read_npm_package_name_prefers_ui(tmp_path: Path) -> None:
 def test_read_npm_package_name_root(tmp_path: Path) -> None:
     repo = tmp_path / "wl"
     repo.mkdir()
-    (repo / "package.json").write_text('{"name":"@stanley/wl","version":"0.0.1"}\n')
-    assert read_npm_package_name(repo) == "@stanley/wl"
+    (repo / "package.json").write_text('{"name":"@acme/wl","version":"0.0.1"}\n')
+    assert read_npm_package_name(repo) == "@acme/wl"
 
 
 def test_read_python_package_name_root(tmp_path: Path) -> None:
