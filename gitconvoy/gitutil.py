@@ -133,6 +133,95 @@ def reset_hard(repo: Path, ref: str) -> None:
     run(repo, "reset", "--hard", ref)
 
 
+def cherry_pick_in_progress(repo: Path) -> bool:
+    return bool(rev_parse(repo, "CHERRY_PICK_HEAD"))
+
+
+def commits_not_in(repo: Path, included_in: str, excluded_from: str) -> list[str]:
+    """Oldest-first non-merge SHAs reachable from ``included_in`` but not ``excluded_from``."""
+    if not rev_parse(repo, included_in) or not rev_parse(repo, excluded_from):
+        return []
+    out = capture(
+        repo,
+        "rev-list",
+        "--reverse",
+        "--no-merges",
+        f"{excluded_from}..{included_in}",
+    )
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def commit_oneline(repo: Path, sha: str) -> dict:
+    short = capture(repo, "rev-parse", "--short", sha)
+    subject = capture(repo, "log", "-1", "--format=%s", sha)
+    return {"sha": short, "subject": subject}
+
+
+def absorb_local_main(repo: Path, dest_branch: str) -> dict:
+    """Move local-main-only commits onto ``dest_branch``; point ``main`` at origin.
+
+    Commits that exist on local ``main`` but not ``origin/main`` are cherry-picked
+    onto ``dest_branch`` (skipped when already contained or already applied).
+    ``main`` is then reset to ``origin/main``. Leaves HEAD on ``dest_branch``.
+
+    Local-main work is kept; it is just moved onto the topic branch. A cherry-pick
+    conflict leaves the repo in the cherry-pick and does not reset ``main``.
+    """
+    fetch(repo)
+    if cherry_pick_in_progress(repo):
+        raise GitConvoyError(
+            f"cherry-pick in progress on {dest_branch}. "
+            "resolve, git add, git cherry-pick --continue, then re-run"
+        )
+    if is_dirty(repo):
+        raise GitConvoyError(
+            "uncommitted changes; commit or stash, then re-run"
+        )
+    if not has_branch(repo, dest_branch):
+        raise GitConvoyError(f"no branch {dest_branch}")
+
+    origin_main = rev_parse(repo, "origin/main")
+    if not origin_main:
+        checkout_branch(repo, dest_branch)
+        return {"action": "skipped", "reason": "no-origin-main", "moved": []}
+    if not rev_parse(repo, "refs/heads/main"):
+        checkout_branch(repo, dest_branch)
+        return {"action": "skipped", "reason": "no-main", "moved": []}
+
+    unique = commits_not_in(repo, "main", "origin/main")
+    to_move = [sha for sha in unique if not is_ancestor(repo, sha, dest_branch)]
+    moved: list[dict] = []
+    if to_move:
+        checkout_branch(repo, dest_branch)
+        for sha in to_move:
+            info = commit_oneline(repo, sha)
+            result = run(repo, "cherry-pick", sha, check=False)
+            if result.returncode == 0:
+                moved.append(info)
+                continue
+            err = f"{result.stderr or ''}\n{result.stdout or ''}"
+            if _cherry_pick_empty(err):
+                run(repo, "cherry-pick", "--skip", check=False)
+                info["skipped"] = True
+                moved.append(info)
+                continue
+            raise GitConvoyError(
+                f"conflict moving local-main commit {info['sha']} "
+                f"({info['subject']}) onto {dest_branch}. "
+                "resolve, git add, git cherry-pick --continue, then re-run"
+            )
+
+    main_tip = capture(repo, "rev-parse", "refs/heads/main")
+    if main_tip != origin_main:
+        checkout_branch(repo, "main")
+        reset_hard(repo, "origin/main")
+        action = "absorbed" if to_move else "fast-forwarded"
+    else:
+        action = "already" if not moved else "absorbed"
+    checkout_branch(repo, dest_branch)
+    return {"action": action, "moved": moved}
+
+
 def has_local_branch(repo: Path, branch: str) -> bool:
     return bool(rev_parse(repo, f"refs/heads/{branch}"))
 
@@ -412,3 +501,10 @@ def local_branches(repo: Path, prefix: str | None = None) -> list[str]:
 
 def gh_bin() -> str | None:
     return shutil.which("gh")
+
+
+def _cherry_pick_empty(err: str) -> bool:
+    text = err.lower()
+    return "empty" in text and (
+        "cherry-pick" in text or "previous cherry-pick" in text
+    )

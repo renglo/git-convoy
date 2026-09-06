@@ -1147,9 +1147,19 @@ def _prs_text(data: dict) -> str:
         "merge order: " + " → ".join(data["merge_order"]),
         data["note"],
     ]
+    synced = {
+        row["id"]: row.get("main") or {}
+        for row in data.get("ensure_develop") or []
+        if row.get("id")
+    }
     for repo in data["repos"]:
         target = repo["pr"] or repo["compare"] or ""
-        lines.append(f"  {repo['id']:20} {target}")
+        extra = ""
+        main = synced.get(repo["id"]) or {}
+        moved = main.get("moved") or []
+        if main.get("action") == "absorbed" and moved:
+            extra = f"  absorbed {len(moved)} from local main"
+        lines.append(f"  {repo['id']:20} {target}{extra}")
     return "\n".join(lines)
 
 

@@ -560,17 +560,11 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
                 "created": bool(ensured.get("created")),
             }
         )
-        gitutil.checkout_branch(repo_path, "main")
-        if gitutil.rev_parse(repo_path, "origin/main"):
-            pulled = gitutil.run(
-                repo_path, "pull", "--ff-only", "origin", "main", check=False
-            )
-            if pulled.returncode != 0:
-                raise GitConvoyError(
-                    f"{repo_row.id}: cannot fast-forward main from origin; "
-                    "fix main, then git convoy aux prs"
-                )
-        gitutil.checkout_branch(repo_path, branch)
+        try:
+            synced = gitutil.absorb_local_main(repo_path, branch)
+        except GitConvoyError as exc:
+            raise GitConvoyError(f"{repo_row.id}: {exc}") from exc
+        ensured_rows[-1]["main"] = synced
     _push_aux_branches(workspace, feature)
     opened: list[dict] = []
     for repo_row in feature.repos:
@@ -601,12 +595,26 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     feature.status = "in-review"
     save(workspace, state)
     opened_prs = sum(1 for row in opened if row.get("pr"))
+    absorbed = [
+        f"{row['id']} ({len((row.get('main') or {}).get('moved') or [])})"
+        for row in ensured_rows
+        if (row.get("main") or {}).get("action") == "absorbed"
+        and (row.get("main") or {}).get("moved")
+    ]
     note = (
         "PRs target main. Approve with: git convoy aux approve (Full mode). "
         "Merge only when all sibling PRs are approved, in merge_order. "
         "git-convoy does not merge. After merge: git convoy aux close "
         "(merges main → develop)."
     )
+    if absorbed:
+        note += (
+            " Moved local-main-only commits onto "
+            + branch
+            + " in: "
+            + ", ".join(absorbed)
+            + "."
+        )
     if use_gh and opened and opened_prs == 0:
         note += (
             " No PRs were opened via gh (check `gh auth status`); "

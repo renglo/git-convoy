@@ -689,6 +689,8 @@ git convoy aux show
 git convoy aux close --yes      # main → develop; remove aux branches
 ```
 
+`aux prs` moves leftover local-`main` commits onto `aux/<name>`, then resets local `main` to `origin/main`. A cherry-pick conflict leaves the repo in the cherry-pick: resolve, `git add`, `git cherry-pick --continue`, then re-run `aux prs`.
+
 `feature adopt` ignores dirty aux repos; `aux adopt` ignores dirty product repos. Pass `--repos` to force-include named aux ids even when they are clean.
 
 ---
@@ -771,7 +773,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy aux push` | * | Push `aux/<name>` (no PRs) |
 | `git convoy aux switch NAME` | * | Checkout that aux’s repos |
 | `git convoy aux refresh` | * | Merge `origin/main` into aux participants |
-| `git convoy aux prs` | * | Push and open PRs into **main** (Full); `--no-gh` for compare URLs |
+| `git convoy aux prs` | * | Push and open PRs into **main** (Full); `--no-gh` for compare URLs. Absorbs leftover local-`main` commits onto `aux/<name>` |
 | `git convoy aux approve` | * | Approve sibling PRs (Full) |
 | `git convoy aux promote` | * | Recovery: develop→main when develop is already ahead |
 | `git convoy aux show [NAME]` | * | Aux sheet + merge status |
