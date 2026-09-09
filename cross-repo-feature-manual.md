@@ -1,23 +1,37 @@
 # Cross-repository feature manual
 
-How to take a feature from an idea to packages in the registry, and how a running system adopts those packages. This is the procedure to follow **by hand**. The CLI that performs these steps is [git-convoy](README.md).
+How to take a feature from an idea to packages in the registry, and how a running system adopts those packages. This is the procedure to follow **by hand** with git (and GitHub). The CLI that performs these steps is [git-convoy](README.md).
 
-Design notes that led here: [cross-repo-feature-lifecycle.md](cross-repo-feature-lifecycle.md). Branch and tag mechanics that still say `release/X.Y` in [gitflow-and-releases.md](gitflow-and-releases.md) are outdated; this manual uses **train-named** release branches.
+You do not have to run every cycle. Stop when you have what you need. Cycles 1–2 are git only. Cycles 3–4 also need the tenant publisher (CodeArtifact) and a `<name>-bom` repo — see the README section “Setup for cycles 3 and 4”.
 
 ---
 
 ## What this process is
 
-A feature in Renglo usually spans more than one repository. An idea often starts in an extension. If the same idea is useful to others, the reusable part is neutralized and offered to core. Core admins accept that the way an open-source project accepts a contribution. Extensions are also composable (an agent uses other extensions as tools and channels), so a single feature touching several repos is normal.
+A feature in Renglo usually spans more than one repository. An idea often starts in an extension. If the same idea is useful to others, the reusable part is neutralized and offered to core. Extensions are also composable, so a single feature touching several repos is normal.
 
-The lifecycle has two halves. They are decoupled on purpose.
+The work is four cycles plus two parallel paths. They run at different times and they do not substitute for each other.
+
+| Cycle | What you move | What you get | Registry / BOM? |
+| ----- | ------------- | ------------ | --------------- |
+| **1. Daily feature work** | Code on `feature/<name>` → `develop` | Merged features on `develop` | No |
+| **2. Release trains (local)** | `develop` → `release/<name>`; stabilize in git | A coherent release branch set, rc versions in git | No |
+| **3. Staging adoption** | Pushed **rc** tags → registry; train → staging BOM | Packages in CodeArtifact; staging runs the train | Yes |
+| **4. Production release** | **Stable** tags → registry; same BOM → production | Production runs the stable train | Yes |
+
+The two halves stay decoupled on purpose. A train can sit in the registry unused. **Publishing packages is not enabling production.** Production is cycle 4, after staging has accepted the train.
 
 | Half | Result | Does not do |
 | ---- | ------ | ----------- |
-| **Development and release** | New package versions in the registry | Change any business system |
-| **Adoption** | A system version (BOM) running in staging, then production | Publish packages |
+| **Development and release** (cycles 1–2, then tags in 3–4) | New package versions in the registry | Change any business system |
+| **Adoption** (BOM in cycles 3–4) | A system version running in staging, then production | Publish packages |
 
-Every business system chooses its own cadence. A train can sit in the registry unused.
+**Boundaries**
+
+- **Cycle 2 → 3:** the first **rc tags you push** to origin. That triggers CI publish workflows. Watch GitHub Actions on each participant before you write registry pins into a BOM.
+- **Cycle 3 → 4:** merge to `main`, push **stable** tags, merge tagged `main` back into `develop`, then enable production on the BOM. Production stays off until that last step.
+
+**Hotfix** is a parallel path, not a fifth cycle: a production PATCH without a new train. **Aux** is a parallel path for platform tooling that must not ride product trains.
 
 **Extension publishers** (`*` in this manual) have no write access to core repos. They follow the same steps on the repos they own. They still need a full local environment, including read-only core.
 
@@ -34,13 +48,29 @@ Every business system chooses its own cadence. A train can sit in the registry u
 
 ---
 
+## Which repos
+
+Treat workspace clones as three kinds. Do not mix them on one sheet.
+
+| Kind | Where | Rides trains / hotfixes / feature PRs onto `develop`? |
+| ---- | ----- | ----------------------------------------------------- |
+| **Product** | `console/`, `dev/*`, `extensions/*`, tenant ops such as `bootstrap` or `<tenant>-wl` | Yes |
+| **Aux** | Platform tooling: `publisher`, `launcher`, `extensions-service`, `git-convoy`, `bom-helper`, … | No. Own lifecycle: `aux/<name>` PRs into **`main`**. |
+| **BOM** | `<name>-bom` | No. Pins land on `main` of that repo. **That push deploys.** Never put `*-bom` on a feature, train, or hotfix branch. |
+
+A repo with no `develop` branch uses `main` as its integration branch for feature work. Release trains still only cut **product** repos that have a version file (`pyproject.toml` and/or `package.json`).
+
+---
+
 ## State you keep by hand
 
-Git does not remember “which repos belong to feature X” or “which repos are on train week-34.” You do. A spreadsheet or a text file is enough. Keep these files in the workspace (or any shared place the next laptop can see). Commit them if more than one person will run the process.
+Git does not remember “which repos belong to feature X” or “which repos are on train 2026-W34.” You do. A spreadsheet or a text file is enough. Keep these files where the next laptop can see them.
+
+Do not reconstruct membership by scanning dirty directories.
 
 ### Feature sheet
 
-One sheet (or one text file) **per feature**. Create it **before** the first line of code, even though you do not yet know which repos will change.
+One sheet **per feature**. Create it **before** the first line of code, even though you do not yet know which repos will change.
 
 ```text
 feature:     blast-radius
@@ -58,10 +88,11 @@ Rules:
 
 - Start with an empty repo list.
 - Add a row the first time that repo actually changes. Do not pre-list every repo in the workspace.
+- Do not add aux or `*-bom` rows.
 - The `pr` column stays empty until you open PRs.
-- This sheet is what you read when you switch features, refresh from `develop`, or open PRs. Do not reconstruct the list by looking for dirty directories.
+- If `feature/<name>` already exists but has **no work** (clean tree, no commits beyond `develop`), leave that repo **off** the sheet and check out `develop`.
 
-Also keep a one-line **current feature** note (a cell, or a file `CURRENT_FEATURE`) so you know which sheet adopt-after-edit writes into.
+Also keep a one-line **current feature** note so you know which sheet adopt-after-edit writes into.
 
 ```text
 current: blast-radius
@@ -84,6 +115,10 @@ breakdown       extensions/breakdown  0.0.2    0.0.3     v0.0.3-rc.2
 
 Repos that did not change do **not** get a row and do **not** get a `release/…` branch.
 
+### Hotfix sheet / aux sheet
+
+Same idea: one sheet per name, sparse membership, PR URLs when you open them. Hotfix branches are `hotfix/<name>` (PRs into `main`). Aux branches are `aux/<name>` (PRs into `main`).
+
 ### Adoption is already a file
 
 The next system version **is** the `<name>-bom` version object. You do not need a second sheet for pins. You may keep a short note of “what this draft is taking” (train id, or “hotfix renglo-lib only”) in the version object’s description field.
@@ -98,41 +133,71 @@ When several PRs or several release-to-`main` merges belong together, merge in t
 2. `renglo-api`
 3. `console` and every extension (any order among themselves, unless one extension clearly depends on another — then the depended-on one first)
 
----
+Do not merge a subset. If a later merge fails, stop. Fix that PR or revert what already landed.
 
-# Part 1 — Development and release
-
-## 1. Multi-repo environment
-
-You already have a workspace with the product repos checked out and the stack pointing at a real database, auth, and so on. The environment must run.
-
-`*` Extension publishers need that same running stack. Core clones in their workspace are read-only.
+You never merge GitHub PRs from a script. Approve in GitHub (or `gh`); merge in GitHub after the whole set is approved.
 
 ---
 
-## 2. Start the feature on `develop`
+## Catch up the workspace (start of a work session)
+
+After time away, before you write code: every product clone should be on **`develop`**, with other people’s merged features **and** any hotfix that landed on `main`. Do not `git pull` on `main` for this. Fetching while `main` is checked out is how local `develop` and `origin/develop` drift apart.
+
+The workspace must be idle: no dirty files, no in-progress feature/hotfix/aux sheet with participant repos, no train still `cut`/`stabilizing`, and no checkout of `feature/*` / `hotfix/*` / `aux/*` / `release/*` that still has unique commits.
+
+For **each product repo** (and each aux repo that has `develop`):
+
+```bash
+git fetch origin --tags --prune
+git checkout develop
+git merge --ff-only origin/develop
+# latest vX.Y.Z stable tag, or origin/main if the repo has none
+git merge v1.2.4
+git push origin develop
+```
+
+Stay on `develop`. Fast-forward local `main` from `origin/main` **without checking it out** (`git fetch origin main:main` when that is a fast-forward) so you are not left on `main` if a step fails.
+
+Skip repos with no `develop` (white-label packs that integrate on `main`): fetch, check out `main`, fast-forward `origin/main`. BOM repos always stay on `main`.
+
+If `develop` is dirty, or has local commits `origin/develop` does not, stop. Adopt onto a feature branch, or reset, before catching up. On a merge conflict: abort (`git merge --abort`), resolve on a clean `develop`, then retry that repo.
+
+If you already have an in-progress feature, merge `origin/develop` into `feature/<name>` instead (refresh). Do not catch up the whole workspace onto `develop` while that work is unmerged.
+
+---
+
+## Heal `develop` from `main` (any time)
+
+When `develop` has fallen behind tagged `main` — a repo sat out of the last train, a new extension, post-hotfix drift — merge stable back into `develop` even if you are not starting a new feature. Same git as the catch-up above, per product repo. The same merge is required **automatically** before feature PRs, before pushing rc tags, and after publishing stable tags.
+
+---
+
+# Cycle 1 — Daily feature work
+
+## 1. Start the feature on `develop`
 
 1. Write the feature name on a new **feature sheet**. Set `CURRENT_FEATURE` to that name. Repo list empty.
-2. In **every** product repo you might touch, start from current `develop`:
+2. In every **product** repo, fetch. Then:
+
+   - If `feature/<name>` **already exists** (this laptop, another checkout, leftover from a previous start): check it out. Put the repo on the sheet **only when it has work** — uncommitted files on that branch, or commits not already in `develop`. If the leftover branch is empty, check out `develop` and leave the repo off the sheet. Keep dirty work already on `feature/<name>`. If you are dirty on some **other** branch, skip that repo (leave the existing feature branch as-is).
+   - If there is no `feature/<name>` yet and the tree is clean: check out `develop` (or `main` when the repo has no `develop`) and pull. **Do not create `feature/<name>` yet.** You do not know which repos will change.
 
    ```bash
    git checkout develop
    git pull origin develop
    ```
 
-   You do not create `feature/<name>` yet. You do not know which repos will change. Coding agents will edit whatever is checked out; that is expected.
-
-3. Implement. Example: a Blast Radius handler in `arbitiumtriage` that uses the graph controller in `renglo-lib`, blueprints in `arbitiumlab`, and a modal in `schd`. If a change in `renglo-lib` is truly general, offer it to core rather than overfitting the controller. Core admins decide.
+3. Implement. Work on `develop` is expected. Example: a Blast Radius handler in `arbitiumtriage` that uses the graph controller in `renglo-lib`, blueprints in `arbitiumlab`, and a modal in `schd`. If a change in `renglo-lib` is truly general, offer it to core rather than overfitting the controller.
 
 4. `*` You only commit in extension repos you own. You may still change several of your own extensions in one feature.
 
-`develop` is the **base**. It is not where feature commits are allowed to stay. After each working session (or after an agent stops), do §3.
+`develop` is the **base**. It is not where feature commits are allowed to stay. After each working session (or after an agent stops), do §2.
 
 ---
 
-## 3. Adopt changes onto the feature branch
+## 2. Adopt changes onto the feature branch
 
-For **each** repo that now has uncommitted files, or commits that are not on `origin/develop`:
+For **each product repo** that now has uncommitted files, or commits on `develop`/`main` that are not on `origin`, or that already has `feature/<name>` with unique commits:
 
 **Uncommitted changes only**
 
@@ -144,7 +209,7 @@ git checkout -b feature/blast-radius
 
 Add the repo to the feature sheet if it is not already there.
 
-**The work was committed on `develop`**
+**The work was committed on `develop`** (and not pushed)
 
 ```bash
 git checkout -b feature/blast-radius
@@ -157,49 +222,51 @@ Add the repo to the feature sheet.
 
 If `develop` was **pushed** with those commits, stop. Do not reset a shared `develop`. Move the work with a revert or a follow-up PR. Treat that as an incident, not a normal adopt.
 
-Do **not** create `feature/<name>` in repos that did not change.
+Empty `feature/<name>` branches (no unique commits, clean tree) stay off the sheet. If they were already listed, drop them and check out `develop`.
 
-Then commit on the feature branch (`git convoy feature commit`, or `git commit` in each repo). Do not commit on `develop`. Agents: `git convoy --json feature commit` (plan) then `--from` (apply).
+Do **not** create `feature/<name>` in repos that did not change. Do **not** adopt aux or `*-bom`.
 
-To back up commits on GitHub without a PR: `git convoy feature push` (`git push -u origin feature/<name>` in each participant). Uncommitted files stay on the laptop.
+Then commit **on the feature branch**. Do not commit on `develop`.
 
----
+```bash
+git add -A
+git commit -m "$(cat <<'EOF'
+feat: blast-radius graph in lib and triage UI
 
-## 3b. Leave a feature and come back
+EOF
+)"
+```
 
-This is ordinary branch switching. Worktrees are not required.
+To back up commits on GitHub without a PR:
 
-**Leave**
+```bash
+git push -u origin feature/blast-radius
+```
 
-1. In every repo on the feature sheet, commit or stash. If anything is dirty, do not switch.
-2. Set `CURRENT_FEATURE` to the next name (or empty).
-3. To start something else from a clean base:
-
-   ```bash
-   git checkout develop
-   git pull origin develop
-   ```
-
-   Do that in every repo, or at least in every repo that was on the sheet. Then §2 for the new feature.
-
-**Return**
-
-1. Set `CURRENT_FEATURE` to the feature you want.
-2. Read **that** feature sheet. In every listed repo:
-
-   ```bash
-   git checkout feature/blast-radius
-   ```
-
-3. In workspace repos **not** on that sheet, stay on (or return to) `develop`.
-
-If you skip a listed repo, the feature is incomplete and will not run. The sheet is how you avoid that.
+Uncommitted files stay on the laptop. Status stays `in-progress`.
 
 ---
 
-## 4. Refresh from `develop`
+## 2b. Leave a feature and come back
 
-Other features land on `develop` while you work. Refresh often. A long-lived feature branch that never takes `develop` is painful to merge later.
+This is ordinary branch switching. Worktrees are not required. If any product repo is dirty, commit or stash first. Do not switch dirty.
+
+**Leave / switch to another feature**
+
+1. Read the **other** feature’s sheet (or start a new empty one).
+2. In every repo on **that** sheet: `git checkout feature/<other-name>`.
+3. In every other product repo: `git checkout develop` (and pull if you need a clean base).
+4. Set `CURRENT_FEATURE` to the name you are on.
+
+**Return** is the same: read **that** sheet, check out listed branches, stay on `develop` everywhere else. If you skip a listed repo, the feature is incomplete and will not run.
+
+To throw a test feature away (**deletes that work**): check out `develop` in each listed repo and delete local `feature/<name>`. Do not delete origin unless you mean to. Do not abandon work the user still wants.
+
+---
+
+## 3. Refresh from `develop`
+
+Other features land on `develop` while you work. Refresh often.
 
 For each repo on the feature sheet:
 
@@ -207,56 +274,96 @@ For each repo on the feature sheet:
 git checkout feature/blast-radius
 git fetch origin
 git merge origin/develop
-# or: git rebase origin/develop
 ```
 
-Resolve conflicts yourself. Re-run the local stack. Do not leave a conflicted repo “for later” while you refresh the others.
+Resolve conflicts yourself, then continue the rest of the sheet. Do not leave a conflicted repo “for later.” Re-run the local stack.
 
-`*` Merging `develop` into **your** extension does not update core. To see whether you still work against latest core, pull `develop` on your read-only core clones (or install the latest core packages) and run the stack again. That is a separate action from refreshing your feature branches.
+`*` Merging `develop` into **your** extension does not update core. Pull `develop` on read-only core clones (or install the latest core packages) separately.
 
 ---
 
-## 5. Open PRs onto `develop`
+## 4. Open PRs onto `develop`
 
 When the feature is stable on your machine:
 
-1. Refresh from `develop` one last time (§4). Commit.
-2. Push every branch on the feature sheet:
+1. Refresh from `develop` one last time (§3). Commit.
+2. **Heal `develop` from the latest stable tag (or `main`)** in every participant — same commands as [Heal develop from main](#heal-develop-from-main-any-time). This absorbs hotfixes and repos that sat out of the last train **before** the PR, not on the train. Conflicts **block** PR creation. Resolve on `develop`, then retry. After a successful sync, check the feature branch out again.
+3. Push every branch on the feature sheet:
 
    ```bash
    git push -u origin feature/blast-radius
    ```
 
-3. Open one pull request per listed repo: `feature/<name>` → `develop`. Put the PR URL in the sheet.
-4. Open a tracking issue (or a row at the top of the sheet) that lists every PR. Reviewers use that list. GitHub has no cross-repo PR.
+4. Open one pull request per listed repo: `feature/<name>` → `develop` (`main` if that repo has no `develop`). Put the PR URL on the sheet. If you use `gh`:
+
+   ```bash
+   gh pr create --base develop --head feature/blast-radius --title "feat: blast-radius" --body "…"
+   ```
+
+   Without `gh`, open the compare URL in the browser:
+
+   `https://github.com/<org>/<repo>/compare/develop...feature/blast-radius`
+
+5. Keep a tracking list of every sibling PR (the sheet is enough). GitHub has no cross-repo PR. Mark the sheet `in-review`.
 
 **Review**
 
-- Comment on any PR. Approve on GitHub as usual (branch protection, CODEOWNERS, and CI stay real).
+- Comment on any PR. Approve on GitHub as usual (branch protection, CODEOWNERS, and CI stay real). `gh pr review --approve` is the same action.
 - Do **not** merge until every sibling PR is approved and its CI is green.
-- If one PR is rejected, none of them merge. A half-landed feature on `develop` is the failure mode this step exists to prevent.
+- If one PR is rejected, none of them merge.
 
-**Merge** (after the whole set is approved)
+**Merge status by hand:** a participant is `uncommitted` if the feature branch has a dirty tree; `pending` if a PR is open; `merged` when the feature-branch tip is contained in `develop` (squash merges need the GitHub PR state, not git ancestry alone). When every participant is merged, mark the sheet `merged`.
 
-Merge in the [fixed order](#merge-order-fixed). If a later merge fails, stop. Fix that PR or revert what already landed. Do not keep merging the rest.
-
-Then mark the feature sheet `merged`.
+**Merge** (after the whole set is approved) in the [fixed order](#merge-order-fixed). Merge stays in GitHub.
 
 `*` Same process; the set never includes core repos.
 
 ---
 
-## 6. Cut a release train
+## 5. Close the feature
+
+After every PR is merged:
+
+```bash
+git checkout develop
+git pull origin develop
+git branch -d feature/blast-radius
+# optional: git push origin --delete feature/blast-radius
+```
+
+Do that in every listed repo. Remove the feature sheet. Do not close while any participant still has uncommitted work, an open PR, or commits not in `develop`.
+
+When those PRs merge, the feature is on `develop`. Cycle 2 turns that `develop` into release branches.
+
+---
+
+# Cycle 2 — Release trains (local)
 
 A **train** is a coordination label, not a version. `renglo-lib` may be `1.2.4` while `renglo-api` is `2.3.1` and `breakdown` is `0.0.3`. They can still share `release/2026-W34`.
 
-Prefer a sortable train id: `2026-W34` (ISO week) or the cutoff date. Avoid `week-34` without a year.
+Prefer a sortable train id: `2026-W34` (ISO week) or the cutoff date. Avoid `week-34` without a year. The name is **not** any package’s semver.
+
+Until you cut, merged features only exist on `develop`. This cycle does **not** push tags and does **not** touch the registry. You can cut → fix → recut (after deleting a botched cut) many times before cycle 3.
 
 **Who is on the train**
 
-A repo is on the train only if `develop` has commits that are not in its last **stable** tag. Unchanged repos sit out. Their BOM pins stay as they are.
+A product repo is on the train only if its integration branch (`develop`, or `main` when there is no `develop`) has commits that are not in its last **stable** `v*` tag, **and** that tag is an ancestor of the tip. Unchanged repos sit out. Repos with no version file sit out.
 
-**Cut**
+If `develop` never received the last tagged `main` (you skipped [mergeback](#10-merge-tagged-main-back-into-develop)), the next cut looks empty even after features merged. Heal develop first.
+
+### Example — Friday of week 34
+
+| Feature | Repos | Friday afternoon |
+| ------- | ----- | ---------------- |
+| **X** invoice rounding | `renglo-lib`, `breakdown` | Merged to `develop` |
+| **Y** login timeout | `renglo-api`, `console` | Merged to `develop` |
+| **Z** export CSV | `schd` | Still on `feature/export-csv` |
+
+Nothing on `develop` for `schd` (Z has not merged). That repo sits this train out.
+
+---
+
+## 6. Cut the train
 
 For each participating repo, after the cutoff:
 
@@ -266,7 +373,7 @@ git pull origin develop
 git checkout -b release/2026-W34
 ```
 
-Write a row on the **train sheet**. Decide the **intended stable** version for that package (semver: PATCH / MINOR / MAJOR for what actually changed). Do not bump every commit; bump once when you cut.
+Write a row on the **train sheet**. Default bump is **PATCH** for what is on `develop` since the last stable tag (`1.2.3` → `1.2.4`). Use MINOR or MAJOR only when the change really needs it. Do not bump every commit; bump once when you cut.
 
 On the release branch, write that number **with an rc suffix** in the version files. Python and the extension UI stay on the same number.
 
@@ -278,89 +385,97 @@ On the release branch, write that number **with an rc suffix** in the version fi
 ```bash
 git add -A
 git commit -m "Set 1.2.4rc1 for train 2026-W34"
-git push -u origin release/2026-W34
-git tag v1.2.4-rc.1
-git push origin v1.2.4-rc.1
 ```
 
-The tag publishes that package to the registry. Repeat per participant (each has its own semver).
+Do **not** push a `v*` tag yet. That is cycle 3. You may push `release/2026-W34` if you want the branch on origin; tagging is what publishes.
 
-**Stabilize**
+Status → `cut`.
 
-On `release/<train>` only: bugfixes and release prep. No new features.
-
-- If a fix is needed: commit on the release branch, merge that fix **back to `develop`**, tag `vX.Y.Z-rc.2`, update the train sheet.
-- Test locally. For cloud: pin the **rc** versions in a staging BOM of a `<name>-bom` repo and deploy staging (Part 2, using rc pins). That is how you learn whether incoming packages break existing features.
-
-The train is stabilized when the last rc of every participant is acceptable.
+To add a product repo that was left off the cut (dirty work on `develop`/`main`, or a named clean repo), check out or create `release/<train>` from the current integration branch, add a sheet row, and **do not bump versions**. Refuse dirty work on `feature/*`. Ignore aux and BOM.
 
 ---
 
-## 7. Publish the train
+## 7. Stabilize on the release branch
 
-Publishing puts **stable** packages on `main` and in the registry. It still does not deploy a business system.
+Bugfixes and release prep only. No new features.
 
-For each repo on the train sheet, on the release branch:
+Commit on `release/<train>` in each participant:
 
-1. Edit the version files: **drop the rc**. `1.2.4rc1` → `1.2.4`. Same number. Do not increment.
-2. Merge to `main`:
+```bash
+git add -A
+git commit -m "fix: …"
+```
+
+Merge those fixes **back to `develop`** so the next train does not lose them.
+
+Do not push rc tags while any participant is dirty — commit first.
+
+To throw away a botched cut: check out `develop` in each participant, delete local `release/<name>` (and origin if you pushed it), remove the train sheet. Recut only after that.
+
+**Optional — stay in cycle 2:** you may create rc (or even stable) tags **locally** and merge to `main` **without pushing**. That updates git only. Do not do that if you plan to run cycles 3–4; pushed tags are what CI publishes, and you must not reuse a `v*` tag that already exists.
+
+The train is ready for cycle 3 when the release branch set is coherent on your machine.
+
+---
+
+# Cycle 3 — Staging adoption (registry + cloud test)
+
+Prerequisites: publisher stack, per-repo tag-publish workflows, BOM repo. Full detail is in the README.
+
+**Console** is special today: it deploys from a **git clone**, not CodeArtifact. Until it has a working workflow on `v*` tag push, pin console by `repos.*.commit` only. Do not leave a stale `npm.@renglo/console` pin.
+
+---
+
+## 8. Push rc tags (publish release candidates)
+
+For each train participant:
+
+1. Heal that repo’s `develop` from its latest stable tag (or `main`). Sync failures should be resolved during stabilization; you may still tag from the release branch, but do not ignore a broken `develop`.
+2. Check out `release/<train>`. If the version files are not already an rc, write `X.Y.ZrcN` / `X.Y.Z-rc.N`.
+3. Choose a **free** tag. Do not reuse a `v*` tag that already exists locally or on origin unless it already points at HEAD. Walk `rc.N` until one is free. If `vX.Y.Z` was already released, start at `vX.Y.Z+1-rc.1` instead of minting another `X.Y.Z-rc.N`.
+4. Commit version files if they changed, then:
 
    ```bash
-   git checkout main
-   git pull origin main
-   git merge release/2026-W34
-   git push origin main
-   git tag v1.2.4
-   git push origin v1.2.4
+   git push -u origin release/2026-W34
+   git tag v1.2.4-rc.1
+   git push origin v1.2.4-rc.1
    ```
 
-3. Write the stable tag on the train sheet.
+Write `rc-tag` on the train sheet. Status → `stabilizing`. Repeat per participant (each has its own semver). **CI publishes rc packages to CodeArtifact.**
 
-Merge participants in the [fixed order](#merge-order-fixed) if their publishes must land together.
-
-`*` Your extension may publish on the same Sunday as the official train, or later, using the same steps on your own repos.
-
-On the train sheet (or a short notes file next to it), record **which features** this train carried. That is the release manifest for humans. Package tags do not list features.
-
-Status → `published`.
+When `release/<name>` has new commits past the current rc tag, bump the rc suffix for that repo (`rc.1` → `rc.2`) and leave unchanged repos on their existing rc.
 
 ---
 
-# Part 2 — Adoption
+## 9. Confirm publish CI, then draft the staging BOM
 
-A **Renglo Implementation** is a running system that installs these packages. It has a `<name>-bom` repo (example: `example-bom`). That repo holds one **version object** per system version.
+Watch GitHub Actions on **each** participant for workflows that trigger on **`v*` tag push** (any filename: `publish.yml`, `publish-python.yml`, `publish-extension.yml`, …). If a repo has several such workflows, **all** must succeed. Repos with **no** tag-publish workflow (console today) are not failures — they are git-clone participants.
 
-The system version (`v0.0.9`, `2026-W34`, …) is not any package’s semver. The version object is the bill of materials: every dependency and the exact pin. You can rebuild that system by installing only those pins. A package that did not move keeps the previous pin.
+Pin strategy for this system version:
 
-Compatibility is not computed from version numbers. It is whatever **staging** accepts.
+| Publish CI | What to write in the BOM |
+| ---------- | ------------------------ |
+| **success** | `python` / `npm` registry versions (rc). Remove a redundant `repos` SHA for that package. |
+| **skip** (no tag-publish workflow) | `repos.<org/repo>.commit` only (console today). |
+| **failure** / pending / missing tag | **Do not invent a registry pin.** Clear `python`/`npm` for that package and fall back to `repos.*.commit`. |
 
----
+Do not write an npm/python pin for a package that failed publish CI — deploy will try CodeArtifact and fail.
 
-## A1. Draft the next version object
+**First adopt for this train:** copy the last system version that is known good (usually production, or the last good staging draft). Patch-bump the **system** version (`v1.4.0` → `v1.4.1`). That copy is the new draft. Point `deploy_targets.yml` at it. Keep `production.enabled: false`.
 
-1. Copy the last system version that is known good in **production** (or the last good staging draft, if you are still iterating). That copy is the new draft.
-2. Decide what this adoption is taking:
+**Later adopt, same train:** do **not** copy to a new file. Refresh pins **in the same** `bom/vX.Y.Z.json`.
 
-   - A published train: pin every package that train shipped, at the versions on the train sheet. Leave everything else.
-   - One package (or a small set) because you need that fix. Leave everything else.
-   - Nothing new — documentation only. Rare.
+Work in the `<name>-bom` repo on `main`. git-convoy does not push this repo. **You** commit and push; that push deploys.
 
-3. Do not “always bump core first.” Core moves when the train or hotfix moved core.
-4. Put a sentence in the draft’s description: train id, or “hotfix `renglo-lib` only,” plus anything you pinned back last time.
-5. Point the deploy config at this draft. Turn **production off** so a push cannot skip staging. Do **not** deploy production.
+### Example — first staging draft of train `2026-W34`
 
-Work in the `<name>-bom` repo (example: `example-bom`). Today that repo still pins git commits under `repos`. The target shape is package pins under `python` / `npm` (see [package-registry-migration.md](package-registry-migration.md)). The git steps are the same either way; the examples below use package pins.
-
-### Example — take train `2026-W34`
-
-Production is on system version `v1.4.0`. The train sheet says `renglo-lib`, `renglo-api`, and `breakdown` published; nothing else moved.
+Production is on system version `v1.4.0`. The train sheet has rc tags for `renglo-lib`, `renglo-api`, and `breakdown`. Console has no tag-publish workflow.
 
 ```bash
 cd ops/example-bom
 git checkout main
 git pull origin main
-
-cp bom/v1.4.0.json bom/v1.5.0.json
+cp bom/v1.4.0.json bom/v1.4.1.json
 ```
 
 Last good BOM (`bom/v1.4.0.json`):
@@ -369,7 +484,7 @@ Last good BOM (`bom/v1.4.0.json`):
 {
   "version": "v1.4.0",
   "train": "2026-W33",
-  "description": "Production. Train 2026-W33.",
+  "description": "Production. Release 2026-W33.",
   "python": {
     "renglo-lib": "1.2.3",
     "renglo-api": "2.3.0",
@@ -377,49 +492,55 @@ Last good BOM (`bom/v1.4.0.json`):
     "renglo-schd": "1.1.0"
   },
   "npm": {
-    "@renglo/console": "0.8.0",
     "@renglo/breakdown": "0.0.2",
     "@renglo/schd": "1.1.0"
+  },
+  "repos": {
+    "renglo/console": {
+      "url": "git@github.com:renglo/console.git",
+      "branch": "main",
+      "commit": "aaa111…"
+    }
   }
 }
 ```
 
-Edit the copy. Bump only what the train shipped. Keep `renglo-schd` and `@renglo/console` as they were.
+Edit the copy. Bump only what the train shipped. Use **rc** versions for packages whose publish workflow succeeded. Keep `renglo-schd` as it was. Pin console by git SHA (HEAD of `release/2026-W34` or the rc tag).
 
-`bom/v1.5.0.json`:
+`bom/v1.4.1.json`:
 
 ```json
 {
-  "version": "v1.5.0",
+  "version": "v1.4.1",
   "train": "2026-W34",
-  "description": "Draft. Taking train 2026-W34 (renglo-lib, renglo-api, breakdown). Not production.",
+  "description": "Draft. Taking 2026-W34. Not production.",
   "python": {
-    "renglo-lib": "1.2.4",
-    "renglo-api": "2.3.1",
-    "renglo-breakdown": "0.0.3",
+    "renglo-lib": "1.2.4rc1",
+    "renglo-api": "2.3.1rc1",
+    "renglo-breakdown": "0.0.3rc1",
     "renglo-schd": "1.1.0"
   },
   "npm": {
-    "@renglo/console": "0.8.0",
-    "@renglo/breakdown": "0.0.3",
+    "@renglo/breakdown": "0.0.3-rc.1",
     "@renglo/schd": "1.1.0"
+  },
+  "repos": {
+    "renglo/console": {
+      "url": "git@github.com:renglo/console.git",
+      "branch": "main",
+      "commit": "bbb222…"
+    }
   }
 }
 ```
 
-Point deploy at the draft and disable production. `deploy_targets.yml`:
+`deploy_targets.yml` — point at the draft, production off:
 
 ```yaml
-bom: 1.5.0
-
-handlers_bom: 0.0.3
-handlers_compute: lambda_only
+bom: 1.4.1
 
 tenants:
   example:
-    id: example0731
-    aws_account: "339713094352"
-    aws_region: us-east-1
     stages:
       staging:
         enabled: true
@@ -427,215 +548,215 @@ tenants:
         enabled: false
 ```
 
-`bom: 1.5.0` means CI reads `bom/v1.5.0.json`. Leave the old file on disk. That is the rollback pin list.
-
-Do not commit yet if you want a last look. Committing without pushing is fine; **push** is what deploys (A2).
-
-### Example — take one hotfix only
-
-Production stays on `v1.4.0`. You only need `renglo-lib 1.2.5` (a PATCH published from Part 3).
+Leave the old `bom/v1.4.0.json` on disk. That is the rollback pin list.
 
 ```bash
-cp bom/v1.4.0.json bom/v1.4.1.json
-```
-
-Change `"version"` to `v1.4.1`, set `"description"` to `Draft. Hotfix renglo-lib 1.2.5 only.`, set `"renglo-lib": "1.2.5"`, leave every other pin. Set `bom: 1.4.1` and `production.enabled: false`.
-
----
-
-## A2. Prove it on staging
-
-Push the version object and the deploy config. That push is what deploys. Do not tag `<name>-bom` to trigger staging.
-
-Staging installs those pins, boots, and runs the tests you already trust. The combination is stable when staging stays up and those tests pass.
-
-If staging breaks, do **one** of the following. Do not walk a dependency graph and guess:
-
-1. **Pin back** the package that broke the combination. Adopt less, or wait for the next train.
-2. **Fix forward**: `hotfix/*` from `main` (or a new feature), publish a new package, put that pin in the draft, stage again.
-3. **Take the rest of the set.** If `renglo-lib` now requires an app id on every API call, you cannot take that lib pin until the extensions you run have been updated and published. That work is Part 1. Adopt the whole set, or none of it. A blueprint field rename in `schd` is the same problem: pin `schd` back, or adopt the extensions that write the new field in the same system version.
-
-Repeat: edit draft → stage → pin-back or fix → stage. The draft is not stable until staging says so.
-
-### Example — first staging deploy
-
-```bash
-cd ops/example-bom
-git checkout main
-
-git add bom/v1.5.0.json deploy_targets.yml
+git add bom/v1.4.1.json deploy_targets.yml
 git commit -m "$(cat <<'EOF'
-Draft system v1.5.0 from train 2026-W34; staging only.
+Draft system v1.4.1 from train 2026-W34; staging only.
 
 EOF
 )"
 git push origin main
 ```
 
-Watch the deploy workflow. Confirm `production.enabled` is still `false` (or re-run the workflow with `skip_production=true` if your repo supports that input). When the staging URL is up, run the tester checks you already use.
+Watch the deploy workflow. Confirm `production.enabled` is still `false`. When staging is up, run the tester checks you already use.
 
-### Example — pin back `breakdown`
+**If staging fails**, do **one** of the following. Do not walk a dependency graph and guess:
 
-Staging boots, but Breakdown screens fail. You decide not to take `0.0.3` in this system version.
+1. **Fix forward on the train:** commit on `release/<name>`, merge that fix back to `develop`, push a new rc tag (§8), refresh **the same** BOM file (§9), push again. Many attempts are fine. Train stays `stabilizing` until cycle 4.
+2. **Pin back** the package that broke the combination (edit the same draft; do not copy to a new version). Adopt less, or wait for the next train.
+3. **Take the rest of the set.** If `renglo-lib` now requires an app id on every API call, you cannot take that lib pin until the extensions you run have been updated and published. That work is cycle 1. Adopt the whole set, or none of it.
 
-Edit `bom/v1.5.0.json` (same file — this draft has not gone to production, so you may still change it):
+Do not invent a pin that is not in the registry (or, for git-clone participants, a SHA that is not on the train).
+
+**End of cycle 3:** staging runs the train; production is unchanged. Stop here if you do not want production yet.
+
+---
+
+# Cycle 4 — Production release
+
+Cycle 4 ships **stable** packages to the registry and enables production on the **same** BOM file staging already uses. Prerequisites: cycle 3 complete and staging acceptable.
+
+---
+
+## 10. Publish stable packages
+
+For each repo on the train sheet, on the release branch, in [merge order](#merge-order-fixed):
+
+1. Edit the version files: **drop the rc**. `1.2.4rc1` → `1.2.4`. Same number. Do not increment.
+2. Merge to `main`, tag, push:
+
+   ```bash
+   git add -A
+   git commit -m "Release 1.2.4"
+
+   git checkout main
+   git pull --ff-only origin main
+   git merge release/2026-W34
+   git push origin main
+   git tag v1.2.4
+   git push origin v1.2.4
+   ```
+
+3. Write the stable tag on the train sheet.
+
+If a merge to `main` fails, **stop**. Do not continue the set.
+
+Status → `published` as soon as the stable tags exist. **CI publishes stable packages.** Confirm publish workflows the same way as §9.
+
+`*` Your extension may publish on the same Sunday as the official train, or later, using the same steps on your own repos.
+
+On the train sheet, record **which features** this train carried. Package tags do not list features.
+
+---
+
+## 11. Merge tagged `main` back into `develop`
+
+This is required after every stable publish. It is what lets the **next** train cut see new work.
+
+For **every product repo** (train participants **and** sit-outs):
+
+- Participants: merge **that repo’s stable tag** from the train sheet into `develop`.
+- Others: merge their latest `v*` stable tag, or `main` if they have none.
+
+Same commands as [Heal develop from main](#heal-develop-from-main-any-time). Push `develop` when origin exists. Repos with no `develop` stay on `main`.
+
+Already-synced repos are skipped. On conflict: abort the merge, leave the repo clean, fix, retry. Continue past per-repo failures so the rest of the set can still sync. Re-run this step any time `develop` is behind the stable tag.
+
+If publish tagging succeeded but mergeback failed, the tags on `main` are still valid. Fix `develop` and retry mergeback. Do not re-tag.
+
+---
+
+## 12. Enable production on the BOM
+
+Refresh **stable** pins in the **current** BOM file (the same `v1.4.1` staging used). Description like `Production. Release 2026-W34.`. Set `production.enabled: true`.
+
+Refuse this step while the train is still `stabilizing`, or while the BOM still has rc pins. Run §10–§11 first, then rewrite rc → stable in that file.
 
 ```json
 {
-  "version": "v1.5.0",
+  "version": "v1.4.1",
   "train": "2026-W34",
-  "description": "Draft. Train 2026-W34 except breakdown pinned back to 0.0.2 (staging failure).",
+  "description": "Production. Release 2026-W34.",
   "python": {
     "renglo-lib": "1.2.4",
     "renglo-api": "2.3.1",
-    "renglo-breakdown": "0.0.2",
+    "renglo-breakdown": "0.0.3",
     "renglo-schd": "1.1.0"
   },
   "npm": {
-    "@renglo/console": "0.8.0",
-    "@renglo/breakdown": "0.0.2",
+    "@renglo/breakdown": "0.0.3",
     "@renglo/schd": "1.1.0"
+  },
+  "repos": {
+    "renglo/console": {
+      "url": "git@github.com:renglo/console.git",
+      "branch": "main",
+      "commit": "ccc333…"
+    }
   }
 }
 ```
 
+Do not copy the JSON to a new version. Do not change pins except dropping rc and updating git-clone SHAs to the stable tag.
+
 ```bash
-git add bom/v1.5.0.json
+git add bom/v1.4.1.json deploy_targets.yml
 git commit -m "$(cat <<'EOF'
-Pin breakdown back to 0.0.2 after staging failure.
+Promote system v1.4.1 to production.
 
 EOF
 )"
 git push origin main
 ```
 
-Stage again. If it holds, this pin list is the candidate for A3.
+CI runs **staging deploy → smoke check → production deploy** in one workflow. Production is blocked if staging fails. Watch GitHub Actions.
 
-### Example — take the rest of the set
+**Optional safe path:** first refresh stable pins with `production.enabled` still `false`, push, confirm staging on the stable build, then turn production on and push again.
 
-`renglo-lib 1.2.4` requires an app id on API calls. Staging fails because `schd` still calls the old way. Pin-back of lib would drop the train’s point. Instead you wait until `renglo-schd 1.2.0` is published (a Part 1 feature), then add it to the **same** draft:
+Once production is up, the published train is finished. Do not push more rc tags or refresh this train’s BOM. Check participants out to `develop`/`main` and delete local `release/<name>` (and origin if it is still there). That does **not** unpublish packages or disable production. The next ship starts with a new cut.
 
-```json
-"renglo-schd": "1.2.0",
-```
+### Roll back to the previous system version
 
-```json
-"@renglo/schd": "1.2.0"
-```
-
-```bash
-git add bom/v1.5.0.json
-git commit -m "$(cat <<'EOF'
-Take schd 1.2.0 with renglo-lib 1.2.4 (app id).
-
-EOF
-)"
-git push origin main
-```
-
-If those packages are not published yet, stop adoption. Go back to Part 1. Do not invent a pin that is not in the registry.
-
----
-
-## A3. Production
-
-Deploy the **same** pin list that passed staging. If you need another change, it is a new system version; go back to A1.
-
-Smoke-test production. Write release notes: train (if any), pins that moved, pins that were held back.
-
-If production misbehaves, point deploy at the **previous** version object. That is why every system version is immutable.
-
-### Example — promote `v1.5.0`
-
-Do not copy the JSON to a new version. Do not change pins. Only turn production on and say so in the description.
-
-`bom/v1.5.0.json` — same pins as the last green staging. Only the description changes:
-
-```json
-{
-  "version": "v1.5.0",
-  "train": "2026-W34",
-  "description": "Production. Train 2026-W34; breakdown held at 0.0.2. Staging 2026-08-24.",
-  "python": {
-    "renglo-lib": "1.2.4",
-    "renglo-api": "2.3.1",
-    "renglo-breakdown": "0.0.2",
-    "renglo-schd": "1.1.0"
-  },
-  "npm": {
-    "@renglo/console": "0.8.0",
-    "@renglo/breakdown": "0.0.2",
-    "@renglo/schd": "1.1.0"
-  }
-}
-```
-
-`deploy_targets.yml`:
-
-```yaml
-bom: 1.5.0
-
-handlers_bom: 0.0.3
-handlers_compute: lambda_only
-
-tenants:
-  example:
-    id: example0731
-    aws_account: "339713094352"
-    aws_region: us-east-1
-    stages:
-      staging:
-        enabled: true
-      production:
-        enabled: true
-```
-
-```bash
-git add bom/v1.5.0.json deploy_targets.yml
-git commit -m "$(cat <<'EOF'
-Promote system v1.5.0 to production.
-
-EOF
-)"
-git push origin main
-```
-
-Smoke-test production. Leave `bom/v1.4.0.json` in the repo.
-
-### Example — roll back to `v1.4.0`
-
-Do not edit `v1.5.0.json`. Point deploy at the previous file.
+Do not edit `v1.4.1.json`. Point deploy at the previous file.
 
 ```yaml
 bom: 1.4.0
 ```
 
-Keep `production.enabled: true` if you want production to run the old pins immediately.
-
-```bash
-git add deploy_targets.yml
-git commit -m "$(cat <<'EOF'
-Roll back production to system v1.4.0.
-
-EOF
-)"
-git push origin main
-```
-
-The next attempt is a **new** system version (`v1.5.1` or `v1.6.0`): copy from whichever object you trust, and start at A1.
+Keep `production.enabled: true` if you want production to run the old pins immediately. Commit and push. The next attempt is a **new** system version: copy from whichever object you trust, and start at cycle 3.
 
 ---
 
-# Part 3 — Hotfix (production emergency)
+# Aux — Platform tooling
 
-Do not wait for the next train. A hotfix may change **more than one repository**. After it lands on `main`, send the patch back to `develop` so every in-process `feature/*` can absorb it.
+Use this for repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, extensions-service, …). Each such repo should mark itself aux (`gitconvoy.toml` with `role = "aux"`; BOM repos use `role = "bom"`). Unmarked repos are product.
 
-CLI: `git convoy hotfix` (see [README](README.md#hotfix--production-emergency)).
+Lifecycle is hotfix-style on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`main`**. After those PRs merge, merge **`main` → `develop`** so develop stays current — no second PR. If `develop` is missing, create it from `main`. Independent of the current feature/train/hotfix.
 
-1. `git convoy hotfix start <name>` — dirty product repos, or `--repos a,b`. Branches `hotfix/<name>` from `main` and bumps **PATCH** only (`1.2.4` → `1.2.5`). You may start from `main` or `develop` (uncommitted fix comes along). Do not start from a `feature/*` branch.
-2. Fix (if not already). `git convoy hotfix commit`. PRs target **`main`**: `git convoy hotfix prs`. Merge in merge order (`renglo-lib` → `renglo-api` → console/extensions). git-convoy does not merge.
-3. `git convoy hotfix publish` — tag `v1.2.5` on `main`, push the tag (registry publish), merge tagged `main` into `develop` (and push `develop`), then merge that `develop` into local in-progress `feature/*` branches. Conflicts on a feature branch are reported; resolve and `git convoy feature refresh`.
-4. `git convoy hotfix adopt --bom ops/<system>-bom` — draft the next system PATCH, pin **only** the hotfix packages, point staging. Does not enable production. Commit and push the BOM; enable production when staging is acceptable (`adopt --production`).
+1. Empty aux sheet. Check out the integration branch in clean aux repos that do not already have `aux/<name>`. Pick up existing `aux/<name>` only when it has work (same rules as feature start).
+2. Edit. Then for each dirty aux repo (or one with unique commits): create or check out `aux/<name>`. If you committed on `develop`/`main` and did not push, reset that local integration branch to origin. Do not adopt dirty **product** repos onto an aux sheet.
+3. Commit on `aux/<name>`. Push if you want a backup without a PR.
+4. Before opening PRs: if local `main` has commits origin does not, move them onto `aux/<name>` (cherry-pick), then reset local `main` to `origin/main`. A cherry-pick conflict leaves the repo in the cherry-pick: resolve, `git add`, `git cherry-pick --continue`, then continue.
+5. Open PRs: `aux/<name>` → `main`. Approve the set. Merge in GitHub (merge order if several).
+6. After every PR is merged: merge `main` into `develop` in each participant, push `develop`, check out `develop`, delete local `aux/<name>`. Remove the sheet.
+
+Do not use this path to change BOM pins. That is cycle 3–4 / hotfix adopt on the BOM repo’s `main`.
+
+---
+
+# Hotfix — Production emergency
+
+Do not wait for the next train. A hotfix may change **more than one product repository**. PRs go to **`main`**. After tags land, send the patch back to `develop` and into local in-progress `feature/*` so every branch in process gets it.
+
+1. **Start.** You must be on `main`, `develop`, or an existing `hotfix/<name>` — not a dirty `feature/*`. Do not convert `feature/<name>` into a hotfix.
+
+   Take dirty product repos, or name the repos. For each:
+
+   ```bash
+   git fetch origin
+   git checkout main
+   git pull --ff-only origin main
+   git checkout -b hotfix/fetch-file
+   ```
+
+   Bump **PATCH** only in the version files (`1.2.4` → `1.2.5`) and commit that bump on the hotfix branch. If `hotfix/<name>` **already exists**, check it out, put those repos on the sheet, and **do not bump PATCH again**.
+
+2. **Fix** (if the work is not already in the tree). Commit on `hotfix/<name>`.
+
+   ```bash
+   git push -u origin hotfix/fetch-file
+   ```
+
+3. **PRs into `main`** (not `develop`):
+
+   `https://github.com/<org>/<repo>/compare/main...hotfix/fetch-file`
+
+   Merge in [merge order](#merge-order-fixed) after the whole set is approved. You do not merge from a script.
+
+4. **Publish.** Wait until each hotfix branch is on `main` (squash-safe: `main` already has the expected PATCH). Then on `main`:
+
+   ```bash
+   git checkout main
+   git pull --ff-only origin main
+   git tag v1.2.5
+   git push origin main
+   git push origin v1.2.5
+   ```
+
+   Merge tagged `main` into `develop` and push `develop` (same as heal-develop). Then, in that repo, merge that `develop` into every **local** `feature/*`:
+
+   ```bash
+   git checkout feature/blast-radius
+   git merge develop
+   ```
+
+   On conflict, abort or resolve; then refresh the feature from `develop` (§3).
+
+5. **Adopt onto staging.** Copy the last good system version to a new **PATCH** (`v1.4.0` → `v1.4.1`). Pin **only** the hotfix packages (stable versions, not rc). Leave every other pin. Point `bom:` at the new file. Keep `production.enabled: false`. Commit and push the BOM.
+
+   When staging is acceptable, turn production on **for that same file** (description, `production.enabled: true`) and push. Do not enable production in the same push as the first staging draft.
 
 ---
 
@@ -643,30 +764,52 @@ CLI: `git convoy hotfix` (see [README](README.md#hotfix--production-emergency)).
 
 **Feature**
 
-- [ ] Feature sheet created; `CURRENT_FEATURE` set
-- [ ] Workspace on `develop`
-- [ ] After each session: changed repos adopted onto `feature/<name>`; `develop` reset if you committed there; sheet updated
+- [ ] After time away: workspace idle; every product repo on `develop` with `origin/develop` and latest stable/`main` absorbed
+- [ ] Feature sheet created; current name set; repo list empty
+- [ ] Product repos on `develop` (or existing `feature/<name>` only if it has work)
+- [ ] After each session: changed repos adopted onto `feature/<name>`; `develop` reset if you committed there; empty leftover branches dropped from the sheet
 - [ ] Refreshed from `develop`; conflicts resolved
+- [ ] Latest stable/`main` merged into `develop` in each participant **before** PRs
 - [ ] PRs open for every sheet row; tracking list filled
 - [ ] All PRs approved; merged in lib → api → consumers; sheet marked `merged`
+- [ ] Closed: `develop` checked out; local `feature/<name>` deleted
 
-**Train**
+**Train (local, cycle 2)**
 
-- [ ] Train sheet: only repos ahead of last stable tag
-- [ ] `release/<train-id>` cut; intended version written as rc; `vX.Y.Z-rc.N` pushed
+- [ ] Train sheet: only product repos ahead of last stable tag, with a version file
+- [ ] `release/<train-id>` cut; PATCH (unless MINOR/MAJOR is required) written as rc; **no** `v*` tag pushed yet
 - [ ] Fixes on the release branch copied back to `develop`
-- [ ] rc acceptable locally and, if you use cloud, on staging pins
-- [ ] rc dropped (same number); merged to `main`; `vX.Y.Z` pushed; features listed on the train sheet
+
+**Staging (cycle 3)**
+
+- [ ] `develop` healed from stable in participants; free `vX.Y.Z-rc.N` pushed; CI publish green (or git-clone fallback)
+- [ ] First adopt: new system PATCH, rc (or git SHA) pins, `production.enabled: false`
+- [ ] Later adopts for the same train refresh **that same file**
+- [ ] Staging green; iterate on `release/<name>` + new rc rather than guessing pins
+
+**Production (cycle 4)**
+
+- [ ] rc dropped (same number); merged to `main` in merge order; `vX.Y.Z` pushed
+- [ ] Tagged `main` merged into `develop` for **all** product repos (and pushed)
+- [ ] Same BOM file: stable pins, production enabled; previous version object left for rollback
+- [ ] Local `release/<name>` deleted; next ship is a new cut
 
 **Hotfix**
 
-- [ ] `hotfix/<name>` from `main` on every repo that must change; PATCH only
+- [ ] `hotfix/<name>` from `main` on every repo that must change; PATCH only (no second bump if the branch already exists)
 - [ ] PRs merged into `main` in merge order; tags pushed
 - [ ] Tagged `main` merged into `develop` (and pushed); in-progress `feature/*` absorbed
 - [ ] BOM patch pins only those packages; staging first, then production
 
-**Adoption**
+**Aux**
 
-- [ ] Draft copied from last good system version; only intended pins changed
-- [ ] Staging green on that exact list
+- [ ] Only aux repos on the sheet; PRs into `main`
+- [ ] After merge: `main` → `develop`; aux branches deleted
+
+**Adoption invariants**
+
+- [ ] Draft copied from last good system version (or refreshed in place for the same train)
+- [ ] No registry pin for a failed publish; console stays on `repos.*.commit` until it publishes
+- [ ] Staging green on that exact list before production
 - [ ] Same list in production; previous version object left untouched for rollback
+- [ ] You pushed `*-bom` yourself; nothing else deploys it

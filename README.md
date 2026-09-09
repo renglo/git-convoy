@@ -134,9 +134,24 @@ git convoy --json status
 
 `--workspace` overrides discovery if you are not in the workspace root.
 
+### Start of a work session (`git convoy sync`)
+
+After a few days away, before you start a feature: fetch every clone, put product repos on **`develop`** (not `main`), fast-forward `origin/develop` (other people’s merged features), and merge the latest stable tag / `main` (hotfixes). BOM repos stay on `main`.
+
+The workspace must be **idle**. The command refuses if anything is dirty, if a feature/hotfix/aux sheet still has in-progress work, if a train is still `cut`/`stabilizing`, or if you are sitting on a `feature/*` / `hotfix/*` / `aux/*` / `release/*` branch that has commits not in `develop`.
+
+```bash
+git convoy sync
+git convoy sync --no-push    # local only; do not push develop
+```
+
+You end on `develop`, ready for `feature start` / implement. Do not `git pull` on `main` to “get latest” for product work.
+
+If you already have an in-progress feature, this is the wrong command: `git convoy feature refresh` instead.
+
 ### Heal `develop` from `main` (any time)
 
-When `develop` has fallen behind tagged `main` — for example a repo was not on the last train, or you added a new extension after publish — merge stable back into `develop` without an active feature or train:
+When `develop` has fallen behind tagged `main` — for example a repo was not on the last train, or you added a new extension after publish — merge stable back into `develop` without requiring an idle workspace:
 
 ```bash
 git convoy sync develop
@@ -144,7 +159,7 @@ git convoy sync develop --repos data,console
 git convoy sync develop --no-push    # local merge only
 ```
 
-For each product repo: fetch, fast-forward `main`, merge the latest `v*` stable tag (or `main` if none), push `origin/develop` when the remote exists. Skips repos with no `develop` branch. Continues past per-repo failures; re-run after resolving conflicts. Same logic used automatically by `feature prs`, `train tag-rc`, and `train publish` / `train mergeback`.
+For each product repo: fetch, fast-forward local `main` **without checking it out**, check out `develop`, fast-forward `origin/develop`, merge the latest `v*` stable tag (or `origin/main` if none), push `origin/develop` when the remote exists. Skips repos with no `develop` branch. Continues past per-repo failures; re-run after resolving conflicts. Same logic used automatically by `feature prs`, `train tag-rc`, and `train publish` / `train mergeback`. Bare `git convoy sync` uses this after the idle check.
 
 No AWS, CodeArtifact, or BOM setup is required for Cycles 1–2.
 
@@ -754,7 +769,8 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | ------- | ----- | ------------ |
 | `git convoy init` | 1 | State file, membership (`aux.toml`), gitignore, Cursor skill |
 | `git convoy status` | * | Current feature, aux, train, hotfix, dirty repos |
-| `git convoy sync develop` | * | Merge stable/`main` into `develop` for all product repos (no feature/train required) |
+| `git convoy sync` | * | Idle workspace: fetch all, check out `develop`, pull features + hotfixes |
+| `git convoy sync develop` | * | Merge stable/`main` into `develop` for product repos (no idle check) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
 | `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
 | `git convoy feature abandon` | 1 | Delete local `feature/<name>` (lossy) |
@@ -813,6 +829,7 @@ Add `--json` to every command you need to read.
 
 ```bash
 git convoy --json status
+git convoy --json sync
 git convoy --json feature show
 git convoy --json train show
 git convoy --json feature commit
@@ -825,7 +842,7 @@ git convoy --json hotfix adopt --bom ops/<system>-bom
 
 Cycles 1–2 only: no `--bom`, no registry. Do not invent package pins. In cycle 3–4 with Full mode, `adopt` verifies publish CI and self-heals failed repos to git SHAs. Use `--require-verify` when every publish must be green before writing the BOM.
 
-`init` installs a Cursor skill (`.cursor/skills/gitconvoy/SKILL.md`). After editing code: `feature adopt`, then `feature commit`. Do not commit feature work on `develop`.
+`init` installs a Cursor skill (`.cursor/skills/gitconvoy/SKILL.md`). After time away, with a clean workspace: `git convoy --json sync` (ends on `develop`). After editing code: `feature adopt`, then `feature commit`. Do not commit feature work on `develop`. Do not `git pull` on `main` to start product work.
 
 ---
 

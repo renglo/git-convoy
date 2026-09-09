@@ -5,13 +5,14 @@ description: >-
   release trains, hotfixes, and BOM adoption. Use when the user mentions git
   convoy, git-convoy, gitconvoy, a feature sheet, an aux sheet, a release train,
   a production hotfix, which repos a feature touches, what is on the current
-  train, adopt onto a feature or aux branch, commit participant repos, refresh
-  from develop, or staging/production pins.
+  train, catch up an idle workspace onto develop, adopt onto a feature or aux
+  branch, commit participant repos, refresh from develop, or staging/production
+  pins.
 ---
 
 # git-convoy
 
-Authority process: `ops/docs/cross-repo-feature-manual.md`.
+Authority process: `ops/git-convoy/cross-repo-feature-manual.md`.
 CLI manual: `ops/git-convoy/README.md`.
 
 Prefer `git convoy` over raw git for any step that spans more than one repo.
@@ -29,6 +30,7 @@ Run from the workspace root (or pass `--workspace`). Always add `--json` when yo
 
 ```bash
 git convoy --json status
+git convoy --json sync
 git convoy --json feature show
 git convoy --json aux show
 git convoy --json train show
@@ -37,6 +39,7 @@ git convoy --json feature commit
 ```
 
 - "What's on the current train?" → `git convoy --json train show`
+- "Catch up after time away / put me on develop?" → `git convoy --json sync`
 - "How many repos is this feature touching?" → `git convoy --json feature show` (`repo_count`)
 - "Which feature am I on?" → `git convoy --json status`
 - "Which aux am I on?" → `git convoy --json status` / `git convoy --json aux show`
@@ -44,16 +47,26 @@ git convoy --json feature commit
 
 Do not guess membership by scanning dirty directories. The state file is `.gitconvoy/state.json` (gitignored). Aux/product membership is `.gitconvoy/aux.toml` (written by `git convoy init` from each repo’s `gitconvoy.toml` `role`).
 
-## Heal develop from main (no feature or train required)
+## Start of a work session
 
-When `develop` is behind tagged `main` — repo not on the last train, new extension, post-hotfix drift:
+When the workspace is idle (nothing dirty, no in-progress feature/hotfix/aux/train) and you need latest `develop` plus any hotfix that landed on `main`:
+
+```bash
+git convoy --json sync
+```
+
+Fetches every clone, checks out **`develop`** (not `main`), fast-forwards `origin/develop`, merges the latest stable tag (or `origin/main`). BOM stays on `main`. Refuses if the workspace is not idle — then commit, `feature refresh`, or close/abandon first. Do not `git pull` on `main` to start product work.
+
+## Heal develop from main (no idle workspace required)
+
+When `develop` is behind tagged `main` — repo not on the last train, new extension, post-hotfix drift — and you are not doing a full catch-up:
 
 ```bash
 git convoy --json sync develop
 git convoy --json sync develop --repos data,console
 ```
 
-Merges latest stable tag (or `main`) into `develop` for every product repo. Same logic as the automatic step in `feature prs`, `train tag-rc`, and `train mergeback`. Re-run after resolving conflicts.
+Merges latest stable tag (or `origin/main`) into `develop` for every product repo. Does not require a fully idle workspace. Same logic as the automatic step in `feature prs`, `train tag-rc`, and `train mergeback`. Re-run after resolving conflicts.
 
 ## After editing code
 
@@ -177,6 +190,7 @@ git convoy --json hotfix adopt --bom ops/<system>-bom
 ## What not to do
 
 - Do not create `feature/<name>` in every repo.
+- Do not `git pull` on `main` to start product work; `git convoy sync` (idle workspace) or `feature refresh` (in-progress feature).
 - Do not put aux (tooling) repos on a feature sheet; use `git convoy aux`.
 - Do not put `*-bom` on a feature branch or feature PR; deploy only via adopt on `main`.
 - Do not abandon a feature unless the user wants that work discarded.

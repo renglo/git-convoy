@@ -226,6 +226,37 @@ def has_local_branch(repo: Path, branch: str) -> bool:
     return bool(rev_parse(repo, f"refs/heads/{branch}"))
 
 
+def fast_forward_branch(repo: Path, branch: str) -> str:
+    """Fast-forward local ``branch`` to ``origin/branch`` without switching to it.
+
+    Returns ``updated``, ``already``, ``skipped`` (no origin/branch), or
+    ``diverged`` (local has commits origin does not). When HEAD is already on
+    ``branch``, uses ``merge --ff-only`` instead of ``branch -f``.
+    """
+    src = f"origin/{branch}"
+    if not rev_parse(repo, src):
+        return "skipped"
+    src_sha = capture(repo, "rev-parse", src)
+    if current_branch(repo) == branch:
+        before = rev_parse(repo, "HEAD")
+        pulled = run(repo, "merge", "--ff-only", src, check=False)
+        if pulled.returncode != 0:
+            return "diverged"
+        return "already" if before == src_sha else "updated"
+    if not has_local_branch(repo, branch):
+        run(repo, "branch", "--track", branch, src, check=False)
+        if not has_local_branch(repo, branch):
+            run(repo, "branch", branch, src)
+        return "updated"
+    local_sha = capture(repo, "rev-parse", f"refs/heads/{branch}")
+    if local_sha == src_sha:
+        return "already"
+    if not is_ancestor(repo, f"refs/heads/{branch}", src):
+        return "diverged"
+    run(repo, "branch", "-f", branch, src)
+    return "updated"
+
+
 def has_remote_branch(repo: Path, branch: str) -> bool:
     return bool(rev_parse(repo, f"refs/remotes/origin/{branch}"))
 

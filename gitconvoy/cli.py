@@ -54,7 +54,7 @@ def _dispatch(workspace: Path, args: argparse.Namespace) -> tuple[dict, str]:
     if cmd == "hotfix":
         return _hotfix(workspace, state, args)
     if cmd == "sync":
-        return _sync(workspace, args)
+        return _sync(workspace, state, args)
     raise GitConvoyError(f"unknown command: {cmd}")
 
 
@@ -359,12 +359,17 @@ def _hotfix(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str
     raise GitConvoyError(f"unknown hotfix command: {sub}")
 
 
-def _sync(workspace: Path, args: argparse.Namespace) -> tuple[dict, str]:
+def _sync(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
     sub = args.sync_cmd
+    if not sub:
+        data = sync_cmd.sync_workspace(
+            workspace, state, push=not args.no_push
+        )
+        return data, sync_cmd.format_develop_sync_text(data, label="sync")
     if sub == "develop":
         repos = (
             [item.strip() for item in args.repos.split(",") if item.strip()]
-            if args.repos
+            if getattr(args, "repos", None)
             else None
         )
         data = sync_cmd.sync_product_repos(
@@ -820,9 +825,13 @@ def _parser() -> argparse.ArgumentParser:
 
     sync = sub.add_parser(
         "sync",
-        help="Cross-repo git sync outside features and trains",
+        help=(
+            "Catch up a clean workspace onto develop "
+            "(or sync develop to merge stable/main only)"
+        ),
     )
-    ssub = sync.add_subparsers(dest="sync_cmd", required=True)
+    sync.add_argument("--no-push", action="store_true")
+    ssub = sync.add_subparsers(dest="sync_cmd", required=False)
     develop = ssub.add_parser(
         "develop",
         help="Merge latest stable tag (or main) into develop for product repos",
