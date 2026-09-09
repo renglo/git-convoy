@@ -102,6 +102,18 @@ def test_sync_develop_unknown_repo(workspace: Path) -> None:
         sync_cmd.sync_product_repos(workspace, repo_ids=["missing"], push=False)
 
 
+def test_sync_develop_creates_missing_develop(workspace: Path) -> None:
+    wl = init_repo(workspace / "dev" / "apollo-wl", develop=False)
+    assert not gitutil.has_local_branch(wl, "develop")
+    data = sync_cmd.sync_product_repos(workspace, repo_ids=["apollo-wl"], push=False)
+    row = next(item for item in data["repos"] if item["id"] == "apollo-wl")
+    assert data["ok"] is True
+    assert row["status"] in {"already", "merged"}
+    assert row.get("develop_created") is True
+    assert gitutil.has_local_branch(wl, "develop")
+    assert gitutil.current_branch(wl) == "develop"
+
+
 def _tag_stable_on_main(repo: Path, version: str = "2.0.0") -> None:
     git(repo, "checkout", "main")
     (repo / "pyproject.toml").write_text(

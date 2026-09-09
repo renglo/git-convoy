@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gitconvoy import gitutil
+from gitconvoy import membership
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State
 from gitconvoy.workspace import Repo, discover_repos, is_bom_repo_id
@@ -39,11 +40,19 @@ def sync_develop_from_ref(
 ) -> dict:
     """Merge tagged main (or a stable tag) into develop.
 
-    Fetches first, updates local ``main`` without leaving you on it, then
-    checks out ``develop``. Repos with no develop branch are skipped. On merge
-    conflict the merge is aborted so the repo is not left mid-merge.
+    Fetches first, creates ``develop`` from ``main`` when it is missing (product
+    and aux repos always have an integration branch), updates local ``main``
+    without leaving you on it, then checks out ``develop``. On merge conflict
+    the merge is aborted so the repo is not left mid-merge.
     """
     gitutil.fetch(repo_path)
+    ensured = gitutil.ensure_develop(repo_path, push=push)
+    if ensured.get("status") == "failed":
+        raise GitConvoyError(
+            f"{repo_id}: cannot create develop"
+            + (f" ({ensured.get('error')})" if ensured.get("error") else "")
+            + f"; {retry_hint}"
+        )
     has_develop = gitutil.has_local_branch(
         repo_path, "develop"
     ) or gitutil.has_remote_branch(repo_path, "develop")
@@ -103,6 +112,7 @@ def sync_develop_from_ref(
         "synced": True,
         "ref": merge_ref,
         "branch": "develop",
+        "develop_created": bool(ensured.get("created")),
     }
 
 
@@ -136,6 +146,7 @@ def sync_repos_develop(
             item["synced"] = result["synced"]
             item["ref"] = result.get("ref")
             item["branch"] = result.get("branch")
+            item["develop_created"] = result.get("develop_created")
         except GitConvoyError as exc:
             item["error"] = exc.message
             failed.append(entry.id)
@@ -227,13 +238,9 @@ def _sync_one_workspace_repo(
     workspace: Path, repo: Repo, *, push: bool
 ) -> dict:
     gitutil.fetch(repo.path)
-    if is_bom_repo_id(repo.id, workspace):
+    role = membership.read_repo_role(repo.path)
+    if role == "bom" or is_bom_repo_id(repo.id, workspace):
         return _sync_main_only(repo, push=push, role="bom")
-    has_develop = gitutil.has_local_branch(
-        repo.path, "develop"
-    ) or gitutil.has_remote_branch(repo.path, "develop")
-    if not has_develop:
-        return _sync_main_only(repo, push=push, role="product")
     result = sync_develop_from_ref(
         repo.path,
         repo_id=repo.id,
@@ -245,7 +252,8 @@ def _sync_one_workspace_repo(
         "synced": result["synced"],
         "ref": result.get("ref"),
         "branch": result.get("branch") or "develop",
-        "role": "product",
+        "role": role,
+        "develop_created": result.get("develop_created"),
     }
 
 

@@ -50,6 +50,14 @@ def test_feature_repos_excludes_aux_and_bom_when_membership_refreshed(
     assert aux_ids == {"bootstrap", "publisher"}
 
 
+def test_aux_marker_is_read_without_init(workspace: Path) -> None:
+    bootstrap = init_repo(workspace / "ops" / "bootstrap")
+    (bootstrap / "gitconvoy.toml").write_text('role = "aux"\n')
+    assert "bootstrap" not in {repo.id for repo in product_repos(workspace)}
+    assert "bootstrap" in {repo.id for repo in aux_repos(workspace)}
+    assert membership.is_aux_id(workspace, "bootstrap") is True
+
+
 def test_without_aux_toml_unmarked_ops_are_product(workspace: Path) -> None:
     init_repo(workspace / "ops" / "publisher")
     discovered = {repo.id for repo in discover_repos(workspace)}

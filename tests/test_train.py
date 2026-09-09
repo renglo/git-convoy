@@ -167,7 +167,7 @@ def test_publish_then_new_develop_work_is_cuttable(
     assert {repo["id"] for repo in data["repos"]} == {"schd"}
 
 
-def test_publish_skips_develop_sync_when_no_develop(
+def test_publish_recreates_develop_when_missing(
     workspace: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(workspace)
@@ -179,8 +179,9 @@ def test_publish_skips_develop_sync_when_no_develop(
     git(schd, "branch", "-D", "develop")
     data = train_cmd.publish(workspace, state, push=False)
     schd_row = next(row for row in data["repos"] if row["id"] == "schd")
-    assert schd_row["synced_develop"] is False
-    assert gitutil.current_branch(schd) == "main"
+    assert schd_row["synced_develop"] is True
+    assert gitutil.has_local_branch(schd, "develop")
+    assert gitutil.current_branch(schd) == "develop"
 
 
 def test_publish_develop_conflict_leaves_train_published(

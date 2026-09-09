@@ -124,7 +124,7 @@ def product_repos(workspace: Path) -> list[Repo]:
     return [
         repo
         for repo in discover_repos(workspace)
-        if not membership.is_aux_id(workspace, repo.id)
+        if membership.read_repo_role(repo.path) == "product"
         and not is_bom_repo_id(repo.id, workspace)
     ]
 
@@ -135,9 +135,12 @@ def feature_repos(workspace: Path) -> list[Repo]:
 
 
 def aux_repos(workspace: Path) -> list[Repo]:
-    """Repos listed as aux in local membership (from gitconvoy.toml markers via init)."""
-    allowed = set(membership.load_membership(workspace)["aux"])
-    return [repo for repo in discover_repos(workspace) if repo.id in allowed]
+    """Repos whose gitconvoy.toml says role = aux (not the local aux.toml cache)."""
+    return [
+        repo
+        for repo in discover_repos(workspace)
+        if membership.read_repo_role(repo.path) == "aux"
+    ]
 
 
 def bom_repos(workspace: Path) -> list[Repo]:

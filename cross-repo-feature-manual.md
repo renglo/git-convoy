@@ -158,7 +158,16 @@ git push origin develop
 
 Stay on `develop`. Fast-forward local `main` from `origin/main` **without checking it out** (`git fetch origin main:main` when that is a fast-forward) so you are not left on `main` if a step fails.
 
-Skip repos with no `develop` (white-label packs that integrate on `main`): fetch, check out `main`, fast-forward `origin/main`. BOM repos always stay on `main`.
+If a product repo has no `develop` yet (new white-label clone, first checkout), create it from `main` and push it:
+
+```bash
+git checkout main
+git pull --ff-only origin main
+git checkout -b develop
+git push -u origin develop
+```
+
+Then continue the catch-up on `develop`. BOM repos always stay on `main`.
 
 If `develop` is dirty, or has local commits `origin/develop` does not, stop. Adopt onto a feature branch, or reset, before catching up. On a merge conflict: abort (`git merge --abort`), resolve on a clean `develop`, then retry that repo.
 

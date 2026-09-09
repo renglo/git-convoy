@@ -105,14 +105,30 @@ def refresh_membership(workspace: Path, repos: list) -> dict:
 
 
 def is_aux_id(workspace: Path, repo_id: str) -> bool:
+    role = _live_role(workspace, repo_id)
+    if role is not None:
+        return role == "aux"
     return repo_id in set(load_membership(workspace)["aux"])
 
 
 def is_bom_id(workspace: Path, repo_id: str) -> bool:
-    membership = load_membership(workspace)
-    if repo_id in set(membership["bom"]):
+    role = _live_role(workspace, repo_id)
+    if role == "bom":
+        return True
+    listed = load_membership(workspace)["bom"]
+    if repo_id in set(listed):
         return True
     return repo_id.endswith("-bom")
+
+
+def _live_role(workspace: Path, repo_id: str) -> str | None:
+    """Read gitconvoy.toml for this id if the clone is in the workspace."""
+    from gitconvoy.workspace import discover_repos
+
+    for repo in discover_repos(workspace):
+        if repo.id == repo_id or repo.rel == repo_id:
+            return read_repo_role(repo.path)
+    return None
 
 
 def _string_list(raw: object) -> list[str]:

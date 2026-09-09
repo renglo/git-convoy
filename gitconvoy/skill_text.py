@@ -55,7 +55,7 @@ When the workspace is idle (nothing dirty, no in-progress feature/hotfix/aux/tra
 git convoy --json sync
 ```
 
-Fetches every clone, checks out **`develop`** (not `main`), fast-forwards `origin/develop`, merges the latest stable tag (or `origin/main`). BOM stays on `main`. Refuses if the workspace is not idle — then commit, `feature refresh`, or close/abandon first. Do not `git pull` on `main` to start product work.
+Fetches every clone, checks out **`develop`** (not `main`), creates `develop` from `main` when missing, fast-forwards `origin/develop`, merges the latest stable tag (or `origin/main`). BOM stays on `main`. Refuses if the workspace is not idle — then commit, `feature refresh`, or close/abandon first. Do not `git pull` on `main` to start product work.
 
 ## Heal develop from main (no idle workspace required)
 
