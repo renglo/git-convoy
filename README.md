@@ -190,6 +190,12 @@ git-convoy is four cycles. They run at different times and they do not substitut
 
 ## Cycle 1 — Daily feature work
 
+At the beginning of cycle 1, run `git convoy sync` so every product repo is on current `develop` (other people’s merged features and hotfixes). The workspace must be idle. If a feature is already in progress, use `git convoy feature refresh` instead. Details: [Start of a work session](#start-of-a-work-session-git-convoy-sync).
+
+```bash
+git convoy sync
+```
+
 ### 1. Start a feature
 
 ```bash
