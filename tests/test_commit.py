@@ -285,6 +285,75 @@ def test_commit_interactive_no_skips_repo(workspace: Path, monkeypatch) -> None:
     assert "Register cron nodes." in _last_message(schd)
 
 
+def test_diff_page_lines_clamps_terminal_height() -> None:
+    assert commit_cmd.diff_page_lines(rows=10) == commit_cmd._DIFF_PAGE_MIN
+    assert commit_cmd.diff_page_lines(rows=200) == commit_cmd._DIFF_PAGE_MAX
+    assert commit_cmd.diff_page_lines(rows=40) == 34
+
+
+def test_display_diff_paged_small_shows_all() -> None:
+    diff = "diff --git a/x.py b/x.py\n-old\n+new"
+    lines: list[str] = []
+    prompts: list[str] = []
+
+    commit_cmd._display_diff_paged(
+        diff,
+        write_fn=lambda text: lines.append(text),
+        input_fn=lambda prompt="": prompts.append(prompt) or "",
+        color=False,
+        page_lines=10,
+    )
+    assert prompts == []
+    assert "-old" in "\n".join(lines)
+    assert "+new" in "\n".join(lines)
+
+
+def test_display_diff_paged_pages_then_skips() -> None:
+    diff = "\n".join(f"line {i}" for i in range(1, 26))
+    lines: list[str] = []
+    answers = iter(["", "skip"])
+
+    commit_cmd._display_diff_paged(
+        diff,
+        write_fn=lambda text: lines.append(text),
+        input_fn=lambda prompt="": next(answers),
+        color=False,
+        page_lines=10,
+    )
+    text = "\n".join(lines)
+    assert "lines 1–10 of 25" in text
+    assert "lines 11–20 of 25" in text
+    assert "line 10" in text
+    assert "line 20" in text
+    assert "line 21" not in text
+    assert "5 more diff lines not shown" in text
+
+
+def test_commit_interactive_paged_diff_skip(workspace: Path, monkeypatch) -> None:
+    schd, lib = _prepare_two_dirty(workspace, monkeypatch)
+    (lib / "note.py").write_text("\n".join(f"# line {i}" for i in range(100)))
+    answers = iter(
+        [
+            "blast-radius: big diff",
+            "s",
+            "lib body",
+            "yes",
+            "schd body",
+            "yes",
+        ]
+    )
+    data = commit_cmd.commit(
+        workspace,
+        load(workspace),
+        input_fn=lambda prompt="": next(answers),
+        write_fn=lambda text: None,
+        is_tty=True,
+    )
+    assert [row["id"] for row in data["repos"]] == ["renglo-lib", "schd"]
+    assert "lib body" in _last_message(lib)
+    assert not gitutil.is_dirty(lib)
+
+
 def test_commit_not_a_tty(workspace: Path, monkeypatch, capsys) -> None:
     _prepare_two_dirty(workspace, monkeypatch)
     capsys.readouterr()

@@ -230,7 +230,7 @@ Empty `feature/<name>` branches (no unique commits, clean tree) are not added. I
 
 Dirty work stays uncommitted until you say so. `feature prs` does not commit.
 
-On a terminal, a colored diff (green add, red remove), then a double rule asking what changed in that repo. Empty body = header only. `.` reuses the previous body. `e` edits the header. Before each `git commit`: `This is going to commit to the repo. Continue? :` (`yes` / `no`). `no` skips that repo.
+On a terminal, a colored diff (green add, red remove), then a double rule asking what changed in that repo. Large diffs are shown one page at a time (~terminal height); press Enter for the next page or `s` to skip the rest and continue. Empty body = header only. `.` reuses the previous body. `e` edits the header. Before each `git commit`: `This is going to commit to the repo. Continue? :` (`yes` / `no`). `no` skips that repo.
 
 ```bash
 git convoy feature commit
