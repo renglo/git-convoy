@@ -45,7 +45,7 @@ git convoy --json feature commit
 - "Which aux am I on?" → `git convoy --json status` / `git convoy --json aux show`
 - "Which hotfix am I on?" → `git convoy --json status` / `git convoy --json hotfix show`
 
-Do not guess membership by scanning dirty directories. The state file is `.gitconvoy/state.json` (gitignored). Aux/product membership is `.gitconvoy/aux.toml` (written by `git convoy init` from each repo’s `gitconvoy.toml` `role`).
+Do not guess membership by scanning dirty directories. The state file is `.gitconvoy/state.json` (gitignored). Aux/product membership is `.gitconvoy/aux.toml` (written by `git convoy init` from each repo’s `gitconvoy.toml` `role`). BOM membership is `packages:` in the BOM repo `deploy_targets.yml` when present.
 
 ## Start of a work session
 

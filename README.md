@@ -507,7 +507,7 @@ Do not leave `npm` pins in the BOM for packages that failed publish CI — deplo
 Your tenant BOM repo (e.g. `ops/example-bom`) needs:
 
 - `bom/vX.Y.Z.json` — system versions and pins
-- `deploy_targets.yml` — which BOM file staging and production use (`production.enabled: false` until cycle 4); optional `registries:` list for foreign CodeArtifact publishers (same-account internal works with no list)
+- `deploy_targets.yml` — which BOM file staging and production use (`production.enabled: false` until cycle 4); optional `registries:` list for foreign CodeArtifact publishers (same-account internal works with no list); optional `packages:` catalog is system membership (adopt keeps only those python / npm / repo pins)
 - GitHub Actions workflows that deploy when `bom/` or `deploy_targets.yml` changes on `main`
 - CodeArtifact **read** access: publisher `reader_aws_accounts` must include the tenant account; tenant launcher `package_registry.domain_owners` lists each foreign publisher AWS account (omit / `[]` for internal-only)
 

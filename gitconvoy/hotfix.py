@@ -8,6 +8,7 @@ from pathlib import Path
 
 from gitconvoy import adopt as adopt_cmd
 from gitconvoy import gitutil, versions
+from gitconvoy.catalog import PackageSlot, load_package_catalog, slot_for_repo
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import Hotfix, HotfixRepo, State, TrainRepo, save
 from gitconvoy.workspace import product_repos, require_repo, merge_sort
@@ -393,11 +394,12 @@ def adopt(
             description=description
             or f"Draft. Hotfix {hotfix.name} ({ids}). Not production.",
         )
+    catalog = load_package_catalog(root)
     pins: list[dict] = []
     for repo_row in hotfix.repos:
         pep, npm = _stable_pair(repo_row.to or "")
         fake = TrainRepo(id=repo_row.id, path=repo_row.path, to=pep)
-        for section, package in _hotfix_package_targets(fake, workspace):
+        for section, package in _hotfix_package_targets(fake, workspace, catalog):
             pin_value = npm if section == "npm" else pep
             adopt_cmd.pin(
                 workspace,
@@ -415,6 +417,9 @@ def adopt(
                     "pin": pin_value,
                 }
             )
+    if catalog is not None:
+        bom_data = json.loads(dest_path.read_text())
+        pins.extend(adopt_cmd._prune_bom_to_catalog(root, dest, bom_data, catalog))
     pointed_out = adopt_cmd.point(workspace, dest, bom=bom, production=False)
     return {
         "ok": True,
@@ -720,9 +725,30 @@ def _absorb_feature_branches(repo: Path, repo_id: str) -> list[dict]:
     return results
 
 
-def _hotfix_package_targets(repo: TrainRepo, workspace: Path) -> list[tuple[str, str]]:
+def _hotfix_package_targets(
+    repo: TrainRepo,
+    workspace: Path,
+    catalog: list[PackageSlot] | None = None,
+) -> list[tuple[str, str]]:
     from gitconvoy.adopt import _npm_package_names, _python_package_names
 
+    python_names = _python_package_names(repo, workspace, required=False)
+    npm_names = _npm_package_names(repo, workspace, required=False)
+    if catalog is not None:
+        slot = slot_for_repo(
+            catalog,
+            repo.id,
+            npm_name=npm_names[0] if npm_names else "",
+            python_names=python_names,
+        )
+        if slot is None:
+            return []
+        targets: list[tuple[str, str]] = []
+        if slot.python:
+            targets.append(("python", slot.python))
+        if slot.npm:
+            targets.append(("npm", slot.npm))
+        return targets
     info = versions.read_version(workspace / repo.path)
     targets: list[tuple[str, str]] = []
     if info.get("python"):

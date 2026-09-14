@@ -510,6 +510,70 @@ def test_console_clears_npm_pin_without_tag_publish_workflow(tmp_path: Path) -> 
     assert any(row["package"] == "@renglo/console" for row in cleared)
 
 
+def test_take_prunes_pins_not_in_catalog(tmp_path: Path) -> None:
+    bom_repo = _bom_repo(tmp_path)
+    src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())
+    src["npm"]["@stanley/wl"] = "0.0.1"
+    (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
+    targets = (bom_repo / "deploy_targets.yml").read_text()
+    (bom_repo / "deploy_targets.yml").write_text(
+        targets
+        + "\npackages:\n"
+        + "  renglo-lib:\n    python: renglo-lib\n"
+        + "  renglo-api:\n    python: renglo-api\n"
+        + "  schd:\n    python: renglo-schd\n    npm: \"@renglo/schd\"\n"
+        + "  skbrk-wl:\n    npm: \"@skbrk/wl\"\n"
+    )
+    wl = tmp_path / "dev" / "skbrk-wl"
+    wl.mkdir(parents=True)
+    (wl / "package.json").write_text('{"name":"@skbrk/wl","version":"0.0.2"}\n')
+    wf = wl / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "publish-npm.yml").write_text("on:\n  push:\n    tags:\n      - 'v*'\n")
+    state = _train()
+    state.trains["2026-W34"].add_repo(
+        TrainRepo(
+            id="skbrk-wl",
+            path="dev/skbrk-wl",
+            from_version="0.0.1",
+            to="0.0.2",
+            stable_tag="v0.0.2",
+        )
+    )
+    data = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["npm"]["@skbrk/wl"] == "0.0.2"
+    assert "@stanley/wl" not in dest.get("npm", {})
+    assert "@renglo/console" not in dest.get("npm", {})
+    assert any(row.get("action") == "pruned" and row["package"] == "@stanley/wl" for row in data["pins"])
+
+
+def test_take_catalog_keeps_console_pin(tmp_path: Path) -> None:
+    bom_repo = _bom_repo(tmp_path)
+    targets = (bom_repo / "deploy_targets.yml").read_text()
+    (bom_repo / "deploy_targets.yml").write_text(
+        targets
+        + "\npackages:\n"
+        + "  renglo-lib:\n    python: renglo-lib\n"
+        + "  renglo-api:\n    python: renglo-api\n"
+        + "  schd:\n    python: renglo-schd\n    npm: \"@renglo/schd\"\n"
+        + "  console:\n    npm: \"@renglo/console\"\n"
+    )
+    adopt_cmd.take(tmp_path, _train(), bom=str(bom_repo))
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["npm"]["@renglo/console"] == "0.8.0"
+
+
+def test_take_without_catalog_keeps_copy_forward(tmp_path: Path) -> None:
+    bom_repo = _bom_repo(tmp_path)
+    src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())
+    src["npm"]["@stanley/wl"] = "0.0.1"
+    (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
+    adopt_cmd.take(tmp_path, _train(), bom=str(bom_repo))
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["npm"]["@stanley/wl"] == "0.0.1"
+
+
 def test_take_pins_tenant_wl_from_package_json(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
     _seed_train_packages(tmp_path)
