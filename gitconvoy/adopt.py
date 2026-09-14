@@ -6,6 +6,12 @@ import shutil
 from pathlib import Path
 
 from gitconvoy import gitutil, versions
+from gitconvoy.catalog import (
+    PackageSlot,
+    catalog_allowlist,
+    load_package_catalog,
+    slot_for_repo,
+)
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo
 from gitconvoy import ghutil
@@ -278,6 +284,7 @@ def take(
         )
         mode = "draft"
     bom_data = json.loads(_bom_file(root, dest).read_text())
+    catalog = load_package_catalog(root)
     pinned: list[dict] = []
     for repo in train_obj.repos:
         use_registry, pin_kind = _resolve_pin_strategy(
@@ -285,12 +292,16 @@ def take(
         )
         if not use_registry:
             pinned.extend(
-                _clear_package_pins(root, dest, repo, workspace, bom_data)
+                _clear_package_pins(
+                    root, dest, repo, workspace, bom_data, catalog
+                )
             )
         repo_package_pins: list[tuple[str, str]] = []
         if use_registry:
             pep, npm = _pep_and_npm(repo.to)
-            for section, package in _package_targets(repo, bom_data, workspace):
+            for section, package in _package_targets(
+                repo, bom_data, workspace, catalog
+            ):
                 value = pep if section == "python" else npm
                 pin(workspace, dest, package, value, bom=bom, ecosystem=section)
                 bom_data.setdefault(section, {})[package] = value
@@ -322,6 +333,9 @@ def take(
             pinned.extend(
                 _clear_repo_shas(root, dest, repo, workspace, bom_data)
             )
+    if catalog is not None:
+        pinned.extend(_prune_bom_to_catalog(root, dest, bom_data, catalog))
+        _restore_adopt_pins(root, dest, bom_data, pinned)
     staging_only = not refresh
     pointed = point(
         workspace,
@@ -614,8 +628,26 @@ def _package_targets(
     repo: TrainRepo,
     bom: dict,
     workspace: Path,
+    catalog: list[PackageSlot] | None = None,
 ) -> list[tuple[str, str]]:
     repo_root = workspace / repo.path
+    python_names = _python_package_names(repo, workspace, required=False)
+    npm_names = _npm_package_names(repo, workspace, required=False)
+    if catalog is not None:
+        slot = slot_for_repo(
+            catalog,
+            repo.id,
+            npm_name=npm_names[0] if npm_names else "",
+            python_names=python_names,
+        )
+        if slot is None:
+            return []
+        targets: list[tuple[str, str]] = []
+        if slot.python:
+            targets.append(("python", slot.python))
+        if slot.npm:
+            targets.append(("npm", slot.npm))
+        return targets
     registry = repo_registry_ready(repo_root, repo.id)
     if registry is not True:
         return []
@@ -656,17 +688,90 @@ def _candidate_package_pins(
     return pins
 
 
+def _prune_bom_to_catalog(
+    root: Path,
+    version: str,
+    bom_data: dict,
+    catalog: list[PackageSlot],
+) -> list[dict]:
+    allowed = catalog_allowlist(catalog)
+    path = _bom_file(root, version)
+    data = json.loads(path.read_text())
+    dropped: list[dict] = []
+    section_keys = (("python", "python"), ("npm", "npm"), ("repos", "repos"))
+    for section, allow_key in section_keys:
+        block = data.get(section)
+        if not isinstance(block, dict):
+            continue
+        for name in list(block):
+            if name in allowed[allow_key]:
+                continue
+            del block[name]
+            live = bom_data.get(section)
+            if isinstance(live, dict):
+                live.pop(name, None)
+                if not live:
+                    bom_data.pop(section, None)
+            dropped.append(
+                {
+                    "section": section,
+                    "package": name,
+                    "pin": "(removed)",
+                    "action": "pruned",
+                }
+            )
+        if not block:
+            data.pop(section, None)
+    if dropped:
+        path.write_text(json.dumps(data, indent=2) + "\n")
+    return dropped
+
+
+def _restore_adopt_pins(
+    root: Path,
+    version: str,
+    bom_data: dict,
+    pinned: list[dict],
+) -> None:
+    """Re-apply registry pins from this adopt if prune or a later write dropped them."""
+    path = _bom_file(root, version)
+    data = json.loads(path.read_text())
+    changed = False
+    for row in pinned:
+        if row.get("action") in {"pruned", "cleared"}:
+            continue
+        section = row.get("section")
+        package = row.get("package")
+        value = row.get("pin")
+        if section not in {"python", "npm"} or not package or not value or value == "(removed)":
+            continue
+        block = data.setdefault(section, {})
+        if not isinstance(block, dict):
+            continue
+        if block.get(package) == value:
+            continue
+        block[package] = value
+        bom_data.setdefault(section, {})[package] = value
+        changed = True
+    if changed:
+        path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def _clear_package_pins(
     root: Path,
     version: str,
     repo: TrainRepo,
     workspace: Path,
     bom_data: dict,
+    catalog: list[PackageSlot] | None = None,
 ) -> list[dict]:
     path = _bom_file(root, version)
     data = json.loads(path.read_text())
     cleared: list[dict] = []
+    allowed = catalog_allowlist(catalog) if catalog is not None else None
     for section, package in _candidate_package_pins(repo, workspace):
+        if allowed and package in allowed.get(section, ()):
+            continue
         section_data = data.get(section)
         if not isinstance(section_data, dict) or package not in section_data:
             continue
