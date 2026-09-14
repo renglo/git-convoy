@@ -49,6 +49,11 @@ def is_dirty(repo: Path) -> bool:
     return bool(capture(repo, "status", "--porcelain"))
 
 
+def has_tracked_changes(repo: Path) -> bool:
+    """True when the index or tracked files differ from HEAD (ignores untracked)."""
+    return bool(capture(repo, "status", "--porcelain", "--untracked-files=no"))
+
+
 def status_porcelain(repo: Path) -> str:
     return capture(repo, "status", "--porcelain")
 

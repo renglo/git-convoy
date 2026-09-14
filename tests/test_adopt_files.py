@@ -118,13 +118,15 @@ def _train(status: str = "published") -> State:
     return state
 
 
-def test_draft_and_pin(tmp_path: Path) -> None:
+def test_draft_and_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bom_repo = _bom_repo(tmp_path)
     state = State()
+    monkeypatch.setattr(adopt_cmd, "_utc_now_iso", lambda: "2026-09-14T04:22:00Z")
     adopt_cmd.draft(tmp_path, state, "1.4.0", "1.5.0", bom=str(bom_repo), train="2026-W34")
     dest = bom_repo / "bom" / "v1.5.0.json"
     data = json.loads(dest.read_text())
     assert data["version"] == "v1.5.0"
+    assert data["created_at"] == "2026-09-14T04:22:00Z"
     assert data["train"] == "2026-W34"
     adopt_cmd.pin(tmp_path, "1.5.0", "renglo-lib", "1.2.4", bom=str(bom_repo))
     data = json.loads(dest.read_text())
@@ -218,20 +220,25 @@ def test_take_updates_bom_repo_shas(tmp_path: Path) -> None:
     assert dest["repos"]["renglo/pes"]["commit"] == tagged
 
 
-def test_take_refresh_same_train_updates_in_place(tmp_path: Path) -> None:
+def test_take_refresh_same_train_updates_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bom_repo = _bom_repo(tmp_path)
     _seed_train_packages(tmp_path)
     state = _train(status="stabilizing")
+    monkeypatch.setattr(adopt_cmd, "_utc_now_iso", lambda: "2026-09-14T04:22:00Z")
     first = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     assert first["mode"] == "draft"
     assert first["version"] == "v1.4.1"
     state.trains["2026-W34"].repos[1].to = "1.2.0rc2"
     state.trains["2026-W34"].repos[1].rc_tag = "v1.2.0-rc.2"
+    monkeypatch.setattr(adopt_cmd, "_utc_now_iso", lambda: "2026-09-14T05:00:00Z")
     second = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     assert second["mode"] == "refresh"
     assert second["version"] == "v1.4.1"
     assert not (bom_repo / "bom" / "v1.4.2.json").exists()
     dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["created_at"] == "2026-09-14T04:22:00Z"
     assert dest["python"]["renglo-schd"] == "1.2.0rc2"
     assert "Release B" in dest["description"]
     text = (bom_repo / "deploy_targets.yml").read_text()

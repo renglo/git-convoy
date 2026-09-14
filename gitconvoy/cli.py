@@ -12,6 +12,7 @@ from gitconvoy import hotfix as hotfix_cmd
 from gitconvoy import sync as sync_cmd
 from gitconvoy import train as train_cmd
 from gitconvoy.errors import GitConvoyError
+from gitconvoy.help_text import format_help_text, help_payload
 from gitconvoy.initcmd import init
 from gitconvoy.output import emit, fail
 from gitconvoy.state import load
@@ -23,6 +24,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     as_json = args.json
+    if args.cmd == "help":
+        payload = help_payload()
+        emit(payload, as_json, format_help_text())
+        return 0
     try:
         workspace = find_workspace(Path(args.workspace) if args.workspace else None)
         payload, text = _dispatch(workspace, args)
@@ -488,6 +493,10 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init", help="Create local state, membership, gitignore, and Cursor skill")
+    sub.add_parser(
+        "help",
+        help="Command sequences by cycle (reduced README)",
+    )
     sub.add_parser("status", help="Current feature, aux, train, hotfix, and dirty repos")
 
     feature = sub.add_parser("feature", help="Feature sheet commands")

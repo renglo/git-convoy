@@ -92,6 +92,13 @@ That creates `gitconvoy-venv`, installs the CLI in editable mode (plus dev deps 
 
 `git convoy --help` asks Git for a man page. Use `git-convoy --help` or `gitconvoy --help`.
 
+For command sequences by cycle (reduced README, no concepts):
+
+```bash
+git convoy help
+git convoy --json help
+```
+
 Or manually:
 
 ```bash

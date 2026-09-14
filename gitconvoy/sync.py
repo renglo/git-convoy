@@ -86,7 +86,7 @@ def sync_develop_from_ref(
                 f"{repo_id}: cannot fast-forward develop from origin; "
                 f"reconcile develop, then {retry_hint}"
             )
-    if gitutil.is_dirty(repo_path):
+    if gitutil.has_tracked_changes(repo_path):
         raise GitConvoyError(
             f"{repo_id} develop is dirty; commit or stash, then {retry_hint}"
         )

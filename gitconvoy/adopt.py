@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from gitconvoy import gitutil, versions
@@ -125,6 +126,15 @@ def _bom_label(workspace: Path, path: Path) -> str:
         return str(path)
 
 
+def _utc_now_iso() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def draft(
     workspace: Path,
     state: State,
@@ -144,6 +154,7 @@ def draft(
     shutil.copy(src, dest)
     data = json.loads(dest.read_text())
     data["version"] = _v(to_version)
+    data["created_at"] = _utc_now_iso()
     if train or state.current_train:
         data["train"] = train or state.current_train
     data["description"] = description or (
