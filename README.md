@@ -568,7 +568,7 @@ When `gh` is logged in, **`adopt` runs verify automatically** and picks pins per
 | **skip** (git-clone participant) | `repos.*.commit` only — same as console today |
 | **failure** (or pending / no tag) | **Self-heal:** clear registry pins, fall back to `repos.*.commit` |
 
-CLI output groups pins by repo and labels each line `registry`, `git`, or `fallback`. A summary line shows how many repos verified vs fell back.
+CLI output lists the BOM files it wrote (hub, console, peers) with a pin summary. A **publish CI** line names which train repos succeeded vs are still pending (pending still gets heuristic registry pins unless you pass `--require-verify`).
 
 **Simple mode** (no `gh`, or `--no-verify`): uses a local heuristic — workflow file present → registry pin; otherwise git SHA only. Optimistic; use Full mode for real trains.
 

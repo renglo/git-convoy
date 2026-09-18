@@ -150,6 +150,9 @@ def test_take_drafts_pins_train_and_points(tmp_path: Path) -> None:
     assert dest["python"]["renglo-api"] == "2.3.0"
     assert dest["npm"]["@renglo/schd"] == "1.2.0"
     assert "@renglo/console" not in dest.get("npm", {})
+    files = {row["path"]: row for row in data["files"]}
+    assert "bom/v1.4.1.json" in files
+    assert files["bom/v1.4.1.json"]["python"]["renglo-lib"] == "1.2.4"
     text = (bom_repo / "deploy_targets.yml").read_text()
     assert "bom: 1.4.1" in text
     assert "enabled: false" in text
@@ -350,6 +353,95 @@ def test_take_named_subcommand(tmp_path: Path) -> None:
         == 0
     )
     assert (bom_repo / "bom" / "v1.4.1.json").exists()
+
+
+def test_adopt_cli_prints_wrote_files(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
+    state = _train()
+    save(tmp_path, state)
+    assert main(["--workspace", str(tmp_path), "adopt", "--bom", str(bom_repo)]) == 0
+    out = capsys.readouterr().out
+    assert "adopted v1.4.1 from train 2026-W34 (draft)" in out
+    assert "wrote:" in out
+    assert "bom/v1.4.1.json" in out
+    assert "renglo-lib=1.2.4" in out
+    assert "verify:" not in out
+    assert "  console\n    registry" not in out
+
+
+def test_adopt_text_names_publish_ci_and_bom_files() -> None:
+    from gitconvoy.cli import _adopt_text
+
+    text = _adopt_text(
+        {
+            "version": "v0.1.8",
+            "train": "2026-09-17",
+            "mode": "draft",
+            "verify": {
+                "ran": True,
+                "verified_count": 2,
+                "repo_count": 4,
+                "skipped_count": 0,
+                "pending_count": 0,
+                "failed_count": 0,
+                "succeeded": ["console", "renglo-lib"],
+                "pending": ["arbitiumlab", "arbitiumtriage"],
+                "skipped": [],
+                "failed": [],
+            },
+            "files": [
+                {
+                    "path": "bom/v0.1.8.json",
+                    "python": {"renglo-lib": "0.0.5rc2", "renglo-api": "0.0.6"},
+                    "npm": {},
+                    "repos": {},
+                },
+                {
+                    "path": "console_bom/v0.1.8.json",
+                    "python": {},
+                    "npm": {"@renglo/console": "0.0.9-rc.1", "@arbitium/lab": "0.0.7-rc.2"},
+                    "repos": {},
+                },
+                {
+                    "path": "peers_bom/lab/v0.1.8.json",
+                    "python": {"arbitium-lab": "0.0.7rc2", "arbitium-triage": "0.0.7rc1"},
+                    "npm": {},
+                    "repos": {},
+                },
+            ],
+            "note": "commit and push this repo to deploy. git-convoy does not push *-bom.",
+        }
+    )
+    assert "publish CI: 2/4 succeeded (console, renglo-lib); pending: arbitiumlab, arbitiumtriage" in text
+    assert "fallback to git" not in text
+    assert "wrote:" in text
+    assert "    bom/v0.1.8.json" in text
+    assert "      python: renglo-lib=0.0.5rc2, renglo-api=0.0.6" in text
+    assert "    console_bom/v0.1.8.json" in text
+    assert "    peers_bom/lab/v0.1.8.json" in text
+    assert "      python: arbitium-lab=0.0.7rc2, arbitium-triage=0.0.7rc1" in text
+    assert "    registry" not in text
+
+
+def test_written_bom_summaries_lists_split_files(tmp_path: Path) -> None:
+    root = tmp_path / "ops" / "acme-bom"
+    (root / "bom").mkdir(parents=True)
+    (root / "console_bom").mkdir()
+    (root / "peers_bom" / "lab").mkdir(parents=True)
+    (root / "bom" / "v0.1.8.json").write_text(
+        json.dumps({"python": {"renglo-lib": "0.0.5rc2"}}, indent=2) + "\n"
+    )
+    (root / "console_bom" / "v0.1.8.json").write_text(
+        json.dumps({"npm": {"@renglo/console": "0.0.9-rc.1"}}, indent=2) + "\n"
+    )
+    (root / "peers_bom" / "lab" / "v0.1.8.json").write_text(
+        json.dumps({"python": {"arbitium-lab": "0.0.7rc2"}}, indent=2) + "\n"
+    )
+    rows = {row["path"]: row for row in adopt_cmd._written_bom_summaries(root, "0.1.8")}
+    assert rows["bom/v0.1.8.json"]["python"]["renglo-lib"] == "0.0.5rc2"
+    assert rows["console_bom/v0.1.8.json"]["npm"]["@renglo/console"] == "0.0.9-rc.1"
+    assert rows["peers_bom/lab/v0.1.8.json"]["python"]["arbitium-lab"] == "0.0.7rc2"
 
 
 def test_promote_enables_production_on_current_bom(tmp_path: Path) -> None:

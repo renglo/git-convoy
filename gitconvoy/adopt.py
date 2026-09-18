@@ -17,6 +17,13 @@ from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo
 from gitconvoy import ghutil
 from gitconvoy import membership
+from gitconvoy.bom_layout import (
+    copy_split_bom_draft,
+    load_placement,
+    merge_union_bom,
+    sync_deploy_target_versions,
+    write_split_boms,
+)
 from gitconvoy.workflows import repo_registry_ready
 from gitconvoy.workspace import SKIP_DIR_NAMES, discover_repos
 
@@ -135,6 +142,13 @@ def _utc_now_iso() -> str:
     )
 
 
+def _uses_three_bom_layout(root: Path) -> bool:
+    placement = load_placement(root)
+    if placement.hub_python or placement.peers:
+        return True
+    return (root / "console_bom").is_dir()
+
+
 def draft(
     workspace: Path,
     state: State,
@@ -151,16 +165,24 @@ def draft(
         raise GitConvoyError(f"missing {src}")
     if dest.exists():
         raise GitConvoyError(f"already exists: {dest}")
-    shutil.copy(src, dest)
-    data = json.loads(dest.read_text())
-    data["version"] = _v(to_version)
-    data["created_at"] = _utc_now_iso()
+    if _uses_three_bom_layout(root):
+        copy_split_bom_draft(root, from_version, to_version)
+        master = merge_union_bom(root, to_version)
+    else:
+        shutil.copy(src, dest)
+        master = json.loads(dest.read_text())
+    master["version"] = _v(to_version)
+    master["created_at"] = _utc_now_iso()
     if train or state.current_train:
-        data["train"] = train or state.current_train
-    data["description"] = description or (
+        master["train"] = train or state.current_train
+    master["description"] = description or (
         f"Draft. Taking {train or state.current_train or 'selected pins'}. Not production."
     )
-    dest.write_text(json.dumps(data, indent=2) + "\n")
+    if _uses_three_bom_layout(root):
+        write_split_boms(root, to_version, master, catalog=load_package_catalog(root))
+    else:
+        dest.write_text(json.dumps(master, indent=2) + "\n")
+    data = master
     return {
         "ok": True,
         "from": str(src),
@@ -178,17 +200,27 @@ def pin(
     pin_value: str,
     bom: str | None = None,
     ecosystem: str | None = None,
+    *,
+    split: bool = True,
 ) -> dict:
     root = find_bom_repo(workspace, bom)
     path = _bom_file(root, version)
-    if not path.exists():
+    if _uses_three_bom_layout(root):
+        master = merge_union_bom(root, version)
+        if not master.get("python") and not master.get("npm") and not path.is_file():
+            raise GitConvoyError(f"missing split BOM files for {version}")
+    elif not path.exists():
         raise GitConvoyError(f"missing {path}")
-    data = json.loads(path.read_text())
+    else:
+        master = json.loads(path.read_text())
     section = ecosystem or _guess_section(package)
-    if section not in data or not isinstance(data[section], dict):
-        data[section] = {}
-    data[section][package] = pin_value
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    master.setdefault(section, {})
+    if not isinstance(master[section], dict):
+        master[section] = {}
+    master[section][package] = pin_value
+    path.write_text(json.dumps(master, indent=2) + "\n")
+    if split and _uses_three_bom_layout(root):
+        write_split_boms(root, version, master, catalog=load_package_catalog(root))
     return {"ok": True, "file": str(path), "section": section, "package": package, "pin": pin_value}
 
 
@@ -203,16 +235,20 @@ def point(
     if not targets.exists():
         raise GitConvoyError(f"missing {targets}")
     number = version.lstrip("v")
-    text = targets.read_text()
-    text, n = re.subn(
-        r"(?m)^bom:\s+\S+",
-        f"bom: {number}",
-        text,
-        count=1,
-    )
-    if n != 1:
-        raise GitConvoyError("could not update bom: in deploy_targets.yml")
     enabled = "true" if production else "false"
+    text = targets.read_text()
+    if _uses_three_bom_layout(root):
+        sync_deploy_target_versions(root, version)
+        text = targets.read_text()
+    else:
+        text, n = re.subn(
+            r"(?m)^bom:\s+\S+",
+            f"bom: {number}",
+            text,
+            count=1,
+        )
+        if n != 1:
+            raise GitConvoyError("could not update bom: in deploy_targets.yml")
     text, n = re.subn(
         r"(?m)^(\s+)production:\n(\s+)enabled:\s+\S+",
         rf"\1production:\n\2enabled: {enabled}",
@@ -295,6 +331,9 @@ def take(
         )
         mode = "draft"
     bom_data = json.loads(_bom_file(root, dest).read_text())
+    if _uses_three_bom_layout(root):
+        bom_data = merge_union_bom(root, dest)
+        _bom_file(root, dest).write_text(json.dumps(bom_data, indent=2) + "\n")
     catalog = load_package_catalog(root)
     pinned: list[dict] = []
     for repo in train_obj.repos:
@@ -314,7 +353,7 @@ def take(
                 repo, bom_data, workspace, catalog
             ):
                 value = pep if section == "python" else npm
-                pin(workspace, dest, package, value, bom=bom, ecosystem=section)
+                pin(workspace, dest, package, value, bom=bom, ecosystem=section, split=False)
                 bom_data.setdefault(section, {})[package] = value
                 repo_package_pins.append((section, package))
                 pinned.append(
@@ -347,6 +386,10 @@ def take(
     if catalog is not None:
         pinned.extend(_prune_bom_to_catalog(root, dest, bom_data, catalog))
         _restore_adopt_pins(root, dest, bom_data, pinned)
+    if _uses_three_bom_layout(root):
+        master = json.loads(_bom_file(root, dest).read_text())
+        master = _merge_master_from_bom_data(master, bom_data)
+        write_split_boms(root, dest, master, catalog=catalog)
     staging_only = not refresh
     pointed = point(
         workspace,
@@ -368,6 +411,7 @@ def take(
         "to": drafted["to"],
         "version": drafted["version"],
         "pins": pinned,
+        "files": _written_bom_summaries(root, dest),
         "point": pointed,
         "note": note,
     }
@@ -404,13 +448,14 @@ def promote(
     pointed = point(workspace, version, bom=bom, production=True)
     description = _production_description(train.name)
     _set_bom_description(root, version, description)
-    return {
+    payload = {
         "ok": True,
         "mode": taken["mode"],
         "train": train.name,
         "version": taken["version"],
         "description": description,
         "pins": taken["pins"],
+        "files": _written_bom_summaries(root, version),
         "take": {"from": taken["from"], "to": taken["to"]},
         "point": pointed,
         "note": (
@@ -419,13 +464,35 @@ def promote(
             "production is blocked if staging fails."
         ),
     }
+    if taken.get("verify") is not None:
+        payload["verify"] = taken["verify"]
+    return payload
+
+
+def _merge_master_from_bom_data(master: dict, bom_data: dict) -> dict:
+    """Ensure split uses the full in-memory pin set from adopt."""
+    merged = dict(master)
+    for section in ("python", "npm"):
+        block = bom_data.get(section)
+        if isinstance(block, dict):
+            merged[section] = {**merged.get(section, {}), **block}
+    repos = bom_data.get("repos")
+    if isinstance(repos, dict):
+        merged["repos"] = {**merged.get("repos", {}), **repos}
+    for key in ("version", "created_at", "description", "train", "deploy_stage"):
+        if bom_data.get(key):
+            merged[key] = bom_data[key]
+    return merged
 
 
 def _validate_production_promotion(root: Path, state: State, version: str) -> Train:
-    bom_path = _bom_file(root, version)
-    if not bom_path.exists():
-        raise GitConvoyError(f"missing {bom_path}")
-    data = json.loads(bom_path.read_text())
+    if _uses_three_bom_layout(root):
+        data = merge_union_bom(root, version)
+    else:
+        bom_path = _bom_file(root, version)
+        if not bom_path.exists():
+            raise GitConvoyError(f"missing {bom_path}")
+        data = json.loads(bom_path.read_text())
     train_name = data.get("train")
     if not train_name:
         raise GitConvoyError(
@@ -516,6 +583,11 @@ def _production_description(train: str) -> str:
 
 
 def _set_bom_description(root: Path, version: str, description: str) -> None:
+    if _uses_three_bom_layout(root):
+        master = merge_union_bom(root, version)
+        master["description"] = description
+        write_split_boms(root, version, master, catalog=load_package_catalog(root))
+        return
     path = _bom_file(root, version)
     data = json.loads(path.read_text())
     data["description"] = description
@@ -827,6 +899,19 @@ def _adopt_verify_context(
         row["id"]: row.get("status") or "unknown"
         for row in result.get("repos") or []
     }
+
+    def _ids(*statuses: str) -> list[str]:
+        return [
+            row["id"]
+            for row in result.get("repos") or []
+            if row.get("status") in statuses
+        ]
+
+    failed = [
+        row["id"]
+        for row in result.get("repos") or []
+        if row.get("status") not in {"success", "skip", "pending", "missing"}
+    ]
     summary = {
         "ran": True,
         "verified_count": result.get("verified_count", 0),
@@ -834,6 +919,10 @@ def _adopt_verify_context(
         "pending_count": result.get("pending_count", 0),
         "failed_count": result.get("failed_count", 0),
         "repo_count": result.get("repo_count", 0),
+        "succeeded": _ids("success"),
+        "skipped": _ids("skip"),
+        "pending": _ids("pending", "missing"),
+        "failed": failed,
     }
     return by_repo, summary
 
@@ -1001,6 +1090,61 @@ def _pin_repo_shas(
         )
     path.write_text(json.dumps(data, indent=2) + "\n")
     return pinned
+
+
+def _written_bom_summaries(root: Path, version: str) -> list[dict]:
+    """Relative BOM files on disk for this version, with pin maps."""
+    name = f"{_v(version)}.json"
+    candidates: list[tuple[str, Path, str | None]] = [
+        ("hub", root / "bom" / name, None),
+    ]
+    console = root / "console_bom" / name
+    if console.is_file():
+        candidates.append(("console", console, None))
+    peers_root = root / "peers_bom"
+    if peers_root.is_dir():
+        for peer_dir in sorted(
+            path for path in peers_root.iterdir() if path.is_dir()
+        ):
+            path = peer_dir / name
+            if path.is_file():
+                candidates.append(("peer", path, peer_dir.name))
+    rows: list[dict] = []
+    for kind, path, peer in candidates:
+        if not path.is_file():
+            continue
+        rows.append(_summarize_bom_path(root, path, kind=kind, peer=peer))
+    return rows
+
+
+def _summarize_bom_path(
+    root: Path, path: Path, *, kind: str, peer: str | None
+) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    python = data.get("python") if isinstance(data.get("python"), dict) else {}
+    npm = data.get("npm") if isinstance(data.get("npm"), dict) else {}
+    repos_in = data.get("repos") if isinstance(data.get("repos"), dict) else {}
+    repos: dict[str, str] = {}
+    for key, value in repos_in.items():
+        if isinstance(value, dict):
+            commit = str(value.get("commit") or "").strip()
+            repos[key] = commit[:12] if commit else ""
+        elif value is not None:
+            repos[key] = str(value)
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = str(path)
+    row = {
+        "kind": kind,
+        "path": rel,
+        "python": dict(python),
+        "npm": dict(npm),
+        "repos": repos,
+    }
+    if peer:
+        row["peer"] = peer
+    return row
 
 
 def _bom_file(root: Path, version: str) -> Path:

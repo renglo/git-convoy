@@ -1204,48 +1204,86 @@ def _adopt_text(data: dict, *, production: bool = False) -> str:
         ]
     else:
         lines = [
-            f"adopted {data['version']} from train {data['train']} ({mode}):",
+            f"adopted {data['version']} from train {data['train']} ({mode})",
         ]
-    verify = data.get("verify")
-    if isinstance(verify, dict) and verify.get("ran"):
-        lines.append(
-            f"  verify: {verify.get('verified_count', 0)}/{verify.get('repo_count', 0)} "
-            f"succeeded, {verify.get('skipped_count', 0)} skipped, "
-            f"{verify.get('pending_count', 0)} pending, "
-            f"{verify.get('failed_count', 0)} fallback to git"
-        )
-    by_repo: dict[str, list[dict]] = {}
-    for row in data.get("pins") or []:
-        by_repo.setdefault(row.get("id") or "?", []).append(row)
-    if not by_repo:
-        lines.append("  (no pins changed)")
-    for repo_id, rows in by_repo.items():
-        lines.append(f"  {repo_id}")
-        for row in rows:
-            action = row.get("action")
-            section = row.get("section") or "?"
-            package = row.get("package") or "?"
-            pin = row.get("pin") or "?"
-            if action == "cleared":
-                lines.append(f"    cleared {section} {package}")
-                continue
-            kind = row.get("kind")
-            if kind == "registry":
-                label = "registry"
-            elif kind == "fallback":
-                label = "fallback"
-            elif kind == "git":
-                label = "git"
-            else:
-                label = section
-            short_pin = pin if pin.startswith("(") else (
-                pin[:12] + "…" if len(pin) > 12 and section == "repos" else pin
-            )
-            lines.append(f"    {label:8} {package}={short_pin}")
+    publish_ci = _format_publish_ci(data.get("verify"))
+    if publish_ci:
+        lines.append(publish_ci)
+    files = data.get("files") or []
+    if files:
+        lines.append("  wrote:")
+        for row in files:
+            path = row.get("path") or "?"
+            lines.append(f"    {path}")
+            for section in ("python", "npm", "repos"):
+                pins = row.get(section)
+                if not isinstance(pins, dict) or not pins:
+                    continue
+                rendered = ", ".join(
+                    f"{name}={value}" for name, value in pins.items() if value not in (None, "")
+                )
+                if rendered:
+                    lines.append(f"      {section}: {rendered}")
+    else:
+        by_repo: dict[str, list[dict]] = {}
+        for row in data.get("pins") or []:
+            by_repo.setdefault(row.get("id") or "?", []).append(row)
+        if not by_repo:
+            lines.append("  (no pins changed)")
+        for repo_id, rows in by_repo.items():
+            lines.append(f"  {repo_id}")
+            for row in rows:
+                action = row.get("action")
+                section = row.get("section") or "?"
+                package = row.get("package") or "?"
+                pin = row.get("pin") or "?"
+                if action == "cleared":
+                    lines.append(f"    cleared {section} {package}")
+                    continue
+                kind = row.get("kind")
+                if kind == "registry":
+                    label = "registry"
+                elif kind == "fallback":
+                    label = "fallback"
+                elif kind == "git":
+                    label = "git"
+                else:
+                    label = section
+                short_pin = pin if pin.startswith("(") else (
+                    pin[:12] + "…" if len(pin) > 12 and section == "repos" else pin
+                )
+                lines.append(f"    {label:8} {package}={short_pin}")
     note = (data.get("note") or "").strip()
     if note:
         lines.append(note)
     return "\n".join(lines)
+
+
+def _format_publish_ci(verify: object) -> str | None:
+    if not isinstance(verify, dict) or not verify.get("ran"):
+        return None
+    total = verify.get("repo_count", 0)
+    succeeded = [str(item) for item in (verify.get("succeeded") or []) if item]
+    pending = [str(item) for item in (verify.get("pending") or []) if item]
+    skipped = [str(item) for item in (verify.get("skipped") or []) if item]
+    failed = [str(item) for item in (verify.get("failed") or []) if item]
+    succeeded_n = len(succeeded) or int(verify.get("verified_count") or 0)
+    parts: list[str] = [f"{succeeded_n}/{total} succeeded"]
+    if succeeded:
+        parts[0] += f" ({', '.join(succeeded)})"
+    if pending:
+        parts.append(f"pending: {', '.join(pending)}")
+    elif int(verify.get("pending_count") or 0):
+        parts.append(f"{verify.get('pending_count')} pending")
+    if skipped:
+        parts.append(f"skipped: {', '.join(skipped)}")
+    elif int(verify.get("skipped_count") or 0):
+        parts.append(f"{verify.get('skipped_count')} skipped")
+    if failed:
+        parts.append(f"failed, pinned git SHA: {', '.join(failed)}")
+    elif int(verify.get("failed_count") or 0):
+        parts.append(f"{verify.get('failed_count')} fallback to git")
+    return "  publish CI: " + "; ".join(parts)
 
 
 def _verify_text(data: dict) -> str:
