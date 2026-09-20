@@ -274,12 +274,43 @@ def delete_branch(repo: Path, branch: str) -> None:
     run(repo, "branch", "-D", branch)
 
 
+def delete_merged_branch(repo: Path, branch: str) -> None:
+    """Delete a local branch only if git considers it fully merged (``branch -d``)."""
+    run(repo, "branch", "-d", branch)
+
+
 def delete_remote_branch(repo: Path, branch: str) -> None:
     run(repo, "push", "origin", "--delete", branch)
 
 
 def clean_untracked(repo: Path) -> None:
     run(repo, "clean", "-fd")
+
+
+def ref_merged_into_integration(repo: Path, ref: str) -> bool:
+    """True when commit ``ref`` is already on develop or main."""
+    tip = rev_parse(repo, ref)
+    if not tip:
+        return False
+    for base in (
+        origin_integration(repo),
+        "origin/develop",
+        "develop",
+        "origin/main",
+        "main",
+    ):
+        if not base:
+            continue
+        if is_ancestor(repo, tip, base):
+            return True
+    return False
+
+
+def topic_branch_merged(repo: Path, branch: str) -> bool:
+    """True when every commit on ``branch`` is already on develop or main."""
+    if has_local_branch(repo, branch):
+        return ref_merged_into_integration(repo, f"refs/heads/{branch}")
+    return ref_merged_into_integration(repo, f"refs/remotes/origin/{branch}")
 
 
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:

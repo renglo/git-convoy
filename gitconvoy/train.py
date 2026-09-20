@@ -659,8 +659,9 @@ def delete(
         prompt = (
             f"This will delete local {branch} in {len(targets)} repos ({ids})"
             + (" and on origin" if remote else "")
-            + ", remove the train sheet, and check out the integration branch. "
-            "Continue? : "
+            + " only where every commit is already on develop or main, "
+            "remove the train sheet, and check out the integration branch. "
+            "Uncommitted files are never discarded. Continue? : "
         )
         answer = _confirm_yes(input_fn or input, prompt)
         if not answer:
@@ -673,22 +674,43 @@ def delete(
             }
 
     removed: list[dict] = []
+    blocked: list[str] = []
     for repo in targets:
         gitutil.fetch(repo.path)
         current = gitutil.current_branch(repo.path)
         dirty = gitutil.is_dirty(repo.path)
         if dirty and current == branch:
-            raise GitConvoyError(
-                f"{repo.id} has uncommitted changes on {branch}; "
-                "commit or stash before train delete"
+            blocked.append(f"{repo.id}: uncommitted changes on {branch}")
+        if gitutil.has_local_branch(repo.path, branch) and not gitutil.ref_merged_into_integration(
+            repo.path, f"refs/heads/{branch}"
+        ):
+            blocked.append(
+                f"{repo.id}: {branch} has commits not on develop or main"
             )
-        integration = gitutil.current_branch(repo.path)
+        if remote and gitutil.has_remote_branch(repo.path, branch) and not (
+            gitutil.ref_merged_into_integration(
+                repo.path, f"refs/remotes/origin/{branch}"
+            )
+        ):
+            blocked.append(
+                f"{repo.id}: origin/{branch} has commits not on develop or main"
+            )
+    if blocked:
+        raise GitConvoyError(
+            "train delete refused (would lose work):\n  "
+            + "\n  ".join(blocked)
+            + "\nmerge, commit, or stash first"
+        )
+
+    for repo in targets:
+        current = gitutil.current_branch(repo.path)
+        integration = current
         if current == branch:
             integration = gitutil.checkout_integration(repo.path)
         on_origin = gitutil.has_remote_branch(repo.path, branch)
         deleted_local = False
         if gitutil.has_local_branch(repo.path, branch):
-            gitutil.delete_branch(repo.path, branch)
+            gitutil.delete_merged_branch(repo.path, branch)
             deleted_local = True
         deleted_remote = False
         if remote and on_origin:
@@ -712,8 +734,8 @@ def delete(
     save(workspace, state)
     still_on_origin = [row["id"] for row in removed if row["on_origin"]]
     note = (
-        f"Removed train {train.name}. Local {branch} deleted where present. "
-        "Checked out the integration branch when needed."
+        f"Removed train {train.name}. Local {branch} deleted only where already "
+        "merged. Uncommitted files were not discarded."
     )
     if still_on_origin and not remote:
         note += (

@@ -269,7 +269,7 @@ This is ordinary branch switching. Worktrees are not required. If any product re
 
 **Return** is the same: read **that** sheet, check out listed branches, stay on `develop` everywhere else. If you skip a listed repo, the feature is incomplete and will not run.
 
-To throw a test feature away (**deletes that work**): check out `develop` in each listed repo and delete local `feature/<name>`. Do not delete origin unless you mean to. Do not abandon work the user still wants.
+To drop a feature sheet: `feature abandon` removes convoy’s table only. It never deletes git branches or uncommitted files. The only command that deletes git branches is `git convoy train delete --yes`, and that refuses dirty trees and unmerged unique commits.
 
 ---
 

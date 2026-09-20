@@ -238,6 +238,24 @@ def test_adopt_pins_only_hotfix_packages(workspace: Path, monkeypatch) -> None:
     assert any(row["package"] == "renglo-schd" for row in data["pins"])
 
 
+def test_abandon_keeps_uncommitted_files(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    (schd / "fix.py").write_text("do not delete me\n")
+    hotfix_cmd.start(workspace, State(), "fetch-file")
+    data = hotfix_cmd.abandon(workspace, load(workspace), yes=True)
+    assert data["abandoned"] is True
+    assert (schd / "fix.py").read_text() == "do not delete me\n"
+    assert gitutil.is_dirty(schd)
+    assert gitutil.current_branch(schd) == "hotfix/fetch-file"
+    assert gitutil.has_local_branch(schd, "hotfix/fetch-file")
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    assert schd_row["dirty"] is True
+    assert schd_row["kept_local_branch"] is True
+    state = load(workspace)
+    assert state.current_hotfix is None
+    assert "fetch-file" not in state.hotfixes
+
+
 def test_prs_compare_targets_main(workspace: Path, monkeypatch) -> None:
     monkeypatch.chdir(workspace)
     schd = workspace / "extensions" / "schd"

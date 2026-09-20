@@ -284,3 +284,55 @@ def test_aux_close_merges_main_into_develop(workspace: Path) -> None:
     tip = git(launcher, "rev-parse", "aux/ship").stdout.strip()
     merge_base = git(launcher, "merge-base", tip, "develop").stdout.strip()
     assert tip == merge_base
+
+
+def test_aux_abandon_keeps_uncommitted_files(workspace: Path) -> None:
+    _aux_workspace(workspace)
+    launcher = workspace / "ops" / "launcher"
+    (launcher / "TOOL.md").write_text("do not delete me\n")
+    state = State()
+    aux_cmd.start(workspace, state, "peer-release")
+    aux_cmd.adopt(workspace, state)
+    data = aux_cmd.abandon(workspace, load(workspace), yes=True)
+    assert data["abandoned"] is True
+    assert (launcher / "TOOL.md").read_text() == "do not delete me\n"
+    from gitconvoy import gitutil
+
+    assert gitutil.is_dirty(launcher)
+    assert gitutil.current_branch(launcher) == "aux/peer-release"
+    assert gitutil.has_local_branch(launcher, "aux/peer-release")
+    row = next(item for item in data["repos"] if item["id"] == "launcher")
+    assert row["dirty"] is True
+    assert row["kept_local_branch"] is True
+    state = load(workspace)
+    assert state.current_aux is None
+    assert "peer-release" not in state.auxes
+
+
+def test_aux_abandon_keeps_merged_local_branch(workspace: Path) -> None:
+    _aux_workspace(workspace)
+    launcher = workspace / "ops" / "launcher"
+    (launcher / "TOOL.md").write_text("ship it\n")
+    state = State()
+    aux_cmd.start(workspace, state, "ship")
+    aux_cmd.adopt(workspace, state)
+    from gitconvoy import commit as commit_cmd
+
+    commit_cmd.commit(
+        workspace,
+        load(workspace),
+        header="fix: ship",
+        header_only=True,
+        kind="aux",
+    )
+    git(launcher, "checkout", "main")
+    git(launcher, "merge", "--no-edit", "aux/ship")
+    git(launcher, "checkout", "aux/ship")
+    data = aux_cmd.abandon(workspace, load(workspace), yes=True)
+    assert data["abandoned"] is True
+    assert git(launcher, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "aux/ship"
+    assert "aux/ship" in git(launcher, "branch", "--list", "aux/ship").stdout
+    assert git(launcher, "show", "main:TOOL.md").stdout == "ship it\n"
+    row = next(item for item in data["repos"] if item["id"] == "launcher")
+    assert row["kept_local_branch"] is True
+    assert row["dirty"] is False

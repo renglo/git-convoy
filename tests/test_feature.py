@@ -233,7 +233,7 @@ def test_abandon_requires_yes_for_json(workspace: Path, monkeypatch, capsys) -> 
     assert gitutil.current_branch(schd) == "feature/blast-radius"
 
 
-def test_abandon_deletes_local_branch(workspace: Path, monkeypatch, capsys) -> None:
+def test_abandon_keeps_uncommitted_files(workspace: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(workspace)
     save(workspace, State())
     assert main(["--json", "init"]) == 0
@@ -246,13 +246,64 @@ def test_abandon_deletes_local_branch(workspace: Path, monkeypatch, capsys) -> N
     assert main(["--json", "feature", "abandon", "--yes"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["abandoned"] is True
-    assert gitutil.current_branch(schd) == "develop"
-    assert not gitutil.has_local_branch(schd, "feature/blast-radius")
+    assert (schd / "handler.py").read_text() == "print('x')\n"
+    assert gitutil.is_dirty(schd)
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert gitutil.has_local_branch(schd, "feature/blast-radius")
     assert gitutil.current_branch(lib) == "develop"
-    assert not (schd / "handler.py").exists()
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    assert schd_row["dirty"] is True
+    assert schd_row["kept_local_branch"] is True
     state = load(workspace)
     assert state.current_feature is None
     assert "blast-radius" not in state.features
+
+
+def test_abandon_keeps_merged_local_branch(workspace: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(workspace)
+    save(workspace, State())
+    assert main(["--json", "init"]) == 0
+    assert main(["--json", "feature", "start", "blast-radius"]) == 0
+    schd = workspace / "extensions" / "schd"
+    (schd / "handler.py").write_text("print('x')\n")
+    assert main(["--json", "feature", "adopt"]) == 0
+    gitutil.run(schd, "add", "-A")
+    gitutil.run(schd, "commit", "-m", "feat")
+    gitutil.checkout(schd, "develop")
+    gitutil.run(schd, "merge", "--no-edit", "feature/blast-radius")
+    gitutil.checkout(schd, "feature/blast-radius")
+    capsys.readouterr()
+    assert main(["--json", "feature", "abandon", "--yes"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["abandoned"] is True
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert gitutil.has_local_branch(schd, "feature/blast-radius")
+    assert (schd / "handler.py").read_text() == "print('x')\n"
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    assert schd_row["kept_local_branch"] is True
+    assert schd_row["dirty"] is False
+
+
+def test_abandon_keeps_unmerged_commits(workspace: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(workspace)
+    save(workspace, State())
+    assert main(["--json", "init"]) == 0
+    assert main(["--json", "feature", "start", "blast-radius"]) == 0
+    schd = workspace / "extensions" / "schd"
+    (schd / "handler.py").write_text("print('keep')\n")
+    assert main(["--json", "feature", "adopt"]) == 0
+    gitutil.run(schd, "add", "-A")
+    gitutil.run(schd, "commit", "-m", "feat")
+    capsys.readouterr()
+    assert main(["--json", "feature", "abandon", "--yes"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["abandoned"] is True
+    assert gitutil.has_local_branch(schd, "feature/blast-radius")
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert (schd / "handler.py").read_text() == "print('keep')\n"
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    assert schd_row["kept_local_branch"] is True
+    assert schd_row["dirty"] is False
 
 
 def test_abandon_no_keeps_branch(workspace: Path, monkeypatch) -> None:

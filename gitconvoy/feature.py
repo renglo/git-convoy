@@ -262,7 +262,6 @@ def abandon(
     name: str | None = None,
     *,
     yes: bool = False,
-    remote: bool = False,
     as_json: bool = False,
     input_fn=None,
     is_tty: bool | None = None,
@@ -273,14 +272,13 @@ def abandon(
     if not yes:
         if as_json or not (sys.stdin.isatty() if is_tty is None else is_tty):
             raise GitConvoyError(
-                "abandon discards the feature branch; pass --yes to confirm"
+                "abandon drops the feature sheet only; pass --yes to confirm"
             )
         ids = ", ".join(item.id for item in targets) or "(none)"
         prompt = (
-            f"This will delete local branch {branch} in {len(targets)} repos "
-            f"({ids}) and discard uncommitted work on that branch "
-            "(including untracked files). "
-            "Continue? : "
+            f"This will drop the feature sheet for {feature.name} "
+            f"({len(targets)} repos: {ids}). "
+            "Git branches and uncommitted files are not touched. Continue? : "
         )
         answer = _confirm_yes(input_fn or input, prompt)
         if not answer:
@@ -294,33 +292,13 @@ def abandon(
 
     removed: list[dict] = []
     for repo in targets:
-        gitutil.fetch(repo.path)
-        on_origin = gitutil.has_remote_branch(repo.path, branch)
-        dirty = gitutil.is_dirty(repo.path)
-        current = gitutil.current_branch(repo.path)
-        if current == branch:
-            gitutil.reset_hard(repo.path, "HEAD")
-            gitutil.clean_untracked(repo.path)
-            gitutil.checkout_integration(repo.path)
-        else:
-            gitutil.checkout_integration(repo.path)
-        deleted_local = False
-        if gitutil.has_local_branch(repo.path, branch):
-            gitutil.delete_branch(repo.path, branch)
-            deleted_local = True
-        deleted_remote = False
-        if remote and on_origin:
-            gitutil.delete_remote_branch(repo.path, branch)
-            deleted_remote = True
         removed.append(
             {
                 "id": repo.id,
                 "path": repo.rel,
-                "deleted_local": deleted_local,
-                "deleted_remote": deleted_remote,
-                "on_origin": on_origin and not deleted_remote,
-                "discarded_dirty": dirty and current == branch,
                 "branch": gitutil.current_branch(repo.path),
+                "dirty": gitutil.is_dirty(repo.path),
+                "kept_local_branch": gitutil.has_local_branch(repo.path, branch),
             }
         )
 
@@ -328,23 +306,15 @@ def abandon(
         state.current_feature = None
     state.features.pop(feature.name, None)
     save(workspace, state)
-    still_on_origin = [row["id"] for row in removed if row["on_origin"]]
-    note = (
-        "Local feature branches deleted. Check out the integration branch. "
-        "Uncommitted work on those branches is gone."
-    )
-    if still_on_origin and not remote:
-        note += (
-            " Still on origin (not deleted): "
-            + ", ".join(still_on_origin)
-            + ". Re-run with --remote to delete there."
-        )
     return {
         "ok": True,
         "abandoned": True,
         "feature": feature.name,
         "branch": branch,
-        "note": note,
+        "note": (
+            "Feature sheet removed. Local branches and uncommitted files were not "
+            "touched. Only git convoy train delete --yes removes git branches."
+        ),
         "repos": removed,
     }
 

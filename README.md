@@ -292,7 +292,7 @@ git convoy feature close console-whitelabel-v1 --yes
 
 Checks out `develop`, pulls `origin/develop`, deletes local `feature/<name>`, and removes the feature sheet. Refuses if any participant is still `committed`, `pending`, or `uncommitted`. Pass `--remote` to delete `origin/feature/<name>` too. `--keep-branch` leaves local feature branches in place. `--json` requires `--yes`.
 
-To throw away unmerged work instead, see [`feature abandon`](#abandon-lossy) in the annex (lossy).
+To throw away the sheet without touching git, run `feature abandon`. It does not delete branches or files.
 
 When those PRs merge, the feature is on `develop`. Cycle 2 turns that `develop` into release branches.
 
@@ -330,16 +330,16 @@ git convoy feature refresh
 
 Merges `origin/develop` into each participant. Stops if a conflict appears; you resolve it, then run refresh again.
 
-#### Abandon (lossy)
+#### Abandon (sheet only)
 
-To throw away a test or abandoned feature (**deletes the branch and that work**):
+Drops the feature sheet. **Does not delete git branches or uncommitted files.** `--json` requires `--yes`.
 
 ```bash
 git convoy feature abandon
 git convoy feature abandon blast-radius --yes
 ```
 
-Checks out `develop` and deletes local `feature/<name>`. Does not touch origin unless you pass `--remote`. `--json` requires `--yes`.
+You stay on `feature/<name>` with your files. The only command that deletes git branches is `git convoy train delete --yes`.
 
 ---
 
@@ -418,7 +418,7 @@ git convoy train delete
 git convoy train delete 2026-08-29 --yes
 ```
 
-Deletes local `release/<name>` branches, checks out the integration branch, and removes the train sheet. Pass `--remote` to delete `origin/release/<name>` too. `--json` requires `--yes`.
+Deletes local `release/<name>` **only if every commit is already on develop or main**. Refuses if the tree is dirty or the branch has unique commits. Never `reset --hard` / `clean`. Pass `--remote` to delete `origin/release/<name>` too, and only after that same merge check on the origin tip. `--json` requires `--yes`.
 
 ### 3. Optional — git-only tags (stay in cycle 2)
 
@@ -745,7 +745,7 @@ git convoy hotfix adopt --bom ops/acme-bom         # next BOM patch; pin only ho
 
 ```bash
 git convoy hotfix show
-git convoy hotfix abandon --yes                    # discard local hotfix/<name>
+git convoy hotfix abandon --yes                    # drop sheet; keep branches and files
 ```
 
 git-convoy does not merge the GitHub PRs and does not push `*-bom`.
@@ -786,7 +786,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy sync develop` | * | Merge stable/`main` into `develop` for product repos (no idle check) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
 | `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
-| `git convoy feature abandon` | 1 | Delete local `feature/<name>` (lossy) |
+| `git convoy feature abandon` | 1 | Drop the feature sheet (no branch or file deletes) |
 | `git convoy feature commit` | 1 | Commit dirty participants |
 | `git convoy feature push` | 1 | Push `feature/<name>` (no PRs) |
 | `git convoy feature switch NAME` | 1 | Checkout that feature’s repos |
@@ -797,7 +797,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy feature close` | 1 | After all PRs merged |
 | `git convoy aux start NAME` | * | Aux sheet; pick up existing `aux/NAME`; else checkout integration |
 | `git convoy aux adopt [--repos …]` | * | Branch changed **aux** repos onto `aux/NAME` (from develop or main); `--repos` force-includes |
-| `git convoy aux abandon` | * | Delete local `aux/<name>` (lossy) |
+| `git convoy aux abandon` | * | Drop the aux sheet (no branch or file deletes) |
 | `git convoy aux commit` | * | Commit dirty aux participants |
 | `git convoy aux push` | * | Push `aux/<name>` (no PRs) |
 | `git convoy aux switch NAME` | * | Checkout that aux’s repos |
@@ -811,7 +811,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy train adopt [--repos …]` | 2 | Late-join dirty (or named) product repos; no version bump |
 | `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/aux commit) |
 | `git convoy train show [NAME]` | 2 | Read train sheet |
-| `git convoy train delete` | 2, 4 | Delete `release/<train>` branches; after publish, return status to no current train |
+| `git convoy train delete` | 2, 4 | Delete merged `release/<train>` branches only; refuse dirty or unique commits |
 | `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
 | `git convoy adopt` | 3 | Staging BOM from `.gitconvoy/aux.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)` |
@@ -827,7 +827,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `adopt point
 | `git convoy hotfix publish` | * | Tag on `main`; merge into `develop`; absorb local `feature/*` |
 | `git convoy hotfix adopt` | * | Next BOM patch; pin only hotfix packages; staging only |
 | `git convoy hotfix show [NAME]` | * | Hotfix sheet + merge status |
-| `git convoy hotfix abandon` | * | Delete local `hotfix/<name>` (lossy) |
+| `git convoy hotfix abandon` | * | Drop the hotfix sheet (no branch or file deletes) |
 | `git convoy adopt draft` | * | Copy BOM to new system version |
 | `git convoy adopt pin` | * | Set one package version |
 | `git convoy adopt point` | * | Aim staging or production at a BOM file |

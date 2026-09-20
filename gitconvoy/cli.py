@@ -89,7 +89,6 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
             state,
             args.name,
             yes=args.yes,
-            remote=args.remote,
             as_json=args.json,
         )
         return data, _abandon_text(data)
@@ -170,7 +169,6 @@ def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
             state,
             args.name,
             yes=args.yes,
-            remote=args.remote,
             as_json=args.json,
         )
         return data, _abandon_text(data)
@@ -357,7 +355,6 @@ def _hotfix(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str
             state,
             args.name,
             yes=args.yes,
-            remote=args.remote,
             as_json=args.json,
         )
         return data, _abandon_text(data)
@@ -509,18 +506,13 @@ def _parser() -> argparse.ArgumentParser:
     fsub.add_parser("adopt", help="Move local changes onto feature/<name>")
     abandon = fsub.add_parser(
         "abandon",
-        help="Delete local feature/<name> branches (discards that work)",
+        help="Drop the feature sheet (does not delete branches or files)",
     )
     abandon.add_argument("name", nargs="?")
     abandon.add_argument(
         "--yes",
         action="store_true",
         help="Skip the confirmation prompt",
-    )
-    abandon.add_argument(
-        "--remote",
-        action="store_true",
-        help="Also delete origin/feature/<name>",
     )
     close = fsub.add_parser(
         "close",
@@ -603,15 +595,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     aabandon = asub.add_parser(
         "abandon",
-        help="Delete local aux/<name> branches (discards that work)",
+        help="Drop the aux sheet (does not delete branches or files)",
     )
     aabandon.add_argument("name", nargs="?")
     aabandon.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
-    aabandon.add_argument(
-        "--remote",
-        action="store_true",
-        help="Also delete origin/aux/<name>",
-    )
     aclose = asub.add_parser(
         "close",
         help="After PRs merge into main: merge main→develop and remove aux branches",
@@ -702,7 +689,7 @@ def _parser() -> argparse.ArgumentParser:
     tshow.add_argument("name", nargs="?")
     tdelete = tsub.add_parser(
         "delete",
-        help="Delete release/<train> branches and remove the train sheet",
+        help="Delete merged release/<train> branches; never discards uncommitted work",
     )
     tdelete.add_argument("name", nargs="?")
     tdelete.add_argument(
@@ -827,10 +814,12 @@ def _parser() -> argparse.ArgumentParser:
     hadopt.add_argument("--description")
     hshow = hsub.add_parser("show", help="Print the hotfix sheet")
     hshow.add_argument("name", nargs="?")
-    habandon = hsub.add_parser("abandon", help="Delete local hotfix/<name> (lossy)")
+    habandon = hsub.add_parser(
+        "abandon",
+        help="Drop the hotfix sheet (does not delete branches or files)",
+    )
     habandon.add_argument("name", nargs="?")
     habandon.add_argument("--yes", action="store_true")
-    habandon.add_argument("--remote", action="store_true")
 
     sync = sub.add_parser(
         "sync",
@@ -1065,14 +1054,10 @@ def _abandon_text(data: dict) -> str:
     ]
     for repo in data.get("repos") or []:
         bits = []
-        if repo.get("deleted_local"):
-            bits.append("deleted local")
-        if repo.get("deleted_remote"):
-            bits.append("deleted origin")
-        if repo.get("on_origin"):
-            bits.append("still on origin")
-        if repo.get("discarded_dirty"):
-            bits.append("discarded uncommitted")
+        if repo.get("dirty"):
+            bits.append("dirty")
+        if repo.get("kept_local_branch"):
+            bits.append("branch kept")
         lines.append(
             f"  {repo['id']:20} {repo.get('branch') or ''}  "
             + ", ".join(bits)

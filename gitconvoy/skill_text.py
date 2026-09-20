@@ -193,7 +193,7 @@ git convoy --json hotfix adopt --bom ops/<system>-bom
 - Do not `git pull` on `main` to start product work; `git convoy sync` (idle workspace) or `feature refresh` (in-progress feature).
 - Do not put aux (tooling) repos on a feature sheet; use `git convoy aux`.
 - Do not put `*-bom` on a feature branch or feature PR; deploy only via adopt on `main`.
-- Do not abandon a feature unless the user wants that work discarded.
+- `feature abandon` / `aux abandon` / `hotfix abandon` drop the sheet only. They never delete git branches or uncommitted files. Only `train delete --yes` deletes branches, and it refuses if that would lose work.
 - Do not merge PRs through git-convoy (approve is OK in Full mode).
 - Do not query CodeArtifact or invent unpublished pins.
 - In Full mode, default `adopt` self-heals failed publishes to git SHAs; use `--require-verify` when the BOM must not be written until CI is green.
