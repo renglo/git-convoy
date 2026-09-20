@@ -23,6 +23,10 @@ _CYAN = "\033[36m"
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 
+_DIFF_PAGE_MIN = 20
+_DIFF_PAGE_MAX = 80
+_DIFF_PAGE_DEFAULT = 60
+
 
 @dataclass
 class DirtyRepo:
@@ -240,7 +244,12 @@ def _interactive(
             if item.porcelain:
                 write_fn(_paint(item.porcelain, _DIM, color))
             if item.diff:
-                write_fn(color_diff(item.diff, enabled=color))
+                _display_diff_paged(
+                    item.diff,
+                    write_fn=write_fn,
+                    input_fn=input_fn,
+                    color=color,
+                )
             write_fn(_rule("═"))
             write_fn(f"Describe what changed in this repo ({item.id}).")
             write_fn(
@@ -527,6 +536,57 @@ def format_commit_message(header: str, body: str) -> str:
     if body:
         return f"{header}\n\n{body}"
     return header
+
+
+def diff_page_lines(*, rows: int | None = None) -> int:
+    """Lines per interactive diff page (terminal height minus chrome)."""
+    if rows is None:
+        try:
+            rows = shutil.get_terminal_size((_DIFF_PAGE_DEFAULT, 24)).lines
+        except OSError:
+            rows = _DIFF_PAGE_DEFAULT
+    return max(_DIFF_PAGE_MIN, min(_DIFF_PAGE_MAX, rows - 6))
+
+
+def _display_diff_paged(
+    diff: str,
+    *,
+    write_fn: WriteFn,
+    input_fn: InputFn,
+    color: bool,
+    page_lines: int | None = None,
+) -> None:
+    if not diff:
+        return
+    lines = diff.splitlines()
+    page_size = page_lines if page_lines is not None else diff_page_lines()
+    if len(lines) <= page_size:
+        write_fn(color_diff(diff, enabled=color))
+        return
+
+    total = len(lines)
+    offset = 0
+    while offset < total:
+        end = min(offset + page_size, total)
+        chunk = "\n".join(lines[offset:end])
+        write_fn(
+            _paint(
+                f"--- diff lines {offset + 1}–{end} of {total} ---",
+                _DIM,
+                color,
+            )
+        )
+        write_fn(color_diff(chunk, enabled=color))
+        offset = end
+        if offset >= total:
+            break
+        answer = input_fn("Diff: Enter next page, s skip: ").strip().lower()
+        if answer in {"s", "skip"}:
+            hidden = total - offset
+            write_fn(
+                _paint(f"({hidden} more diff lines not shown)", _DIM, color)
+            )
+            break
 
 
 def color_diff(diff: str, *, enabled: bool | None = None) -> str:

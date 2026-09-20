@@ -480,7 +480,6 @@ def abandon(
     name: str | None = None,
     *,
     yes: bool = False,
-    remote: bool = False,
     as_json: bool = False,
     input_fn=None,
     is_tty: bool | None = None,
@@ -490,12 +489,13 @@ def abandon(
     if not yes:
         if as_json or not (sys.stdin.isatty() if is_tty is None else is_tty):
             raise GitConvoyError(
-                "abandon discards the hotfix branch; pass --yes to confirm"
+                "abandon drops the hotfix sheet only; pass --yes to confirm"
             )
         ids = ", ".join(hotfix.repo_ids()) or "(none)"
         prompt = (
-            f"This will delete local branch {branch} in {len(hotfix.repos)} repos "
-            f"({ids}) and discard uncommitted work on that branch. Continue? : "
+            f"This will drop the hotfix sheet for {hotfix.name} "
+            f"({len(hotfix.repos)} repos: {ids}). "
+            "Git branches and uncommitted files are not touched. Continue? : "
         )
         answer = (input_fn or input)(prompt).strip().lower()
         if answer not in {"yes", "y"}:
@@ -512,31 +512,13 @@ def abandon(
     for repo_row in hotfix.repos:
         product = products.get(repo_row.id)
         repo_path = product.path if product else workspace / repo_row.path
-        gitutil.fetch(repo_path)
-        on_origin = gitutil.has_remote_branch(repo_path, branch)
-        dirty = gitutil.is_dirty(repo_path)
-        current = gitutil.current_branch(repo_path)
-        if current == branch:
-            gitutil.reset_hard(repo_path, "HEAD")
-            gitutil.clean_untracked(repo_path)
-        gitutil.checkout_integration(repo_path)
-        deleted_local = False
-        if gitutil.has_local_branch(repo_path, branch):
-            gitutil.delete_branch(repo_path, branch)
-            deleted_local = True
-        deleted_remote = False
-        if remote and on_origin:
-            gitutil.delete_remote_branch(repo_path, branch)
-            deleted_remote = True
         removed.append(
             {
                 "id": repo_row.id,
                 "path": repo_row.path,
-                "deleted_local": deleted_local,
-                "deleted_remote": deleted_remote,
-                "on_origin": on_origin and not deleted_remote,
-                "discarded_dirty": dirty and current == branch,
                 "branch": gitutil.current_branch(repo_path),
+                "dirty": gitutil.is_dirty(repo_path),
+                "kept_local_branch": gitutil.has_local_branch(repo_path, branch),
             }
         )
     if state.current_hotfix == hotfix.name:
@@ -549,7 +531,10 @@ def abandon(
         "hotfix": hotfix.name,
         "branch": branch,
         "repos": removed,
-        "note": "Local hotfix branches deleted. Checked out the integration branch.",
+        "note": (
+            "Hotfix sheet removed. Local branches and uncommitted files were not "
+            "touched. Only git convoy train delete --yes removes git branches."
+        ),
     }
 
 

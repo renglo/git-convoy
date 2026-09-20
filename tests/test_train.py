@@ -103,6 +103,9 @@ def test_delete_removes_release_branches_and_train_sheet(
     schd = workspace / "extensions" / "schd"
     git(schd, "checkout", "-b", "release/2026-08-29")
     git(schd, "commit", "--allow-empty", "-m", "train")
+    git(schd, "checkout", "develop")
+    git(schd, "merge", "--no-edit", "release/2026-08-29")
+    git(schd, "checkout", "release/2026-08-29")
     train.add_repo(TrainRepo(id="schd", path="extensions/schd", to="1.0.1rc1"))
     state.trains["2026-08-29"] = train
     save(workspace, state)
@@ -128,6 +131,69 @@ def test_delete_requires_yes_for_json(workspace: Path, monkeypatch, capsys) -> N
     assert main(["--json", "train", "delete"]) == 1
     err = json.loads(capsys.readouterr().out)
     assert "--yes" in err["error"]
+    assert gitutil.has_local_branch(schd, "release/2026-08-29")
+
+
+def test_delete_refuses_unmerged_commits(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State(current_train="2026-08-29")
+    train = Train(name="2026-08-29", branch="release/2026-08-29", status="cut")
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "-b", "release/2026-08-29")
+    git(schd, "commit", "--allow-empty", "-m", "train")
+    train.add_repo(TrainRepo(id="schd", path="extensions/schd", to="1.0.1rc1"))
+    state.trains["2026-08-29"] = train
+    save(workspace, state)
+    with pytest.raises(GitConvoyError, match="would lose work"):
+        train_cmd.delete(workspace, load(workspace), yes=True)
+    assert gitutil.has_local_branch(schd, "release/2026-08-29")
+    assert gitutil.current_branch(schd) == "release/2026-08-29"
+
+
+def test_delete_refuses_unmerged_origin_commits(
+    workspace: Path, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State(current_train="2026-08-29")
+    train = Train(name="2026-08-29", branch="release/2026-08-29", status="cut")
+    schd = workspace / "extensions" / "schd"
+    origin = tmp_path / "schd.git"
+    git(origin.parent, "init", "--bare", str(origin))
+    git(schd, "remote", "add", "origin", str(origin))
+    git(schd, "checkout", "-b", "release/2026-08-29")
+    git(schd, "commit", "--allow-empty", "-m", "train")
+    git(schd, "push", "-u", "origin", "release/2026-08-29")
+    git(schd, "checkout", "develop")
+    git(schd, "merge", "--no-edit", "release/2026-08-29")
+    git(schd, "checkout", "release/2026-08-29")
+    git(schd, "commit", "--allow-empty", "-m", "only-on-origin")
+    git(schd, "push", "origin", "release/2026-08-29")
+    git(schd, "reset", "--hard", "HEAD~1")
+    git(schd, "fetch")
+    train.add_repo(TrainRepo(id="schd", path="extensions/schd", to="1.0.1rc1"))
+    state.trains["2026-08-29"] = train
+    save(workspace, state)
+    with pytest.raises(GitConvoyError, match="origin/release/2026-08-29"):
+        train_cmd.delete(workspace, load(workspace), yes=True, remote=True)
+    assert gitutil.has_local_branch(schd, "release/2026-08-29")
+    assert gitutil.has_remote_branch(schd, "release/2026-08-29")
+    assert gitutil.current_branch(schd) == "release/2026-08-29"
+
+
+def test_delete_refuses_uncommitted_files(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State(current_train="2026-08-29")
+    train = Train(name="2026-08-29", branch="release/2026-08-29", status="cut")
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "-b", "release/2026-08-29")
+    (schd / "scratch.txt").write_text("keep me\n")
+    train.add_repo(TrainRepo(id="schd", path="extensions/schd"))
+    state.trains["2026-08-29"] = train
+    save(workspace, state)
+    with pytest.raises(GitConvoyError, match="uncommitted"):
+        train_cmd.delete(workspace, load(workspace), yes=True)
+    assert (schd / "scratch.txt").read_text() == "keep me\n"
+    assert gitutil.current_branch(schd) == "release/2026-08-29"
     assert gitutil.has_local_branch(schd, "release/2026-08-29")
 
 

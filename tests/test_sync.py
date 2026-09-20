@@ -78,6 +78,19 @@ def test_sync_develop_continues_past_conflict(workspace: Path) -> None:
     assert gitutil.is_ancestor(lib, "v2.0.0", "develop")
 
 
+def test_sync_develop_ignores_untracked_on_develop(workspace: Path) -> None:
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "develop")
+    (schd / "src" / "pkg.egg-info").mkdir(parents=True)
+    (schd / "src" / "pkg.egg-info" / "PKG-INFO").write_text("artifact\n")
+    assert gitutil.is_dirty(schd)
+    assert not gitutil.has_tracked_changes(schd)
+    data = sync_cmd.sync_develop_from_ref(
+        schd, repo_id="schd", push=False, retry_hint="retry"
+    )
+    assert data["status"] in {"already", "merged", "skipped"}
+
+
 def test_sync_develop_cli(workspace: Path, monkeypatch, capsys) -> None:
     from gitconvoy.cli import main
 

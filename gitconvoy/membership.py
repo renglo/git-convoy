@@ -1,8 +1,10 @@
-"""Workspace membership: product (default), aux, and bom.
+"""Workspace membership: product (default), aux, bom, and incubating.
 
-Roles are declared in each repo's ``gitconvoy.toml`` (``role = "aux"|"bom"``).
-``git convoy init`` writes local ``.gitconvoy/aux.toml``. Without that file,
-BOM falls back to ``*-bom`` ids; unmarked repos are product.
+Roles are declared in each repo's ``gitconvoy.toml``
+(``role = "aux"|"bom"|"incubating"``). ``git convoy init`` writes local
+``.gitconvoy/aux.toml``. Without that file, BOM falls back to ``*-bom`` ids;
+unmarked repos are product. ``incubating`` is valid but not listed in aux.toml
+— trains skip it until the repo is ``product``.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None  # type: ignore[assignment]
 
 AUX_FILENAME = "aux.toml"
-VALID_ROLES = frozenset({"product", "aux", "bom"})
+VALID_ROLES = frozenset({"product", "aux", "bom", "incubating"})
 
 
 def aux_toml_path(workspace: Path) -> Path:
@@ -35,7 +37,7 @@ def read_repo_role(repo_path: Path) -> str:
         role = str(data.get("role") or "product").strip().lower()
         if role not in VALID_ROLES:
             raise GitConvoyError(
-                f"{path}: invalid role {role!r} (expected product|aux|bom)"
+                f"{path}: invalid role {role!r} (expected product|aux|bom|incubating)"
             )
         return role
     return "product"

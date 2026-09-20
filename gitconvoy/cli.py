@@ -12,6 +12,7 @@ from gitconvoy import hotfix as hotfix_cmd
 from gitconvoy import sync as sync_cmd
 from gitconvoy import train as train_cmd
 from gitconvoy.errors import GitConvoyError
+from gitconvoy.help_text import format_help_text, help_payload
 from gitconvoy.initcmd import init
 from gitconvoy.output import emit, fail
 from gitconvoy.state import load
@@ -23,6 +24,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     as_json = args.json
+    if args.cmd == "help":
+        payload = help_payload()
+        emit(payload, as_json, format_help_text())
+        return 0
     try:
         workspace = find_workspace(Path(args.workspace) if args.workspace else None)
         payload, text = _dispatch(workspace, args)
@@ -84,7 +89,6 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
             state,
             args.name,
             yes=args.yes,
-            remote=args.remote,
             as_json=args.json,
         )
         return data, _abandon_text(data)
@@ -165,7 +169,6 @@ def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
             state,
             args.name,
             yes=args.yes,
-            remote=args.remote,
             as_json=args.json,
         )
         return data, _abandon_text(data)
@@ -352,7 +355,6 @@ def _hotfix(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str
             state,
             args.name,
             yes=args.yes,
-            remote=args.remote,
             as_json=args.json,
         )
         return data, _abandon_text(data)
@@ -488,6 +490,10 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init", help="Create local state, membership, gitignore, and Cursor skill")
+    sub.add_parser(
+        "help",
+        help="Command sequences by cycle (reduced README)",
+    )
     sub.add_parser("status", help="Current feature, aux, train, hotfix, and dirty repos")
 
     feature = sub.add_parser("feature", help="Feature sheet commands")
@@ -500,18 +506,13 @@ def _parser() -> argparse.ArgumentParser:
     fsub.add_parser("adopt", help="Move local changes onto feature/<name>")
     abandon = fsub.add_parser(
         "abandon",
-        help="Delete local feature/<name> branches (discards that work)",
+        help="Drop the feature sheet (does not delete branches or files)",
     )
     abandon.add_argument("name", nargs="?")
     abandon.add_argument(
         "--yes",
         action="store_true",
         help="Skip the confirmation prompt",
-    )
-    abandon.add_argument(
-        "--remote",
-        action="store_true",
-        help="Also delete origin/feature/<name>",
     )
     close = fsub.add_parser(
         "close",
@@ -594,15 +595,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     aabandon = asub.add_parser(
         "abandon",
-        help="Delete local aux/<name> branches (discards that work)",
+        help="Drop the aux sheet (does not delete branches or files)",
     )
     aabandon.add_argument("name", nargs="?")
     aabandon.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
-    aabandon.add_argument(
-        "--remote",
-        action="store_true",
-        help="Also delete origin/aux/<name>",
-    )
     aclose = asub.add_parser(
         "close",
         help="After PRs merge into main: merge main→develop and remove aux branches",
@@ -693,7 +689,7 @@ def _parser() -> argparse.ArgumentParser:
     tshow.add_argument("name", nargs="?")
     tdelete = tsub.add_parser(
         "delete",
-        help="Delete release/<train> branches and remove the train sheet",
+        help="Delete merged release/<train> branches; never discards uncommitted work",
     )
     tdelete.add_argument("name", nargs="?")
     tdelete.add_argument(
@@ -818,10 +814,12 @@ def _parser() -> argparse.ArgumentParser:
     hadopt.add_argument("--description")
     hshow = hsub.add_parser("show", help="Print the hotfix sheet")
     hshow.add_argument("name", nargs="?")
-    habandon = hsub.add_parser("abandon", help="Delete local hotfix/<name> (lossy)")
+    habandon = hsub.add_parser(
+        "abandon",
+        help="Drop the hotfix sheet (does not delete branches or files)",
+    )
     habandon.add_argument("name", nargs="?")
     habandon.add_argument("--yes", action="store_true")
-    habandon.add_argument("--remote", action="store_true")
 
     sync = sub.add_parser(
         "sync",
@@ -1056,14 +1054,10 @@ def _abandon_text(data: dict) -> str:
     ]
     for repo in data.get("repos") or []:
         bits = []
-        if repo.get("deleted_local"):
-            bits.append("deleted local")
-        if repo.get("deleted_remote"):
-            bits.append("deleted origin")
-        if repo.get("on_origin"):
-            bits.append("still on origin")
-        if repo.get("discarded_dirty"):
-            bits.append("discarded uncommitted")
+        if repo.get("dirty"):
+            bits.append("dirty")
+        if repo.get("kept_local_branch"):
+            bits.append("branch kept")
         lines.append(
             f"  {repo['id']:20} {repo.get('branch') or ''}  "
             + ", ".join(bits)
@@ -1195,48 +1189,86 @@ def _adopt_text(data: dict, *, production: bool = False) -> str:
         ]
     else:
         lines = [
-            f"adopted {data['version']} from train {data['train']} ({mode}):",
+            f"adopted {data['version']} from train {data['train']} ({mode})",
         ]
-    verify = data.get("verify")
-    if isinstance(verify, dict) and verify.get("ran"):
-        lines.append(
-            f"  verify: {verify.get('verified_count', 0)}/{verify.get('repo_count', 0)} "
-            f"succeeded, {verify.get('skipped_count', 0)} skipped, "
-            f"{verify.get('pending_count', 0)} pending, "
-            f"{verify.get('failed_count', 0)} fallback to git"
-        )
-    by_repo: dict[str, list[dict]] = {}
-    for row in data.get("pins") or []:
-        by_repo.setdefault(row.get("id") or "?", []).append(row)
-    if not by_repo:
-        lines.append("  (no pins changed)")
-    for repo_id, rows in by_repo.items():
-        lines.append(f"  {repo_id}")
-        for row in rows:
-            action = row.get("action")
-            section = row.get("section") or "?"
-            package = row.get("package") or "?"
-            pin = row.get("pin") or "?"
-            if action == "cleared":
-                lines.append(f"    cleared {section} {package}")
-                continue
-            kind = row.get("kind")
-            if kind == "registry":
-                label = "registry"
-            elif kind == "fallback":
-                label = "fallback"
-            elif kind == "git":
-                label = "git"
-            else:
-                label = section
-            short_pin = pin if pin.startswith("(") else (
-                pin[:12] + "…" if len(pin) > 12 and section == "repos" else pin
-            )
-            lines.append(f"    {label:8} {package}={short_pin}")
+    publish_ci = _format_publish_ci(data.get("verify"))
+    if publish_ci:
+        lines.append(publish_ci)
+    files = data.get("files") or []
+    if files:
+        lines.append("  wrote:")
+        for row in files:
+            path = row.get("path") or "?"
+            lines.append(f"    {path}")
+            for section in ("python", "npm", "repos"):
+                pins = row.get(section)
+                if not isinstance(pins, dict) or not pins:
+                    continue
+                rendered = ", ".join(
+                    f"{name}={value}" for name, value in pins.items() if value not in (None, "")
+                )
+                if rendered:
+                    lines.append(f"      {section}: {rendered}")
+    else:
+        by_repo: dict[str, list[dict]] = {}
+        for row in data.get("pins") or []:
+            by_repo.setdefault(row.get("id") or "?", []).append(row)
+        if not by_repo:
+            lines.append("  (no pins changed)")
+        for repo_id, rows in by_repo.items():
+            lines.append(f"  {repo_id}")
+            for row in rows:
+                action = row.get("action")
+                section = row.get("section") or "?"
+                package = row.get("package") or "?"
+                pin = row.get("pin") or "?"
+                if action == "cleared":
+                    lines.append(f"    cleared {section} {package}")
+                    continue
+                kind = row.get("kind")
+                if kind == "registry":
+                    label = "registry"
+                elif kind == "fallback":
+                    label = "fallback"
+                elif kind == "git":
+                    label = "git"
+                else:
+                    label = section
+                short_pin = pin if pin.startswith("(") else (
+                    pin[:12] + "…" if len(pin) > 12 and section == "repos" else pin
+                )
+                lines.append(f"    {label:8} {package}={short_pin}")
     note = (data.get("note") or "").strip()
     if note:
         lines.append(note)
     return "\n".join(lines)
+
+
+def _format_publish_ci(verify: object) -> str | None:
+    if not isinstance(verify, dict) or not verify.get("ran"):
+        return None
+    total = verify.get("repo_count", 0)
+    succeeded = [str(item) for item in (verify.get("succeeded") or []) if item]
+    pending = [str(item) for item in (verify.get("pending") or []) if item]
+    skipped = [str(item) for item in (verify.get("skipped") or []) if item]
+    failed = [str(item) for item in (verify.get("failed") or []) if item]
+    succeeded_n = len(succeeded) or int(verify.get("verified_count") or 0)
+    parts: list[str] = [f"{succeeded_n}/{total} succeeded"]
+    if succeeded:
+        parts[0] += f" ({', '.join(succeeded)})"
+    if pending:
+        parts.append(f"pending: {', '.join(pending)}")
+    elif int(verify.get("pending_count") or 0):
+        parts.append(f"{verify.get('pending_count')} pending")
+    if skipped:
+        parts.append(f"skipped: {', '.join(skipped)}")
+    elif int(verify.get("skipped_count") or 0):
+        parts.append(f"{verify.get('skipped_count')} skipped")
+    if failed:
+        parts.append(f"failed, pinned git SHA: {', '.join(failed)}")
+    elif int(verify.get("failed_count") or 0):
+        parts.append(f"{verify.get('failed_count')} fallback to git")
+    return "  publish CI: " + "; ".join(parts)
 
 
 def _verify_text(data: dict) -> str:
