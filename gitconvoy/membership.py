@@ -38,6 +38,9 @@ def read_repo_role(repo_path: Path) -> str:
             continue
         data = _load_toml(path)
         role = str(data.get("role") or "product").strip().lower()
+        # Older clones still say "aux". That name is ops.
+        if role == "aux":
+            role = "ops"
         if role not in VALID_ROLES:
             raise GitConvoyError(
                 f"{path}: invalid role {role!r} (expected product|ops|bom|incubating)"

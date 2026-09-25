@@ -137,15 +137,17 @@ def _tag_stable_on_main(repo: Path, version: str = "2.0.0") -> None:
     git(repo, "tag", f"v{version}")
 
 
-def test_sync_workspace_checks_out_develop(workspace: Path) -> None:
+def test_sync_workspace_on_develop_merges_stable(workspace: Path) -> None:
     schd = workspace / "extensions" / "schd"
     lib = workspace / "dev" / "renglo-lib"
     _tag_stable_on_main(schd)
-    git(lib, "checkout", "main")
+    git(schd, "checkout", "develop")
+    git(lib, "checkout", "develop")
     from gitconvoy.state import State
 
     data = sync_cmd.sync_workspace(workspace, State(), push=False)
     assert data["ok"] is True
+    assert data["remaining"] == 0
     assert gitutil.current_branch(schd) == "develop"
     assert gitutil.current_branch(lib) == "develop"
     assert gitutil.is_ancestor(schd, "v2.0.0", "develop")
@@ -161,31 +163,44 @@ def test_sync_workspace_cli(workspace: Path, monkeypatch, capsys) -> None:
     assert main(["sync", "--no-push"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("sync:")
-    assert gitutil.current_branch(schd) == "develop"
+    assert "all repos synchronized" in out
+    assert gitutil.current_branch(schd) == "main"
 
 
-def test_sync_workspace_refuses_dirty(workspace: Path) -> None:
+def test_sync_workspace_reports_dirty_and_continues(workspace: Path) -> None:
     from gitconvoy.state import State
 
     schd = workspace / "extensions" / "schd"
-    (schd / "dirty.txt").write_text("nope\n")
-    with pytest.raises(GitConvoyError, match="not idle"):
-        sync_cmd.sync_workspace(workspace, State(), push=False)
-    with pytest.raises(GitConvoyError, match="dirty: schd"):
-        sync_cmd.sync_workspace(workspace, State(), push=False)
+    lib = workspace / "dev" / "renglo-lib"
+    git(schd, "checkout", "develop")
+    readme = (schd / "README.md").read_text()
+    (schd / "README.md").write_text(readme + "dirty\n")
+    data = sync_cmd.sync_workspace(workspace, State(), push=False)
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    lib_row = next(row for row in data["repos"] if row["id"] == "renglo-lib")
+    assert data["ok"] is False
+    assert data["remaining"] == 1
+    assert data["pending"] == ["schd"]
+    assert schd_row["status"] == "needs-commit"
+    assert "commit or stash" in schd_row["next"]
+    assert lib_row["status"] in {"already", "merged", "pulled"}
+    assert gitutil.current_branch(schd) == "develop"
+    again = sync_cmd.sync_workspace(workspace, State(), push=False)
+    assert again["pending"] == ["schd"]
 
 
-def test_sync_workspace_refuses_in_progress_feature(workspace: Path) -> None:
-    from gitconvoy import feature as feature_cmd
-    from gitconvoy.state import load
+def test_sync_workspace_keeps_feature_branch(workspace: Path) -> None:
+    from gitconvoy.state import State
 
     schd = workspace / "extensions" / "schd"
     git(schd, "checkout", "develop")
+    git(schd, "checkout", "-b", "feature/blast-radius")
     (schd / "work.txt").write_text("feature\n")
-    feature_cmd.start(workspace, load(workspace), "blast-radius")
-    feature_cmd.adopt(workspace, load(workspace))
-    with pytest.raises(GitConvoyError, match="feature blast-radius"):
-        sync_cmd.sync_workspace(workspace, load(workspace), push=False)
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "feature work")
+    data = sync_cmd.sync_workspace(workspace, State(), push=False)
+    assert data["ok"] is True
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
 
 
 def test_sync_workspace_allows_empty_feature_sheet(workspace: Path) -> None:
@@ -199,7 +214,7 @@ def test_sync_workspace_allows_empty_feature_sheet(workspace: Path) -> None:
     assert gitutil.current_branch(schd) == "develop"
 
 
-def test_sync_workspace_refuses_unmerged_topic_branch(workspace: Path) -> None:
+def test_sync_workspace_merges_develop_into_topic_branch(workspace: Path) -> None:
     from gitconvoy.state import State
 
     schd = workspace / "extensions" / "schd"
@@ -208,11 +223,46 @@ def test_sync_workspace_refuses_unmerged_topic_branch(workspace: Path) -> None:
     (schd / "old.txt").write_text("work\n")
     git(schd, "add", "-A")
     git(schd, "commit", "-m", "unmerged feature")
-    with pytest.raises(GitConvoyError, match="feature/old"):
-        sync_cmd.sync_workspace(workspace, State(), push=False)
+    git(schd, "checkout", "develop")
+    (schd / "from-develop.txt").write_text("latest\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "landed on develop")
+    git(schd, "checkout", "feature/old")
+    data = sync_cmd.sync_workspace(workspace, State(), push=False)
+    schd_row = next(row for row in data["repos"] if row["id"] == "schd")
+    assert data["ok"] is True
+    assert schd_row["status"] == "merged"
+    assert gitutil.current_branch(schd) == "feature/old"
+    assert (schd / "from-develop.txt").read_text() == "latest\n"
+    assert (schd / "old.txt").read_text() == "work\n"
 
 
-def test_sync_workspace_moves_off_empty_topic_branch(workspace: Path) -> None:
+def test_sync_workspace_release_ignores_develop(workspace: Path) -> None:
+    from gitconvoy.state import State
+
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "develop")
+    git(schd, "checkout", "-b", "release/2026-W34")
+    (schd / "FIX.md").write_text("stabilize\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "stabilize on release")
+    fix = git(schd, "rev-parse", "HEAD").stdout.strip()
+    git(schd, "reset", "--hard", "HEAD~1")
+    git(schd, "update-ref", "refs/remotes/origin/release/2026-W34", fix)
+    git(schd, "checkout", "develop")
+    (schd / "FEATURE.md").write_text("next train\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "feature after the cut")
+    git(schd, "checkout", "release/2026-W34")
+    data = sync_cmd.sync_workspace(workspace, State(), push=False)
+    row = next(item for item in data["repos"] if item["id"] == "schd")
+    assert row["status"] == "merged"
+    assert gitutil.current_branch(schd) == "release/2026-W34"
+    assert (schd / "FIX.md").read_text() == "stabilize\n"
+    assert not (schd / "FEATURE.md").exists()
+
+
+def test_sync_workspace_stays_on_empty_topic_branch(workspace: Path) -> None:
     from gitconvoy.state import State
 
     schd = workspace / "extensions" / "schd"
@@ -220,7 +270,7 @@ def test_sync_workspace_moves_off_empty_topic_branch(workspace: Path) -> None:
     git(schd, "checkout", "-b", "feature/old")
     data = sync_cmd.sync_workspace(workspace, State(), push=False)
     assert data["ok"] is True
-    assert gitutil.current_branch(schd) == "develop"
+    assert gitutil.current_branch(schd) == "feature/old"
 
 
 def test_sync_ops_develop_does_not_merge_raw_main(workspace: Path) -> None:
@@ -272,7 +322,7 @@ def test_sync_ops_develop_merges_hotfix_tag(workspace: Path) -> None:
     assert (launcher / "HOTFIX.md").read_text() == "hotfix\n"
 
 
-def test_sync_workspace_refuses_active_train(workspace: Path) -> None:
+def test_sync_workspace_ignores_active_train(workspace: Path) -> None:
     from gitconvoy.state import State, Train, save
 
     state = State(current_train="2026-W34")
@@ -280,5 +330,6 @@ def test_sync_workspace_refuses_active_train(workspace: Path) -> None:
         name="2026-W34", branch="release/2026-W34", status="cut"
     )
     save(workspace, state)
-    with pytest.raises(GitConvoyError, match="train 2026-W34 is cut"):
-        sync_cmd.sync_workspace(workspace, state, push=False)
+    data = sync_cmd.sync_workspace(workspace, state, push=False)
+    assert data["ok"] is True
+    assert data["remaining"] == 0

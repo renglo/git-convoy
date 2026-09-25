@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from gitconvoy import gitutil
+from gitconvoy import hotfix as hotfix_cmd
 from gitconvoy.state import State
 from gitconvoy.workspace import discover_repos
 
@@ -34,12 +35,18 @@ def status(workspace: Path, state: State) -> dict:
     hotfix = None
     if state.current_hotfix and state.current_hotfix in state.hotfixes:
         item = state.hotfixes[state.current_hotfix]
+        landed = hotfix_cmd.landed_in_develop(workspace, item)
+        tags = sorted({row["stable_tag"] for row in landed if row.get("stable_tag")})
+        missing = [row["id"] for row in landed if not row["in_develop"]]
         hotfix = {
             "name": item.name,
             "branch": item.branch,
             "status": item.status,
             "repo_count": len(item.repos),
             "repos": item.repo_ids(),
+            "stable_tags": tags,
+            "in_develop": item.status == "published" and not missing,
+            "develop_missing": missing,
         }
     train = None
     if state.current_train and state.current_train in state.trains:

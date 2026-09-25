@@ -438,6 +438,7 @@ adopt = bom  # backward-compatible alias; prefer hotfix bom
 
 def show(workspace: Path, state: State, name: str | None = None) -> dict:
     hotfix = state.require_hotfix(name)
+    landed_by_id = {row["id"]: row for row in landed_in_develop(workspace, hotfix)}
     rows = []
     for repo_row in hotfix.repos:
         repo_path = workspace / repo_row.path
@@ -455,6 +456,7 @@ def show(workspace: Path, state: State, name: str | None = None) -> dict:
             merge_status = "merged"
         else:
             merge_status = "pending"
+        landed = landed_by_id.get(repo_row.id)
         rows.append(
             {
                 "id": repo_row.id,
@@ -464,6 +466,7 @@ def show(workspace: Path, state: State, name: str | None = None) -> dict:
                 "stable_tag": repo_row.stable_tag,
                 "pr": repo_row.pr,
                 "merge_status": merge_status,
+                "in_develop": bool(landed and landed["in_develop"]),
             }
         )
     return {
@@ -536,8 +539,163 @@ def abandon(
         "repos": removed,
         "note": (
             "Hotfix sheet removed. Local branches and uncommitted files were not "
-            "touched. Only git convoy train delete --yes removes git branches."
+            "touched. git convoy hotfix close removes the branch after the "
+            "patch is in develop."
         ),
+    }
+
+
+def landed_in_develop(workspace: Path, hotfix: Hotfix) -> list[dict]:
+    """Whether each participant's stable tag (or hotfix branch) is in develop."""
+    rows: list[dict] = []
+    for repo_row in hotfix.repos:
+        repo_path = workspace / repo_row.path
+        tag = repo_row.stable_tag
+        in_develop = False
+        if gitutil.is_git_repo(repo_path):
+            if tag and gitutil.rev_parse(repo_path, tag):
+                for base in ("origin/develop", "develop"):
+                    if gitutil.rev_parse(repo_path, base) and gitutil.is_ancestor(
+                        repo_path, tag, base
+                    ):
+                        in_develop = True
+                        break
+            else:
+                tip = gitutil.rev_parse(
+                    repo_path, f"refs/heads/{hotfix.branch}"
+                ) or gitutil.rev_parse(
+                    repo_path, f"refs/remotes/origin/{hotfix.branch}"
+                )
+                for base in ("origin/develop", "develop"):
+                    if (
+                        tip
+                        and gitutil.rev_parse(repo_path, base)
+                        and gitutil.is_ancestor(repo_path, tip, base)
+                    ):
+                        in_develop = True
+                        break
+        rows.append(
+            {
+                "id": repo_row.id,
+                "path": repo_row.path,
+                "stable_tag": tag,
+                "in_develop": in_develop,
+            }
+        )
+    return rows
+
+
+def close(
+    workspace: Path,
+    state: State,
+    name: str | None = None,
+    *,
+    yes: bool = False,
+    remote: bool = False,
+    keep_branch: bool = False,
+    as_json: bool = False,
+    input_fn=None,
+    is_tty: bool | None = None,
+) -> dict:
+    """After the patch is in develop: check out develop, delete the hotfix branch, drop the sheet."""
+    hotfix = state.require_hotfix(name)
+    branch = hotfix.branch
+    if hotfix.status != "published":
+        raise GitConvoyError(
+            f"hotfix {hotfix.name} is {hotfix.status}; "
+            "run hotfix publish first, or hotfix abandon to drop the sheet only"
+        )
+    landed = landed_in_develop(workspace, hotfix)
+    missing = [row["id"] for row in landed if not row["in_develop"]]
+    if missing:
+        raise GitConvoyError(
+            "hotfix is not in develop: "
+            + ", ".join(missing)
+            + ". merge main into develop, then git convoy hotfix close"
+        )
+    if not yes:
+        if as_json or not (sys.stdin.isatty() if is_tty is None else is_tty):
+            raise GitConvoyError(
+                "close checks out develop and removes the hotfix branch; pass --yes to confirm"
+            )
+        ids = ", ".join(hotfix.repo_ids()) or "(none)"
+        prompt = (
+            f"This will check out develop in {len(hotfix.repos)} repos ({ids}), "
+        )
+        if keep_branch:
+            prompt += "keep local hotfix branches, and drop the sheet. Continue? : "
+        else:
+            prompt += (
+                f"delete local {branch}"
+                + (" and origin" if remote else "")
+                + ", and drop the sheet. Continue? : "
+            )
+        answer = (input_fn or input)(prompt).strip().lower()
+        if answer not in {"yes", "y"}:
+            return {
+                "ok": True,
+                "closed": False,
+                "hotfix": hotfix.name,
+                "branch": branch,
+                "repos": [],
+            }
+
+    cleaned: list[dict] = []
+    for repo_row in hotfix.repos:
+        repo_path = workspace / repo_row.path
+        gitutil.fetch(repo_path)
+        current = gitutil.current_branch(repo_path)
+        if gitutil.has_tracked_changes(repo_path) and current == branch:
+            raise GitConvoyError(
+                f"{repo_row.id} has uncommitted changes on {branch}; "
+                "commit or stash before hotfix close"
+            )
+        if gitutil.has_local_branch(repo_path, "develop") or gitutil.has_remote_branch(
+            repo_path, "develop"
+        ):
+            gitutil.checkout_branch(repo_path, "develop")
+        deleted_local = False
+        if not keep_branch and gitutil.has_local_branch(repo_path, branch):
+            gitutil.delete_branch(repo_path, branch)
+            deleted_local = True
+        on_origin = gitutil.has_remote_branch(repo_path, branch)
+        deleted_remote = False
+        if remote and on_origin:
+            gitutil.delete_remote_branch(repo_path, branch)
+            deleted_remote = True
+        cleaned.append(
+            {
+                "id": repo_row.id,
+                "path": repo_row.path,
+                "branch": gitutil.current_branch(repo_path),
+                "deleted_local": deleted_local,
+                "deleted_remote": deleted_remote,
+                "on_origin": on_origin and not deleted_remote,
+            }
+        )
+    if state.current_hotfix == hotfix.name:
+        state.current_hotfix = None
+    state.hotfixes.pop(hotfix.name, None)
+    save(workspace, state)
+    still_on_origin = [row["id"] for row in cleaned if row["on_origin"]]
+    note = "Checked out develop in every participant."
+    if keep_branch:
+        note += f" Local {branch} kept."
+    else:
+        note += f" Local {branch} deleted where present."
+    if still_on_origin and not remote:
+        note += (
+            f" {branch} still on origin in: "
+            + ", ".join(still_on_origin)
+            + ". Re-run with --remote to delete there."
+        )
+    return {
+        "ok": True,
+        "closed": True,
+        "hotfix": hotfix.name,
+        "branch": branch,
+        "note": note,
+        "repos": cleaned,
     }
 
 

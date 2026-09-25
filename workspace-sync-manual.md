@@ -39,28 +39,23 @@ git convoy --json status    # agents / scripts
 
 | Your situation                                             | Command                                        | Idle workspace required? |
 | ---------------------------------------------------------- | ---------------------------------------------- | ------------------------ |
-| Between features / starting something new                  | `git convoy sync`                              | **Yes**                  |
-| Product feature in progress                                | `git convoy feature refresh`                   | No (participants only)   |
-| Ops tooling change in progress                             | `git convoy ops refresh`                       | No (participants only)   |
-| `develop` behind stable `main` (one or more product repos) | `git convoy sync develop`                      | No                       |
+| Catch up every clone, including mid-feature                | `git convoy sync`                              | **No**                   |
+| Product feature sheet only                                 | `git convoy feature refresh`                   | No (participants only)   |
+| Ops sheet only                                             | `git convoy ops refresh`                       | No (participants only)   |
+| Heal product `develop` from stable `main`                  | `git convoy sync develop`                      | No                       |
 | Same, scoped                                               | `git convoy sync develop --repos console,data` | No                       |
-| After hotfix publish (feature branches need the patch)     | `git convoy feature refresh`                   | No                       |
-| BOM pins (read-only)                                       | `git checkout main && git pull` in `*-bom`     | Per-repo clean `main`    |
-| Ops repo not on current ops sheet                          | Manual pull on `develop` (see §5)              | —                        |
+| BOM pins                                                   | `git convoy sync` (fast-forwards clean `main`) | No                       |
 
 
 ```mermaid
 flowchart TD
-  START["git convoy status"]
-  START --> Q1{"In-progress feature?"}
-  Q1 -->|yes| FR["git convoy feature refresh"]
-  Q1 -->|no| Q2{"In-progress ops?"}
-  Q2 -->|yes| AR["git convoy ops refresh"]
-  Q2 -->|no| Q3{"Workspace idle?"}
-  Q3 -->|yes| SYNC["git convoy sync"]
-  Q3 -->|no| PARTIAL["git convoy sync develop --repos … + manual ops/BOM"]
-  FR --> PARTIAL
-  AR --> PARTIAL
+  START["git convoy sync"]
+  START --> EACH["For each repo"]
+  EACH --> CLEAN{"Tracked changes?"}
+  CLEAN -->|no| INPLACE["Merge latest into the current branch"]
+  CLEAN -->|yes| REPORT["needs-commit: commit or stash, then re-run"]
+  INPLACE --> NEXT["Continue with the next repo"]
+  REPORT --> NEXT
 ```
 
 
@@ -71,35 +66,32 @@ flowchart TD
 
 ## 1. Full workspace catch-up (`git convoy sync`)
 
-Use when you are **between** features, trains, hotfixes, and ops sheets — ready to land on a clean integration branch everywhere.
+Use any time you want the latest commits, including while a feature, ops sheet, hotfix, or train is open. Sync is not a transaction: each repo is independent. Re-run until the summary says every repo is synchronized.
 
 ```bash
 git convoy sync
 git convoy sync --no-push    # local only; do not push develop
 ```
 
-**What it does (every clone):**
+**What it does (every clone, staying on the current branch):**
 
-- **Product:** fetch → checkout `develop` → fast-forward `origin/develop` → merge latest stable tag (or `origin/main`) → optionally push `develop`.
-- **Aux:** fetch → checkout `develop` → fast-forward `origin/develop` only; merge a stable `v*` tag into `develop` only when that tag is not yet an ancestor (hotfix landed on `main`) → optionally push `develop`. Raw `origin/main` is **not** merged during sync.
-- **BOM:** fetch → checkout `main` → fast-forward `origin/main`.
+- **On `develop` (product):** fetch → fast-forward `origin/develop` → merge latest stable tag (or `origin/main`) → optionally push `develop`.
+- **On `develop` (ops):** fetch → fast-forward `origin/develop`; merge a stable `v*` tag only when that tag is not yet an ancestor (hotfix landed on `main`). Raw `origin/main` is **not** merged.
+- **On `feature/*` or `ops/*`:** merge that same integration line into the current branch. The branch is not switched.
+- **On `release/*`:** merge `origin/release/<name>` only. Commits that landed on `develop` after the cut are not brought onto the train.
+- **On `hotfix/*` or `main`:** merge `origin/main` into the current branch.
+- **BOM on `main`:** fast-forward `origin/main`.
 
-**When it refuses (and what to do instead):**
-
-
-| Blocker                                    | Meaning                         | Next step                                                 |
-| ------------------------------------------ | ------------------------------- | --------------------------------------------------------- |
-| `dirty: …`                                 | Uncommitted files               | `feature commit` / `ops commit` / stash                   |
-| `feature X is in-progress`                 | Open feature sheet              | `feature refresh`, or `feature close` / `feature abandon` |
-| `ops X is in-progress`                     | Open ops sheet                  | `ops refresh`, or `ops close` / `ops abandon`             |
-| `hotfix X is …`                            | Open hotfix                     | Finish or `hotfix abandon`                                |
-| `train X is cut/stabilizing`               | Active train                    | Finish train workflow or `train delete --yes`             |
-| `on feature/… with commits not in develop` | Leftover topic branch           | Merge PR, `feature close`, or checkout `develop`          |
-| `develop diverged from origin/develop`     | Local vs remote split           | §4 — merge or reset, do not duplicate work                |
-| `local commits on develop not on origin`   | Committed on develop by mistake | `feature adopt`, or reset develop to `origin/develop`     |
+**What it reports instead of stopping the workspace:**
 
 
-You do **not** need a clean slate to run `git convoy sync develop` (§3). You **do** need a clean slate for bare `git convoy sync`.
+| Status          | Meaning                                      | Next step                                      |
+| --------------- | -------------------------------------------- | ---------------------------------------------- |
+| `needs-commit`  | Tracked edits would block the merge          | Commit or stash on that branch, then re-run    |
+| `failed`        | Merge conflict, or `develop` cannot move     | Resolve on that branch, then re-run           |
+| `already`       | Current branch already contains the incoming | Nothing                                        |
+
+Untracked files (for example `__pycache__`) do not block sync. Open sheets do not block other repos. A repo that cannot sync now still syncs later, once its branch is clean, including when that work lands on `develop`.
 
 ---
 
@@ -228,7 +220,7 @@ git convoy ops close      # after merge to develop; checks out develop, deletes 
 git convoy ops release bom-helper   # platform release: no sheet
 ```
 
-`git convoy sync develop` does **not** include ops repos; idle `git convoy sync` fast-forwards ops `develop` from `origin/develop` (and hotfix tags only, not raw `main`).
+`git convoy sync develop` does **not** include ops repos. `git convoy sync` does: on `develop` it fast-forwards `origin/develop` and merges a hotfix tag only (not raw `main`); on `ops/*` it merges that same line into the current branch.
 
 ---
 
@@ -246,7 +238,7 @@ git -C ops/<tenant>-bom pull --ff-only origin main
 
 Only **release managers** write BOM files (`git convoy bom`, `hotfix bom`, manual pin edits). Never put `*-bom` on a feature, train, or ops branch.
 
-During `git convoy sync` (idle workspace), BOM clones are fast-forwarded on `main` automatically.
+During `git convoy sync`, a clean BOM clone on `main` is fast-forwarded automatically. A dirty BOM is reported as `needs-commit` and left alone.
 
 ---
 
@@ -256,34 +248,14 @@ During `git convoy sync` (idle workspace), BOM clones are fast-forwarded on `mai
 
 
 
-### Start of day (product feature active)
-
-```bash
-git convoy status
-git convoy feature refresh
-git convoy sync develop --repos <product repos you are not editing>
-```
-
-
-
-### Start of day (no open sheet)
+### Start of day
 
 ```bash
 git convoy status
 git convoy sync
-git convoy feature start <name>    # when ready
 ```
 
-
-
-### Start of day (ops change active)
-
-```bash
-git convoy status
-git convoy ops refresh
-# optional: sync develop for product repos you might test against
-git convoy sync develop --repos renglo-lib,renglo-api
-```
+Clean repos update, including ones sitting on `feature/*` or `ops/*`. The summary names anything still behind. Commit or stash those, then run `git convoy sync` again.
 
 
 
@@ -315,7 +287,7 @@ git convoy feature refresh   # if a feature is still open
 | Goal                               | Command                                    |
 | ---------------------------------- | ------------------------------------------ |
 | Am I blocked?                      | `git convoy status`                        |
-| Catch up everything (idle)         | `git convoy sync`                          |
+| Catch up every clone                     | `git convoy sync`                          |
 | Catch up open product feature      | `git convoy feature refresh`               |
 | Catch up open ops work             | `git convoy ops refresh`                   |
 | Heal product `develop` from stable | `git convoy sync develop [--repos a,b]`    |
@@ -343,7 +315,7 @@ git convoy feature refresh   # if a feature is still open
 | `git pull origin main` to start product coding          | `git convoy sync` or stay on `feature/*` + `feature refresh` |
 | Put ops repos on a feature sheet                        | `git convoy ops start` / `ops adopt`                         |
 | Edit BOM on a feature branch                            | `git convoy bom` on `main` (release manager)                 |
-| Run `git convoy sync` with an open feature sheet        | `feature refresh` + `sync develop --repos …`                 |
+| Skip `git convoy sync` because a feature is open        | `git convoy sync` (clean repos update; dirty ones are listed) |
 
 
 ---

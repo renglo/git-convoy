@@ -256,6 +256,70 @@ def test_abandon_keeps_uncommitted_files(workspace: Path) -> None:
     assert "fetch-file" not in state.hotfixes
 
 
+def _published_hotfix(workspace: Path, *, on_develop: bool) -> Path:
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "develop")
+    git(schd, "checkout", "-b", "hotfix/fetch-file")
+    (schd / "fix.py").write_text("patched\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "hotfix")
+    git(schd, "tag", "v1.0.1")
+    if on_develop:
+        git(schd, "checkout", "develop")
+        git(schd, "merge", "--no-edit", "hotfix/fetch-file")
+    state = State(
+        current_hotfix="fetch-file",
+        hotfixes={
+            "fetch-file": Hotfix(
+                name="fetch-file",
+                branch="hotfix/fetch-file",
+                status="published",
+                repos=[
+                    HotfixRepo(
+                        id="schd",
+                        path="extensions/schd",
+                        from_version="1.0.0",
+                        to="1.0.1",
+                        stable_tag="v1.0.1",
+                    )
+                ],
+            )
+        },
+    )
+    save(workspace, state)
+    return schd
+
+
+def test_close_refuses_when_not_in_develop(workspace: Path) -> None:
+    _published_hotfix(workspace, on_develop=False)
+    with pytest.raises(GitConvoyError, match="not in develop"):
+        hotfix_cmd.close(workspace, load(workspace), yes=True, as_json=True)
+
+
+def test_close_after_patch_is_in_develop(workspace: Path) -> None:
+    schd = _published_hotfix(workspace, on_develop=True)
+    data = hotfix_cmd.close(workspace, load(workspace), yes=True, as_json=True)
+    assert data["closed"] is True
+    assert gitutil.current_branch(schd) == "develop"
+    assert not gitutil.has_local_branch(schd, "hotfix/fetch-file")
+    state = load(workspace)
+    assert state.current_hotfix is None
+    assert "fetch-file" not in state.hotfixes
+
+
+def test_status_shows_published_and_develop(workspace: Path) -> None:
+    from gitconvoy.cli import _status_text
+    from gitconvoy.status import status as status_cmd
+
+    _published_hotfix(workspace, on_develop=True)
+    text = _status_text(status_cmd(workspace, load(workspace)))
+    assert "hotfix:    fetch-file" in text
+    assert "published" in text
+    assert "v1.0.1" in text
+    assert "not in develop" not in text
+    assert "in develop" in text
+
+
 def test_prs_compare_targets_main(workspace: Path, monkeypatch) -> None:
     monkeypatch.chdir(workspace)
     schd = workspace / "extensions" / "schd"

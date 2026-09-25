@@ -300,8 +300,8 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
     if sub == "show":
         data = train_cmd.show(state, args.name)
         return data, _train_show_text(data)
-    if sub == "delete":
-        data = train_cmd.delete(
+    if sub in ("close", "delete"):
+        data = train_cmd.close(
             workspace,
             state,
             args.name,
@@ -376,6 +376,17 @@ def _hotfix(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str
     if sub == "show":
         data = hotfix_cmd.show(workspace, state, args.name)
         return data, _hotfix_show_text(data)
+    if sub == "close":
+        data = hotfix_cmd.close(
+            workspace,
+            state,
+            args.name,
+            yes=args.yes,
+            remote=args.remote,
+            keep_branch=args.keep_branch,
+            as_json=args.json,
+        )
+        return data, _close_text(data)
     if sub == "abandon":
         data = hotfix_cmd.abandon(
             workspace,
@@ -764,21 +775,28 @@ def _parser() -> argparse.ArgumentParser:
     mergeback.add_argument("--no-push", action="store_true")
     tshow = tsub.add_parser("show", help="Print the train sheet")
     tshow.add_argument("name", nargs="?")
-    tdelete = tsub.add_parser(
-        "delete",
-        help="Delete merged release/<train> branches; never discards uncommitted work",
+    tclose = tsub.add_parser(
+        "close",
+        help="After the release is merged: checkout develop, delete release/<train>, drop the sheet",
     )
-    tdelete.add_argument("name", nargs="?")
-    tdelete.add_argument(
+    tclose.add_argument("name", nargs="?")
+    tclose.add_argument(
         "--yes",
         action="store_true",
         help="Skip the confirmation prompt",
     )
-    tdelete.add_argument(
+    tclose.add_argument(
         "--remote",
         action="store_true",
         help="Also delete origin/release/<train>",
     )
+    tdelete = tsub.add_parser(
+        "delete",
+        help=argparse.SUPPRESS,
+    )
+    tdelete.add_argument("name", nargs="?")
+    tdelete.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
+    tdelete.add_argument("--remote", action="store_true", help=argparse.SUPPRESS)
     verify = tsub.add_parser(
         "verify",
         help="Check publish workflow status via gh (Full mode)",
@@ -899,6 +917,22 @@ def _parser() -> argparse.ArgumentParser:
     hadopt.add_argument("--description")
     hshow = hsub.add_parser("show", help="Print the hotfix sheet")
     hshow.add_argument("name", nargs="?")
+    hclose = hsub.add_parser(
+        "close",
+        help="After the patch is in develop: checkout develop, delete the hotfix branch, drop the sheet",
+    )
+    hclose.add_argument("name", nargs="?")
+    hclose.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    hclose.add_argument(
+        "--remote",
+        action="store_true",
+        help="Also delete origin/hotfix/<name>",
+    )
+    hclose.add_argument(
+        "--keep-branch",
+        action="store_true",
+        help="Keep local hotfix/<name> branches",
+    )
     habandon = hsub.add_parser(
         "abandon",
         help="Drop the hotfix sheet (does not delete branches or files)",
@@ -909,7 +943,7 @@ def _parser() -> argparse.ArgumentParser:
     sync = sub.add_parser(
         "sync",
         help=(
-            "Catch up a clean workspace onto develop "
+            "Bring latest commits into every clone "
             "(or sync develop to merge stable/main only)"
         ),
     )
@@ -975,9 +1009,25 @@ def _status_text(data: dict) -> str:
         lines.append("train:     (none)")
     if data.get("hotfix"):
         item = data["hotfix"]
-        lines.append(
-            f"hotfix:    {item['name']}  ({item['repo_count']} repos)  {item['branch']}"
-        )
+        bits = [
+            item["name"],
+            f"({item['repo_count']} repos)",
+            item.get("status") or "",
+        ]
+        if item.get("status") == "published":
+            tags = " ".join(item.get("stable_tags") or [])
+            if tags:
+                bits.append(tags)
+            if item.get("in_develop"):
+                bits.append("in develop")
+            else:
+                missing = ", ".join(item.get("develop_missing") or [])
+                bits.append(
+                    "not in develop" + (f": {missing}" if missing else "")
+                )
+        else:
+            bits.append(item["branch"])
+        lines.append("hotfix:    " + "  ".join(bit for bit in bits if bit))
     else:
         lines.append("hotfix:    (none)")
     if data["dirty"]:
@@ -1256,7 +1306,8 @@ def _hotfix_show_text(data: dict) -> str:
         pr = f"  {repo['pr']}" if repo.get("pr") else ""
         lines.append(
             f"  {repo['id']:20} {repo.get('from') or ''} → {repo.get('to') or ''}  "
-            f"{repo.get('merge_status') or ''}{pr}"
+            f"{repo.get('merge_status') or ''}  "
+            f"{'in develop' if repo.get('in_develop') else 'not in develop'}{pr}"
         )
     return "\n".join(lines)
 

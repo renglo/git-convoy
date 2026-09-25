@@ -50,6 +50,13 @@ def test_feature_repos_excludes_ops_and_bom_when_membership_refreshed(
     assert aux_ids == {"bootstrap", "publisher"}
 
 
+def test_aux_role_is_read_as_ops(tmp_path: Path) -> None:
+    repo = tmp_path / "publisher"
+    repo.mkdir()
+    (repo / "gitconvoy.toml").write_text('role = "aux"\n')
+    assert membership.read_repo_role(repo) == "ops"
+
+
 def test_ops_marker_is_read_without_init(workspace: Path) -> None:
     bootstrap = init_repo(workspace / "ops" / "bootstrap")
     (bootstrap / "gitconvoy.toml").write_text('role = "ops"\n')

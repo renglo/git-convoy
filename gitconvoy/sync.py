@@ -9,7 +9,6 @@ from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State
 from gitconvoy.workspace import Repo, discover_repos, is_bom_repo_id
 
-_TOPIC_PREFIXES = ("feature/", "hotfix/", "ops/", "release/")
 _RETRY_WORKSPACE = "git convoy sync"
 _RETRY_DEVELOP = "git convoy sync develop"
 
@@ -185,27 +184,28 @@ def sync_product_repos(
     )
 
 
+_DONE_STATUSES = frozenset({"merged", "pulled", "already"})
+
+
 def sync_workspace(
     workspace: Path,
     state: State,
     *,
     push: bool = True,
 ) -> dict:
-    """Fetch every clone and leave a clean integration branch to start work.
+    """Bring latest integration commits into every clone, one repo at a time.
 
-    Product and ops repos end on ``develop`` (or ``main`` when there is no
-    develop). BOM repos stay on ``main``. Refuses when the workspace is not
-    idle: dirty trees, in-progress sheets, or leftover topic-branch work.
+    Clean repos update in place and stay on their current branch. ``feature/*``
+    and ``ops/*`` receive ``develop``. ``release/*`` receives only
+    ``origin/<that branch>`` — commits that landed on ``develop`` after the
+    cut stay off the train. ``hotfix/*`` and ``main`` receive ``main``.
+    Dirty trees and merge conflicts are reported and skipped. Re-run until
+    ``remaining`` is 0.
+    Open feature, ops, hotfix, and train sheets do not block other repos.
     """
-    blockers = _neutrality_errors(workspace, state)
-    if blockers:
-        raise GitConvoyError(
-            "workspace is not idle; "
-            "git convoy sync is for a clean starting point:\n  "
-            + "\n  ".join(blockers)
-        )
+    del state  # sheets no longer gate sync
     rows: list[dict] = []
-    failed: list[str] = []
+    pending: list[str] = []
     for repo in sorted(discover_repos(workspace), key=lambda row: row.id):
         item: dict = {
             "id": repo.id,
@@ -219,18 +219,25 @@ def sync_workspace(
             item.update(result)
         except GitConvoyError as exc:
             item["error"] = exc.message
-            failed.append(repo.id)
+            item["next"] = f"fix {repo.id}, then {_RETRY_WORKSPACE}"
+            item["branch"] = gitutil.current_branch(repo.path)
+        if item.get("status") not in _DONE_STATUSES:
+            pending.append(repo.id)
         rows.append(item)
     data: dict = {
-        "ok": not failed,
+        "ok": not pending,
         "repos": rows,
-        "failed": failed,
+        "pending": pending,
+        "remaining": len(pending),
+        "failed": [row["id"] for row in rows if row.get("status") == "failed"],
     }
-    if failed:
+    if pending:
         data["note"] = (
-            f"sync failed in: {', '.join(failed)}. "
-            f"resolve, then {_RETRY_WORKSPACE}"
+            f"{len(pending)} still to sync ({', '.join(pending)}). "
+            f"Re-run: {_RETRY_WORKSPACE}"
         )
+    else:
+        data["note"] = "all repos synchronized"
     return data
 
 
@@ -373,29 +380,147 @@ def _sync_one_workspace_repo(
 ) -> dict:
     gitutil.fetch(repo.path)
     role = membership.read_repo_role(repo.path)
+    branch = gitutil.current_branch(repo.path)
+    if gitutil.cherry_pick_in_progress(repo.path):
+        raise GitConvoyError(
+            f"{repo.id}: cherry-pick in progress on {branch}; "
+            f"finish or abort it, then {_RETRY_WORKSPACE}"
+        )
+    if gitutil.has_tracked_changes(repo.path):
+        return {
+            "status": "needs-commit",
+            "synced": False,
+            "branch": branch,
+            "role": role,
+            "next": f"commit or stash on {branch}, then {_RETRY_WORKSPACE}",
+        }
     if role == "bom" or is_bom_repo_id(repo.id, workspace):
-        return _sync_main_only(repo, push=push, role="bom")
-    if role == "ops":
-        result = sync_ops_develop(
-            repo.path,
-            repo_id=repo.id,
-            push=push,
-            retry_hint=_RETRY_WORKSPACE,
+        if branch == "main":
+            return _sync_main_only(repo, push=push, role="bom")
+        return _sync_into_current_branch(
+            repo, role="bom", upstream=_main_ref(repo.path), absorb_stable=False
         )
-    else:
-        result = sync_develop_from_ref(
-            repo.path,
-            repo_id=repo.id,
-            push=push,
-            retry_hint=_RETRY_WORKSPACE,
+    if branch == "develop":
+        if role == "ops":
+            result = sync_ops_develop(
+                repo.path,
+                repo_id=repo.id,
+                push=push,
+                retry_hint=_RETRY_WORKSPACE,
+            )
+        else:
+            result = sync_develop_from_ref(
+                repo.path,
+                repo_id=repo.id,
+                push=push,
+                retry_hint=_RETRY_WORKSPACE,
+            )
+        return {
+            "status": result["status"],
+            "synced": result["synced"],
+            "ref": result.get("ref"),
+            "branch": result.get("branch") or "develop",
+            "role": role,
+            "develop_created": result.get("develop_created"),
+        }
+    if branch == "main" or branch.startswith("hotfix/"):
+        return _sync_into_current_branch(
+            repo,
+            role=role,
+            upstream=_main_ref(repo.path),
+            absorb_stable=False,
         )
+    if branch.startswith("release/"):
+        return _sync_into_current_branch(
+            repo,
+            role=role,
+            upstream="",
+            absorb_stable=False,
+        )
+    upstream = _integration_ref(repo.path, role=role)
+    return _sync_into_current_branch(
+        repo,
+        role=role,
+        upstream=upstream,
+        absorb_stable=True,
+    )
+
+
+def _integration_ref(repo_path: Path, *, role: str) -> str:
+    if gitutil.rev_parse(repo_path, "origin/develop"):
+        return "origin/develop"
+    if gitutil.rev_parse(repo_path, "refs/heads/develop"):
+        return "develop"
+    if role != "ops" and gitutil.rev_parse(repo_path, "origin/main"):
+        return "origin/main"
+    if gitutil.rev_parse(repo_path, "refs/heads/main"):
+        return "main"
+    return ""
+
+
+def _main_ref(repo_path: Path) -> str:
+    if gitutil.rev_parse(repo_path, "origin/main"):
+        return "origin/main"
+    if gitutil.rev_parse(repo_path, "refs/heads/main"):
+        return "main"
+    return ""
+
+
+def _merge_if_missing(
+    repo_path: Path, ref: str, *, repo_id: str, branch: str
+) -> bool:
+    """Merge ``ref`` into HEAD when it is not already contained."""
+    if not ref or not gitutil.rev_parse(repo_path, ref):
+        return False
+    if gitutil.is_ancestor(repo_path, ref, "HEAD"):
+        return False
+    before = gitutil.rev_parse(repo_path, "HEAD")
+    merged = gitutil.merge(repo_path, ref)
+    if merged.returncode != 0:
+        gitutil.run(repo_path, "merge", "--abort", check=False)
+        raise GitConvoyError(
+            f"{repo_id}: merge {ref} into {branch} failed "
+            "(merge aborted, repo left clean). "
+            f"resolve on {branch}, then {_RETRY_WORKSPACE}"
+        )
+    return gitutil.rev_parse(repo_path, "HEAD") != before
+
+
+def _sync_into_current_branch(
+    repo: Repo,
+    *,
+    role: str,
+    upstream: str,
+    absorb_stable: bool,
+) -> dict:
+    """Merge upstream into the checked-out branch. Does not switch branches."""
+    branch = gitutil.current_branch(repo.path)
+    moved = False
+    refs: list[str] = []
+    remote_self = f"origin/{branch}"
+    if _merge_if_missing(
+        repo.path, remote_self, repo_id=repo.id, branch=branch
+    ):
+        moved = True
+        refs.append(remote_self)
+    if _merge_if_missing(repo.path, upstream, repo_id=repo.id, branch=branch):
+        moved = True
+        refs.append(upstream)
+    if absorb_stable:
+        tag = gitutil.last_stable_tag(repo.path)
+        if tag and _merge_if_missing(
+            repo.path, tag, repo_id=repo.id, branch=branch
+        ):
+            moved = True
+            refs.append(tag)
+    if branch != "develop":
+        gitutil.fast_forward_branch(repo.path, "develop")
     return {
-        "status": result["status"],
-        "synced": result["synced"],
-        "ref": result.get("ref"),
-        "branch": result.get("branch") or "develop",
+        "status": "merged" if moved else "already",
+        "synced": True,
+        "ref": (refs[-1] if refs else upstream) or branch,
+        "branch": branch,
         "role": role,
-        "develop_created": result.get("develop_created"),
     }
 
 
@@ -429,102 +554,31 @@ def _sync_main_only(repo: Repo, *, push: bool, role: str) -> dict:
     }
 
 
-def _neutrality_errors(workspace: Path, state: State) -> list[str]:
-    errors: list[str] = []
-    dirty = [
-        repo.id
-        for repo in discover_repos(workspace)
-        if gitutil.is_dirty(repo.path)
-    ]
-    if dirty:
-        errors.append("dirty: " + ", ".join(dirty) + " (commit or stash first)")
-    errors.extend(_pending_sheet_errors(state))
-    for repo in discover_repos(workspace):
-        errors.extend(_pending_repo_errors(repo))
-    return errors
-
-
-def _pending_sheet_errors(state: State) -> list[str]:
-    errors: list[str] = []
-    if state.current_feature and state.current_feature in state.features:
-        feat = state.features[state.current_feature]
-        if feat.repos and feat.status in {"in-progress", "in-review"}:
-            ids = ", ".join(feat.repo_ids())
-            errors.append(
-                f"feature {feat.name} is {feat.status} ({ids}). "
-                "git convoy feature refresh, or close/abandon first"
-            )
-    if state.current_hotfix and state.current_hotfix in state.hotfixes:
-        item = state.hotfixes[state.current_hotfix]
-        if item.repos and item.status != "published":
-            ids = ", ".join(item.repo_ids())
-            errors.append(
-                f"hotfix {item.name} is {item.status} ({ids}). "
-                "finish or abandon it first"
-            )
-    if state.current_ops and state.current_ops in state.ops_sheets:
-        item = state.ops_sheets[state.current_ops]
-        if item.repos and item.status in {"in-progress", "in-review"}:
-            ids = ", ".join(item.repo_ids())
-            errors.append(
-                f"ops {item.name} is {item.status} ({ids}). "
-                "git convoy ops refresh, or close/abandon first"
-            )
-    if state.current_train and state.current_train in state.trains:
-        train = state.trains[state.current_train]
-        if train.status in {"cut", "stabilizing"}:
-            errors.append(
-                f"train {train.name} is {train.status}. "
-                "finish the train or git convoy train delete first"
-            )
-    return errors
-
-
-def _pending_repo_errors(repo: Repo) -> list[str]:
-    branch = gitutil.current_branch(repo.path)
-    if gitutil.cherry_pick_in_progress(repo.path):
-        return [f"{repo.id}: cherry-pick in progress; finish or abort it first"]
-    errors: list[str] = []
-    if any(branch.startswith(prefix) for prefix in _TOPIC_PREFIXES):
-        if not gitutil.branch_merged_into(repo.path, branch):
-            errors.append(
-                f"{repo.id} is on {branch} with commits not in develop/main. "
-                "close that work, or check out develop first"
-            )
-    develop = gitutil.rev_parse(repo.path, "refs/heads/develop")
-    origin_dev = gitutil.rev_parse(repo.path, "origin/develop")
-    if develop and origin_dev:
-        if gitutil.ahead_of(repo.path, "develop", "origin/develop"):
-            errors.append(
-                f"{repo.id} has local commits on develop not on origin; "
-                "git convoy feature adopt, or reset develop to origin"
-            )
-        elif not gitutil.is_ancestor(
-            repo.path, "develop", "origin/develop"
-        ) and not gitutil.is_ancestor(repo.path, "origin/develop", "develop"):
-            errors.append(
-                f"{repo.id} develop has diverged from origin/develop; "
-                f"reconcile, then {_RETRY_WORKSPACE}"
-            )
-    return errors
-
-
 def format_develop_sync_text(data: dict, *, label: str) -> str:
     failed = data.get("failed") or []
     counts: dict[str, int] = {}
     for row in data.get("repos") or []:
         status = row.get("status") or "failed"
         counts[status] = counts.get(status, 0) + 1
-    order = ("merged", "pulled", "already", "skipped", "failed")
+    order = ("merged", "pulled", "already", "needs-commit", "skipped", "failed")
     summary = ", ".join(
         f"{counts[key]} {key}" for key in order if counts.get(key)
     ) or "nothing to do"
+    remaining = data.get("remaining")
+    if remaining is None:
+        remaining = len(failed)
     lines = [f"{label}: {summary}"]
+    if remaining:
+        lines.append(
+            data.get("note")
+            or f"{remaining} still to sync. Re-run: {_RETRY_WORKSPACE}"
+        )
+    elif data.get("note") and label == "sync":
+        lines.append(data["note"])
     for row in data.get("repos") or []:
-        extra = f"  {row['error']}" if row.get("error") else ""
+        detail = row.get("error") or row.get("next") or ""
+        extra = f"  {detail}" if detail else ""
         ref = f" ({row['ref']})" if row.get("ref") else ""
         branch = f" [{row['branch']}]" if row.get("branch") else ""
         lines.append(f"  {row['id']:20} {row['status']}{ref}{branch}{extra}")
-    if failed:
-        lines.append(data.get("note") or "")
     return "\n".join(lines)

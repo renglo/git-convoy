@@ -636,7 +636,7 @@ def _verify_detail(
     return status
 
 
-def delete(
+def close(
     workspace: Path,
     state: State,
     name: str | None = None,
@@ -653,7 +653,7 @@ def delete(
     if not yes:
         if as_json or not (sys.stdin.isatty() if is_tty is None else is_tty):
             raise GitConvoyError(
-                "train delete removes release branches; pass --yes to confirm"
+                "train close removes release branches; pass --yes to confirm"
             )
         ids = ", ".join(repo.id for repo in targets) or "(none)"
         prompt = (
@@ -668,6 +668,7 @@ def delete(
             return {
                 "ok": True,
                 "deleted": False,
+                "closed": False,
                 "train": train.name,
                 "branch": branch,
                 "repos": [],
@@ -697,7 +698,7 @@ def delete(
             )
     if blocked:
         raise GitConvoyError(
-            "train delete refused (would lose work):\n  "
+            "train close refused (would lose work):\n  "
             + "\n  ".join(blocked)
             + "\nmerge, commit, or stash first"
         )
@@ -750,11 +751,15 @@ def delete(
     return {
         "ok": True,
         "deleted": True,
+        "closed": True,
         "train": train.name,
         "branch": branch,
         "note": note,
         "repos": removed,
     }
+
+
+delete = close
 
 
 def show(state: State, name: str | None = None) -> dict:
