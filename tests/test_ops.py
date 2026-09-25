@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,45 @@ def test_ops_close_checks_out_develop(workspace: Path) -> None:
     tip = git(launcher, "rev-parse", "ops/ship").stdout.strip()
     merge_base = git(launcher, "merge-base", tip, "develop").stdout.strip()
     assert tip == merge_base
+
+
+def test_ops_close_ff_develop_from_origin(workspace: Path) -> None:
+    _ops_workspace(workspace)
+    launcher = workspace / "ops" / "launcher"
+    bare = workspace / "launcher.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    git(launcher, "remote", "add", "origin", str(bare))
+    git(launcher, "push", "-u", "origin", "develop")
+    git(launcher, "push", "-u", "origin", "main")
+
+    (launcher / "TOOL.md").write_text("ship it\n")
+    state = State()
+    ops_cmd.start(workspace, state, "ship")
+    ops_cmd.adopt(workspace, state)
+    state = load(workspace)
+    from gitconvoy import commit as commit_cmd
+
+    commit_cmd.commit(
+        workspace,
+        state,
+        header="fix: ship",
+        header_only=True,
+        kind="ops",
+    )
+    git(launcher, "checkout", "develop")
+    git(launcher, "merge", "--no-edit", "ops/ship")
+    merged_tip = git(launcher, "rev-parse", "HEAD").stdout.strip()
+    git(launcher, "push", "origin", "develop")
+    stale_tip = git(launcher, "rev-parse", "develop~1").stdout.strip()
+    git(launcher, "checkout", "ops/ship")
+    git(launcher, "branch", "-f", "develop", stale_tip)
+
+    state = load(workspace)
+    data = ops_cmd.close(workspace, state, yes=True)
+    assert data["closed"] is True
+    assert git(launcher, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
+    assert git(launcher, "rev-parse", "develop").stdout.strip() == merged_tip
+    assert git(launcher, "rev-parse", "origin/develop").stdout.strip() == merged_tip
 
 
 def test_ops_abandon_keeps_uncommitted_files(workspace: Path) -> None:

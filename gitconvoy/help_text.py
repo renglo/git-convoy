@@ -214,7 +214,7 @@ HELP_SECTIONS: list[HelpSection] = [
             },
             {
                 "cmd": "git convoy ops close --yes",
-                "summary": "After PRs merge to develop: checkout develop and delete local ops branches.",
+                "summary": "After PRs merge to develop: checkout develop, pull origin/develop, delete local ops branches.",
             },
         ],
     },
@@ -653,7 +653,7 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                 },
                 {
                     "cmd": "git convoy ops close --yes",
-                    "summary": "After merge to develop: checkout develop and delete ops branches.",
+                    "summary": "After merge to develop: checkout develop, pull origin/develop, delete ops branches.",
                 },
             ],
         },

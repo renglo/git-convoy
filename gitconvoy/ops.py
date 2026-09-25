@@ -826,6 +826,7 @@ def close(
         ids = ", ".join(row["id"] for row in rows) or "(none)"
         prompt = (
             f"This will check out develop in {len(rows)} repos ({ids}), "
+            f"pull from origin, "
         )
         if keep_branch:
             prompt += "and keep local ops branches. Continue? : "
@@ -856,15 +857,9 @@ def close(
                 f"{row['id']} has uncommitted changes on {feature.branch}; "
                 "commit or stash before close"
             )
-        item = {
-            "id": row["id"],
-            "path": row["path"],
-            "merge_status": row["merge_status"],
-        }
+        integration = gitutil.checkout_integration(repo_path)
         deleted_local = False
         if not keep_branch and gitutil.has_local_branch(repo_path, feature.branch):
-            if gitutil.current_branch(repo_path) == feature.branch:
-                gitutil.checkout_branch(repo_path, "develop")
             gitutil.delete_branch(repo_path, feature.branch)
             deleted_local = True
         on_origin = gitutil.has_remote_branch(repo_path, feature.branch)
@@ -872,13 +867,13 @@ def close(
         if remote and on_origin:
             gitutil.delete_remote_branch(repo_path, feature.branch)
             deleted_remote = True
-        if gitutil.current_branch(repo_path) != "develop":
-            gitutil.checkout_branch(repo_path, "develop")
         cleaned.append(
             {
-                **item,
+                "id": row["id"],
+                "path": row["path"],
+                "merge_status": row["merge_status"],
                 "branch": gitutil.current_branch(repo_path),
-                "integration_branch": "develop",
+                "integration_branch": integration,
                 "deleted_local": deleted_local,
                 "deleted_remote": deleted_remote,
                 "on_origin": on_origin and not deleted_remote,
@@ -890,7 +885,7 @@ def close(
     state.ops_sheets.pop(feature.name, None)
     save(workspace, state)
     still_on_origin = [row["id"] for row in cleaned if row.get("on_origin")]
-    note = "Checked out develop in every participant."
+    note = "Checked out develop and fast-forwarded from origin in every participant."
     if keep_branch:
         note += f" Local {feature.branch} branches kept."
     else:
