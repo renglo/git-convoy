@@ -4,6 +4,8 @@
 
 `git-convoy` is a CLI that runs the [cross-repo feature manual](cross-repo-feature-manual.md) for you. It works in two modes — **Simple** (git only) or **Full** (git + GitHub via `gh`) — see below. Cycles 3 and 4 also need your tenant’s **publisher** (CodeArtifact) and **BOM** repos configured.
 
+**Stay current across clones:** [workspace-sync-manual.md](workspace-sync-manual.md) — when to use `sync`, `sync develop`, `feature refresh`, and `aux refresh` (including while a feature is already open).
+
 State lives in `.gitconvoy/state.json` at the workspace root. That directory is gitignored. It is local to your machine.
 
 ---
