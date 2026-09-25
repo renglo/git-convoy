@@ -101,6 +101,21 @@ def test_ops_release_tags_after_merge(workspace: Path) -> None:
     assert "v1.0.1" in git(helper, "tag", "-l", "v1.0.1").stdout
 
 
+def test_ops_release_ignores_sibling_with_invalid_role(workspace: Path) -> None:
+    helper = _ops_repo(workspace, "bom-helper")
+    publisher = init_repo(workspace / "ops" / "publisher")
+    (publisher / "gitconvoy.toml").write_text('role = "aux"\n')
+    _tag_current(helper)
+    (helper / "CHANGE.md").write_text("work\n")
+    git(helper, "add", "CHANGE.md")
+    git(helper, "commit", "-m", "work")
+
+    data = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    assert data["ok"] is True
+    assert data["repos"][0]["id"] == "bom-helper"
+    assert data["repos"][0]["status"] == "pr-needed"
+
+
 def test_ops_release_ignores_dirty_neighbor(workspace: Path) -> None:
     helper = _ops_repo(workspace, "bom-helper")
     launcher = _ops_repo(workspace, "launcher")
