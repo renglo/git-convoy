@@ -223,6 +223,55 @@ def test_sync_workspace_moves_off_empty_topic_branch(workspace: Path) -> None:
     assert gitutil.current_branch(schd) == "develop"
 
 
+def test_sync_aux_develop_does_not_merge_raw_main(workspace: Path) -> None:
+    launcher = init_repo(workspace / "ops" / "launcher")
+    (launcher / "gitconvoy.toml").write_text('role = "aux"\n')
+    git(launcher, "add", "gitconvoy.toml")
+    git(launcher, "commit", "-m", "marker")
+    from gitconvoy import membership
+    from gitconvoy.workspace import discover_repos
+
+    membership.refresh_membership(workspace, discover_repos(workspace))
+
+    git(launcher, "checkout", "main")
+    (launcher / "MAIN.md").write_text("main only\n")
+    git(launcher, "add", "MAIN.md")
+    git(launcher, "commit", "-m", "main moved ahead")
+    git(launcher, "update-ref", "refs/remotes/origin/main", git(launcher, "rev-parse", "HEAD").stdout.strip())
+    git(launcher, "checkout", "develop")
+
+    data = sync_cmd.sync_aux_repos(workspace, repo_ids=["launcher"], push=False)
+    row = next(item for item in data["repos"] if item["id"] == "launcher")
+    assert data["ok"] is True
+    assert row["branch"] == "develop"
+    assert not (launcher / "MAIN.md").exists()
+
+
+def test_sync_aux_develop_merges_hotfix_tag(workspace: Path) -> None:
+    launcher = init_repo(workspace / "ops" / "launcher")
+    (launcher / "gitconvoy.toml").write_text('role = "aux"\n')
+    git(launcher, "add", "gitconvoy.toml")
+    git(launcher, "commit", "-m", "marker")
+    from gitconvoy import membership
+    from gitconvoy.workspace import discover_repos
+
+    membership.refresh_membership(workspace, discover_repos(workspace))
+
+    git(launcher, "checkout", "main")
+    (launcher / "HOTFIX.md").write_text("hotfix\n")
+    git(launcher, "add", "HOTFIX.md")
+    git(launcher, "commit", "-m", "hotfix on main")
+    git(launcher, "tag", "v0.1.1")
+    git(launcher, "update-ref", "refs/remotes/origin/main", git(launcher, "rev-parse", "HEAD").stdout.strip())
+    git(launcher, "checkout", "develop")
+
+    data = sync_cmd.sync_aux_repos(workspace, repo_ids=["launcher"], push=False)
+    row = next(item for item in data["repos"] if item["id"] == "launcher")
+    assert data["ok"] is True
+    assert row["status"] == "merged"
+    assert (launcher / "HOTFIX.md").read_text() == "hotfix\n"
+
+
 def test_sync_workspace_refuses_active_train(workspace: Path) -> None:
     from gitconvoy.state import State, Train, save
 

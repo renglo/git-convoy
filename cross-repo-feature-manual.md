@@ -55,7 +55,7 @@ Treat workspace clones as three kinds. Do not mix them on one sheet.
 | Kind | Where | Rides trains / hotfixes / feature PRs onto `develop`? |
 | ---- | ----- | ----------------------------------------------------- |
 | **Product** | `console/`, `dev/*`, `extensions/*`, tenant ops such as `bootstrap` or `<tenant>-wl` | Yes |
-| **Aux** | Platform tooling: `publisher`, `launcher`, `git-convoy`, `bom-helper`, … | No. Own lifecycle: `aux/<name>` PRs into **`main`**. |
+| **Aux** | Platform tooling: `publisher`, `launcher`, `git-convoy`, `bom-helper`, `bootstrap`, … | No. Own lifecycle: `aux/<name>` PRs into **`develop`** (same integration model as product features). |
 | **BOM** | `<name>-bom` | No. Pins land on `main` of that repo. **That push deploys.** Never put `*-bom` on a feature, train, or hotfix branch. |
 
 A repo with no `develop` branch uses `main` as its integration branch for feature work. Release trains still only cut **product** repos that have a version file (`pyproject.toml` and/or `package.json`).
@@ -117,7 +117,7 @@ Repos that did not change do **not** get a row and do **not** get a `release/…
 
 ### Hotfix sheet / aux sheet
 
-Same idea: one sheet per name, sparse membership, PR URLs when you open them. Hotfix branches are `hotfix/<name>` (PRs into `main`). Aux branches are `aux/<name>` (PRs into `main`).
+Same idea: one sheet per name, sparse membership, PR URLs when you open them. Hotfix branches are `hotfix/<name>` (PRs into `main`). Aux branches are `aux/<name>` (PRs into `develop`).
 
 ### Adoption is already a file
 
@@ -702,14 +702,18 @@ Keep `production.enabled: true` if you want production to run the old pins immed
 
 Use this for repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, …). Each such repo should mark itself aux (`gitconvoy.toml` with `role = "aux"`; BOM repos use `role = "bom"`). Unmarked repos are product.
 
-Lifecycle is hotfix-style on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`main`**. After those PRs merge, merge **`main` → `develop`** so develop stays current — no second PR. If `develop` is missing, create it from `main`. Independent of the current feature/train/hotfix.
+Lifecycle mirrors product features on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`develop`**. **`develop` is the neutral branch** for day-to-day work; `main` is updated only when a platform release manager graduates `develop` → `main` and tags. Independent of the current feature/train/hotfix.
 
-1. Empty aux sheet. Check out the integration branch in clean aux repos that do not already have `aux/<name>`. Pick up existing `aux/<name>` only when it has work (same rules as feature start).
-2. Edit. Then for each dirty aux repo (or one with unique commits): create or check out `aux/<name>`. If you committed on `develop`/`main` and did not push, reset that local integration branch to origin. Do not adopt dirty **product** repos onto an aux sheet.
+You can do this without git-convoy: checkout `develop`, branch `aux/<name>`, PR back to `develop`, or commit directly to `develop` and push (legal but not ideal for review).
+
+1. Empty aux sheet. Check out `develop` in clean aux repos that do not already have `aux/<name>`. Pick up existing `aux/<name>` only when it has work (same rules as feature start).
+2. Edit. Then for each dirty aux repo (or one with unique commits): create or check out `aux/<name>`. If you committed on `develop` and did not push, reset local `develop` to `origin/develop`. Do not adopt dirty **product** repos onto an aux sheet.
 3. Commit on `aux/<name>`. Push if you want a backup without a PR.
-4. Before opening PRs: if local `main` has commits origin does not, move them onto `aux/<name>` (cherry-pick), then reset local `main` to `origin/main`. A cherry-pick conflict leaves the repo in the cherry-pick: resolve, `git add`, `git cherry-pick --continue`, then continue.
-5. Open PRs: `aux/<name>` → `main`. Approve the set. Merge in GitHub (merge order if several).
-6. After every PR is merged: merge `main` into `develop` in each participant, push `develop`, check out `develop`, delete local `aux/<name>`. Remove the sheet.
+4. Before opening PRs: merge `origin/develop` into `aux/<name>` (same as `git convoy aux prs` / `aux refresh`).
+5. Open PRs: `aux/<name>` → `develop`. Approve the set. Merge in GitHub (merge order if several).
+6. After every PR is merged: check out `develop`, delete local `aux/<name>`, remove the sheet. No `main` → `develop` step — the PR merge already updated `develop`.
+
+**Platform release (infrequent):** when `develop` has accumulated enough aux changes, a release manager opens `develop` → `main` PRs (`git convoy aux promote`), merges, and tags `main`. Hotfixes that land directly on `main` are absorbed into local `develop` via stable tags during `git convoy sync` (not by merging raw `main`).
 
 Do not use this path to change BOM pins. That is cycle 3–4 / hotfix adopt on the BOM repo’s `main`.
 
@@ -812,8 +816,8 @@ Do not wait for the next train. A hotfix may change **more than one product repo
 
 **Aux**
 
-- [ ] Only aux repos on the sheet; PRs into `main`
-- [ ] After merge: `main` → `develop`; aux branches deleted
+- [ ] Only aux repos on the sheet; PRs into `develop`
+- [ ] After merge: checked out on `develop`; aux branches deleted
 
 **Adoption invariants**
 

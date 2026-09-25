@@ -18,8 +18,8 @@ git convoy --json status    # agents / scripts
 
 | Kind        | Examples                                                           | Integration branch | Production branch   | How code lands on production                                    |
 | ----------- | ------------------------------------------------------------------ | ------------------ | ------------------- | --------------------------------------------------------------- |
-| **Product** | `renglo-lib`, `renglo-api`, `console`, `extensions/`*, `bootstrap` | `develop`          | `main` (stable tag) | Release train only                                              |
-| **Aux**     | `launcher`, `bom-helper`, `git-convoy`, `renglo-cli`, `publisher`  | `develop`          | `main` (relaxed)    | `aux/<name>` PR → `main`; `aux close` merges `main` → `develop` |
+| **Product** | `renglo-lib`, `renglo-api`, `console`, `extensions/*`              | `develop`          | `main` (stable tag) | Release train only                                              |
+| **Aux**     | `launcher`, `bom-helper`, `git-convoy`, `renglo-cli`, `bootstrap`, `publisher` | `develop` | `main` (relaxed)    | `aux/<name>` PR → `develop`; platform release manager graduates `develop` → `main` + tag |
 | **BOM**     | `*-bom`                                                            | —                  | `main` only         | Release manager writes pins on `main`; **that push deploys**    |
 
 
@@ -80,7 +80,8 @@ git convoy sync --no-push    # local only; do not push develop
 
 **What it does (every clone):**
 
-- **Product + aux:** fetch → checkout `develop` → fast-forward `origin/develop` → merge latest stable tag (or `origin/main`) → optionally push `develop`.
+- **Product:** fetch → checkout `develop` → fast-forward `origin/develop` → merge latest stable tag (or `origin/main`) → optionally push `develop`.
+- **Aux:** fetch → checkout `develop` → fast-forward `origin/develop` only; merge a stable `v*` tag into `develop` only when that tag is not yet an ancestor (hotfix landed on `main`) → optionally push `develop`. Raw `origin/main` is **not** merged during sync.
 - **BOM:** fetch → checkout `main` → fast-forward `origin/main`.
 
 **When it refuses (and what to do instead):**
@@ -187,33 +188,46 @@ git -C dev/renglo-lib log --oneline --left-right develop...origin/develop
 
 1. Before starting cross-repo work, run `git fetch` in every repo you will touch and ensure `develop` is not behind/diverged from `origin/develop`.
 2. If a teammate’s PR already merged, **pull that** — never re-cut the same change on local `develop`.
-3. For aux repos (`bom-helper`, `launcher`, `git-convoy`), same rule on `develop` vs `origin/develop`; aux PRs land on `main`, so also run `aux refresh` or merge `origin/main` into your `aux/<name>` branch.
+3. For aux repos (`bom-helper`, `launcher`, `git-convoy`), same rule on `develop` vs `origin/develop`. Day-to-day aux work lands on `develop`; if you use an `aux/<name>` branch, run `aux refresh` to merge `origin/develop` into it.
 
 ---
 
 
 
-## 5. Aux repos without an aux sheet
+## 5. Aux repos (develop-first, no git-convoy required)
 
-`git convoy sync develop` does **not** include aux repos. When you are not on an `aux/<name>` branch but need current tooling (e.g. read docs, run `renglo`, inspect launcher CDK):
+**Neutral branch is `develop`.** You do not need `main` for daily aux work. The manual flow without git-convoy:
 
 ```bash
-cd ops/launcher   # or bom-helper, git-convoy, renglo-cli, …
+cd ops/launcher   # or bom-helper, git-convoy, renglo-cli, bootstrap, …
 git fetch origin --tags --prune
 git checkout develop
-git merge --ff-only origin/develop || true
-git merge origin/main    # absorb what landed on main since last aux close
+git merge --ff-only origin/develop
+# optional: if a hotfix tag landed on main and is not in develop yet:
+git merge v1.2.3    # only when that tag exists and develop lacks it
 ```
 
-If `develop` does not exist yet: `git checkout main && git pull && git checkout -b develop`.
+**Small change on a branch (preferred):**
+
+```bash
+git checkout develop && git pull origin develop
+git checkout -b aux/my-change
+# edit, commit, push, open PR: aux/my-change → develop
+```
+
+**Direct commit to develop (legal, not ideal):** edit on `develop`, commit, `git push origin develop`.
+
+**Platform release (infrequent):** a release manager merges `develop` → `main`, tags `main`, and pushes — not part of day-to-day developer workflow.
 
 When you **are** on an aux sheet, prefer:
 
 ```bash
-git convoy aux refresh
+git convoy aux refresh    # merge origin/develop into each aux/<name> participant
+git convoy aux prs        # PRs target develop
+git convoy aux close      # after merge to develop; checks out develop, deletes aux branches
 ```
 
-That merges `origin/main` into each `aux/<name>` participant.
+`git convoy sync develop` does **not** include aux repos; idle `git convoy sync` fast-forwards aux `develop` from `origin/develop` (and hotfix tags only, not raw `main`).
 
 ---
 

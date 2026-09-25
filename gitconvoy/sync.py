@@ -234,6 +234,140 @@ def sync_workspace(
     return data
 
 
+def sync_aux_develop(
+    repo_path: Path,
+    *,
+    repo_id: str,
+    push: bool,
+    retry_hint: str = _RETRY_DEVELOP,
+) -> dict:
+    """Fast-forward aux ``develop`` from origin.
+
+    Day-to-day aux work integrates on ``develop``; ``main`` is updated only by
+    platform release or hotfix. When a ``v*`` stable tag exists on ``main`` and
+    is not yet in ``develop`` (hotfix landed on ``main``), merge that tag.
+    """
+    gitutil.fetch(repo_path)
+    ensured = gitutil.ensure_develop(repo_path, push=push)
+    if ensured.get("status") == "failed":
+        raise GitConvoyError(
+            f"{repo_id}: cannot create develop"
+            + (f" ({ensured.get('error')})" if ensured.get("error") else "")
+            + f"; {retry_hint}"
+        )
+    has_develop = gitutil.has_local_branch(
+        repo_path, "develop"
+    ) or gitutil.has_remote_branch(repo_path, "develop")
+    if not has_develop:
+        return {
+            "status": "skipped",
+            "synced": False,
+            "ref": "develop",
+            "branch": gitutil.current_branch(repo_path),
+        }
+    gitutil.checkout_branch(repo_path, "develop")
+    if gitutil.rev_parse(repo_path, "origin/develop"):
+        pulled = gitutil.run(
+            repo_path, "merge", "--ff-only", "origin/develop", check=False
+        )
+        if pulled.returncode != 0:
+            raise GitConvoyError(
+                f"{repo_id}: cannot fast-forward develop from origin; "
+                f"reconcile develop, then {retry_hint}"
+            )
+    if gitutil.has_tracked_changes(repo_path):
+        raise GitConvoyError(
+            f"{repo_id} develop is dirty; commit or stash, then {retry_hint}"
+        )
+    before = gitutil.rev_parse(repo_path, "develop")
+    merge_ref = "origin/develop"
+    status = "already"
+    tag = gitutil.last_stable_tag(repo_path)
+    if tag and not gitutil.is_ancestor(repo_path, tag, "develop"):
+        if not gitutil.rev_parse(repo_path, tag):
+            raise GitConvoyError(
+                f"{repo_id}: missing {tag}; fetch tags, then {retry_hint}"
+            )
+        merged = gitutil.merge(repo_path, tag)
+        if merged.returncode != 0:
+            gitutil.run(repo_path, "merge", "--abort", check=False)
+            raise GitConvoyError(
+                f"{repo_id}: merge hotfix tag {tag} into develop failed "
+                "(merge aborted, repo left clean). "
+                f"resolve on develop, then {retry_hint}"
+            )
+        merge_ref = tag
+        status = "merged"
+    elif before != gitutil.rev_parse(repo_path, "develop"):
+        status = "pulled"
+    if push and gitutil.origin_url(repo_path) and gitutil.rev_parse(
+        repo_path, "origin/develop"
+    ):
+        gitutil.push(repo_path, "origin", "develop")
+    return {
+        "status": status,
+        "synced": True,
+        "ref": merge_ref or "origin/develop",
+        "branch": "develop",
+        "develop_created": bool(ensured.get("created")),
+    }
+
+
+def sync_aux_repos(
+    workspace: Path,
+    *,
+    repo_ids: list[str] | None = None,
+    push: bool = True,
+    retry_hint: str = _RETRY_DEVELOP,
+) -> dict:
+    """Fast-forward ``develop`` for aux repos (no merge of raw ``main``)."""
+    from gitconvoy.workspace import aux_repos, require_repo
+
+    repos = aux_repos(workspace)
+    if repo_ids:
+        chosen = [require_repo(repos, repo_id) for repo_id in repo_ids]
+    else:
+        chosen = sorted(repos, key=lambda row: row.id)
+    entries = [DevelopSyncEntry(id=repo.id, rel=repo.rel) for repo in chosen]
+    rows: list[dict] = []
+    failed: list[str] = []
+    for entry in entries:
+        repo_path = workspace / entry.rel
+        item: dict = {
+            "id": entry.id,
+            "path": entry.rel,
+            "status": "failed",
+            "synced": False,
+        }
+        try:
+            result = sync_aux_develop(
+                repo_path,
+                repo_id=entry.id,
+                push=push,
+                retry_hint=retry_hint,
+            )
+            item["status"] = result["status"]
+            item["synced"] = result["synced"]
+            item["ref"] = result.get("ref")
+            item["branch"] = result.get("branch")
+            item["develop_created"] = result.get("develop_created")
+        except GitConvoyError as exc:
+            item["error"] = exc.message
+            failed.append(entry.id)
+        rows.append(item)
+    data: dict = {
+        "ok": not failed,
+        "repos": rows,
+        "failed": failed,
+    }
+    if failed:
+        data["note"] = (
+            f"develop sync failed in: {', '.join(failed)}. "
+            f"resolve, then {retry_hint}"
+        )
+    return data
+
+
 def _sync_one_workspace_repo(
     workspace: Path, repo: Repo, *, push: bool
 ) -> dict:
@@ -241,12 +375,20 @@ def _sync_one_workspace_repo(
     role = membership.read_repo_role(repo.path)
     if role == "bom" or is_bom_repo_id(repo.id, workspace):
         return _sync_main_only(repo, push=push, role="bom")
-    result = sync_develop_from_ref(
-        repo.path,
-        repo_id=repo.id,
-        push=push,
-        retry_hint=_RETRY_WORKSPACE,
-    )
+    if role == "aux":
+        result = sync_aux_develop(
+            repo.path,
+            repo_id=repo.id,
+            push=push,
+            retry_hint=_RETRY_WORKSPACE,
+        )
+    else:
+        result = sync_develop_from_ref(
+            repo.path,
+            repo_id=repo.id,
+            push=push,
+            retry_hint=_RETRY_WORKSPACE,
+        )
     return {
         "status": result["status"],
         "synced": result["synced"],

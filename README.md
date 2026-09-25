@@ -145,7 +145,7 @@ git convoy --json status
 
 ### Start of a work session (`git convoy sync`)
 
-After a few days away, before you start a feature: fetch every clone, put product repos on **`develop`** (not `main`), create `develop` from `main` if the clone has none, fast-forward `origin/develop` (other people’s merged features), and merge the latest stable tag / `main` (hotfixes). BOM repos stay on `main`.
+After a few days away, before you start a feature: fetch every clone, put product and aux repos on **`develop`** (not `main`), create `develop` from `main` if the clone has none, fast-forward `origin/develop`. **Product** repos also merge the latest stable tag / `main` (hotfixes). **Aux** repos fast-forward `develop` only and merge a stable tag when `main` received a hotfix that `develop` lacks — raw `origin/main` is not merged. BOM repos stay on `main`.
 
 The workspace must be **idle**. The command refuses if anything is dirty, if a feature/hotfix/aux sheet still has in-progress work, if a train is still `cut`/`stabilizing`, or if you are sitting on a `feature/*` / `hotfix/*` / `aux/*` / `release/*` branch that has commits not in `develop`.
 
@@ -706,7 +706,7 @@ Membership:
 2. `git convoy init` writes local `.gitconvoy/aux.toml` from those markers (workspace-local, not versioned).
 3. `git convoy bom` (and hotfix adopt) defaults to the single repo listed under `[bom]` in that file — any directory name is fine. Pass `--bom PATH` only to override. If `[bom]` is empty, discovery falls back to a `*-bom` directory name.
 
-Lifecycle is hotfix-style on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`main`** (one review). `aux close` merges **`main` → `develop`** so develop stays current — no second PR. Missing `develop` branches are created from `main`. Independent of the current feature/train/hotfix. `aux promote` is recovery only when develop is already ahead of main.
+Lifecycle mirrors product features on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`develop`** (one review). **`develop` is the neutral branch** for day-to-day work; `main` is updated only when a platform release manager graduates `develop` → `main` and tags. Independent of the current feature/train/hotfix. `aux promote` opens develop→main PRs for that release step.
 
 ```bash
 git convoy aux start codeartifact-mosaic
@@ -714,12 +714,14 @@ git convoy aux adopt
 git convoy aux adopt --repos bom-helper,git-convoy
 git convoy aux commit --header "fix: …" --header-only
 git convoy aux prs
-# merge PRs to main in GitHub
+# merge PRs to develop in GitHub
 git convoy aux show
-git convoy aux close --yes      # main → develop; remove aux branches
+git convoy aux close --yes      # after merge to develop; remove aux branches
+# platform release (infrequent):
+git convoy aux promote          # develop → main PRs when develop is ahead
 ```
 
-`aux prs` moves leftover local-`main` commits onto `aux/<name>`, then resets local `main` to `origin/main`. A cherry-pick conflict leaves the repo in the cherry-pick: resolve, `git add`, `git cherry-pick --continue`, then re-run `aux prs`.
+`aux prs` merges `origin/develop` into each `aux/<name>` participant before push. You can also work without git-convoy: branch from `develop`, PR to `develop`, or commit directly to `develop` and push (legal but not ideal).
 
 `feature adopt` ignores dirty aux repos; `aux adopt` ignores dirty product repos. Pass `--repos` to force-include named aux ids even when they are clean.
 
@@ -784,8 +786,8 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | ------- | ----- | ------------ |
 | `git convoy init` | 1 | State file, membership (`aux.toml`), gitignore, Cursor skill |
 | `git convoy status` | * | Current feature, aux, train, hotfix, dirty repos |
-| `git convoy sync` | * | Idle workspace: fetch all, check out `develop`, pull features + hotfixes |
-| `git convoy sync develop` | * | Merge stable/`main` into `develop` for product repos (no idle check) |
+| `git convoy sync` | * | Idle workspace: fetch all, check out `develop`; product merges stable/`main`; aux ff `develop` + hotfix tags only |
+| `git convoy sync develop` | * | Merge stable/`main` into `develop` for **product** repos only (no idle check) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
 | `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
 | `git convoy feature abandon` | 1 | Drop the feature sheet (no branch or file deletes) |
@@ -803,12 +805,12 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy aux commit` | * | Commit dirty aux participants |
 | `git convoy aux push` | * | Push `aux/<name>` (no PRs) |
 | `git convoy aux switch NAME` | * | Checkout that aux’s repos |
-| `git convoy aux refresh` | * | Merge `origin/main` into aux participants |
-| `git convoy aux prs` | * | Push and open PRs into **main** (Full); `--no-gh` for compare URLs. Absorbs leftover local-`main` commits onto `aux/<name>` |
+| `git convoy aux refresh` | * | Merge `origin/develop` into aux participants |
+| `git convoy aux prs` | * | Merge `origin/develop`, push, open PRs into **develop** (Full); `--no-gh` for compare URLs |
 | `git convoy aux approve` | * | Approve sibling PRs (Full) |
-| `git convoy aux promote` | * | Recovery: develop→main when develop is already ahead |
+| `git convoy aux promote` | * | Platform release: open develop→main PRs when develop is ahead |
 | `git convoy aux show [NAME]` | * | Aux sheet + merge status |
-| `git convoy aux close` | * | After merge to main: main→develop; remove aux branches |
+| `git convoy aux close` | * | After merge to develop: checkout develop; remove aux branches |
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
 | `git convoy train adopt [--repos …]` | 2 | Late-join dirty (or named) product repos; no version bump |
 | `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/aux commit) |

@@ -55,7 +55,7 @@ When the workspace is idle (nothing dirty, no in-progress feature/hotfix/aux/tra
 git convoy --json sync
 ```
 
-Fetches every clone, checks out **`develop`** (not `main`), creates `develop` from `main` when missing, fast-forwards `origin/develop`, merges the latest stable tag (or `origin/main`). BOM stays on `main`. Refuses if the workspace is not idle — then commit, `feature refresh`, or close/abandon first. Do not `git pull` on `main` to start product work.
+Fetches every clone, checks out **`develop`** (not `main`), creates `develop` from `main` when missing, fast-forwards `origin/develop`. **Product** repos merge the latest stable tag (or `origin/main`). **Aux** repos fast-forward `develop` only and merge a stable tag when a hotfix landed on `main` that `develop` lacks — not raw `origin/main`. BOM stays on `main`. Refuses if the workspace is not idle — then commit, `feature refresh`, or close/abandon first. Do not `git pull` on `main` to start product work.
 
 ## Heal develop from main (no idle workspace required)
 
@@ -136,16 +136,17 @@ git convoy --json feature close --yes
 
 Use for ops tooling that must not ride product trains: launcher, bom-helper, git-convoy, publisher, bootstrap, etc. Repos declare `role = "aux"` in committed `gitconvoy.toml`; `git convoy init` refreshes local `.gitconvoy/aux.toml`. Default for unmarked repos is **product**.
 
-`aux *` is independent of the current feature/train/hotfix. It only touches aux repos. Branch prefix `aux/<name>`. PRs target **`main`** (hotfix-style, one PR). `aux close` merges **`main` → `develop`**. Missing `develop` is created from `main`. `aux promote` is recovery only.
+`aux *` is independent of the current feature/train/hotfix. It only touches aux repos. Branch prefix `aux/<name>`. PRs target **`develop`** (same integration model as product features). **`develop` is the neutral branch**; `main` is updated only by platform release (`aux promote`). `aux close` checks out `develop` after PRs merge — no `main` → `develop` step.
 
 ```bash
 git convoy --json aux start codeartifact-mosaic
 git convoy --json aux adopt
 git convoy --json aux commit --header "fix: …" --header-only
 git convoy --json aux prs
-# merge PRs to main in GitHub
+# merge PRs to develop in GitHub
 git convoy --json aux show
 git convoy --json aux close --yes
+git convoy --json aux promote    # platform release: develop → main
 ```
 
 Do **not** put aux repos on a feature sheet (and vice versa). Dirty product repos are ignored by `aux adopt`; dirty aux repos are ignored by `feature adopt`.

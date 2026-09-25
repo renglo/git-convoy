@@ -44,8 +44,6 @@ def test_aux_start_and_adopt_only_touches_aux_repos(workspace: Path) -> None:
     assert "renglo-lib" not in {row["id"] for row in data["adopted"]}
     assert "renglo-lib" not in {row["id"] for row in data["skipped"]}
 
-    state = load(workspace) if (workspace / ".gitconvoy" / "state.json").exists() else state
-    # adopt saves state
     state = load(workspace)
     sheet = state.require_aux()
     assert sheet.repo_ids() == ["launcher"]
@@ -92,8 +90,7 @@ def test_aux_adopt_repos_rejects_product(workspace: Path) -> None:
         aux_cmd.adopt(workspace, state, repo_ids=["renglo-lib"])
 
 
-def test_aux_adopt_fishes_dirty_work_from_main(workspace: Path) -> None:
-    """Aux repos often land work on main even when develop exists."""
+def test_aux_adopt_fishes_dirty_work_from_develop(workspace: Path) -> None:
     _aux_workspace(workspace)
     svc = init_repo(workspace / "ops" / "publisher")
     (svc / "gitconvoy.toml").write_text('role = "aux"\n')
@@ -101,17 +98,17 @@ def test_aux_adopt_fishes_dirty_work_from_main(workspace: Path) -> None:
     git(svc, "commit", "-m", "marker")
     membership.refresh_membership(workspace, discover_repos(workspace))
 
-    git(svc, "checkout", "main")
-    (svc / "SERVICE.md").write_text("main-side change\n")
+    git(svc, "checkout", "develop")
+    (svc / "SERVICE.md").write_text("develop-side change\n")
 
     state = State()
     aux_cmd.start(workspace, state, "initial-aux")
     data = aux_cmd.adopt(workspace, state)
     adopted = {row["id"]: row for row in data["adopted"]}
     assert "publisher" in adopted
-    assert adopted["publisher"].get("fish_from") == "main"
+    assert adopted["publisher"].get("fish_from") == "develop"
     assert git(svc, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "aux/initial-aux"
-    assert (svc / "SERVICE.md").read_text() == "main-side change\n"
+    assert (svc / "SERVICE.md").read_text() == "develop-side change\n"
 
 
 def test_aux_start_creates_missing_develop(workspace: Path) -> None:
@@ -124,24 +121,6 @@ def test_aux_start_creates_missing_develop(workspace: Path) -> None:
     assert git(helper, "branch", "--list", "develop").stdout.strip() == ""
     aux_cmd.start(workspace, State(), "tools")
     assert git(helper, "rev-parse", "--abbrev-ref", "develop").stdout.strip() == "develop"
-
-
-def _diverge_main(repo: Path) -> tuple[str, str]:
-    """Local main and origin/main each get a unique commit from the same parent."""
-    git(repo, "checkout", "main")
-    base = git(repo, "rev-parse", "HEAD").stdout.strip()
-    (repo / "LOCAL.md").write_text("laptop\n")
-    git(repo, "add", "LOCAL.md")
-    git(repo, "commit", "-m", "local main work")
-    local = git(repo, "rev-parse", "HEAD").stdout.strip()
-    git(repo, "reset", "--hard", base)
-    (repo / "REMOTE.md").write_text("github\n")
-    git(repo, "add", "REMOTE.md")
-    git(repo, "commit", "-m", "origin main work")
-    remote = git(repo, "rev-parse", "HEAD").stdout.strip()
-    git(repo, "update-ref", "refs/remotes/origin/main", remote)
-    git(repo, "reset", "--hard", local)
-    return local, remote
 
 
 def _prep_aux_prs(workspace: Path, monkeypatch) -> tuple[Path, object]:
@@ -169,92 +148,33 @@ def _prep_aux_prs(workspace: Path, monkeypatch) -> tuple[Path, object]:
     return launcher, load(workspace)
 
 
-def test_aux_prs_compare_targets_main(workspace: Path, monkeypatch) -> None:
-    _aux_workspace(workspace)
-    launcher = workspace / "ops" / "launcher"
-    (launcher / "TOOL.md").write_text("aux change\n")
-    state = State()
-    aux_cmd.start(workspace, state, "codeartifact")
-    aux_cmd.adopt(workspace, state)
-    state = load(workspace)
-    from gitconvoy import commit as commit_cmd
-
-    commit_cmd.commit(
-        workspace,
-        state,
-        header="fix: aux",
-        header_only=True,
-        kind="aux",
-    )
-    monkeypatch.setattr(
-        "gitconvoy.aux.gitutil.github_slug", lambda _repo: "renglo/launcher"
-    )
-    monkeypatch.setattr("gitconvoy.aux.gitutil.push", lambda *args, **kwargs: None)
-    data = aux_cmd.prs(workspace, load(workspace), use_gh=False)
-    assert data["base"] == "main"
-    assert data["repos"][0]["compare"].endswith("compare/main...aux/codeartifact")
-
-
-def test_aux_prs_absorbs_diverged_local_main(workspace: Path, monkeypatch) -> None:
+def test_aux_prs_compare_targets_develop(workspace: Path, monkeypatch) -> None:
     launcher, state = _prep_aux_prs(workspace, monkeypatch)
-    _diverge_main(launcher)
+    # fetch is mocked; seed origin/develop so merge step can succeed
+    tip = git(launcher, "rev-parse", "develop").stdout.strip()
+    git(launcher, "update-ref", "refs/remotes/origin/develop", tip)
+    data = aux_cmd.prs(workspace, state, use_gh=False)
+    assert data["base"] == "develop"
+    assert data["repos"][0]["compare"].endswith("compare/develop...aux/codeartifact")
+
+
+def test_aux_prs_merges_origin_develop(workspace: Path, monkeypatch) -> None:
+    launcher, state = _prep_aux_prs(workspace, monkeypatch)
+    git(launcher, "checkout", "develop")
+    (launcher / "REMOTE.md").write_text("from origin\n")
+    git(launcher, "add", "REMOTE.md")
+    git(launcher, "commit", "-m", "on origin develop")
+    remote_tip = git(launcher, "rev-parse", "HEAD").stdout.strip()
+    git(launcher, "update-ref", "refs/remotes/origin/develop", remote_tip)
+    git(launcher, "checkout", "aux/codeartifact")
+    git(launcher, "reset", "--hard", "HEAD~0")  # stay on aux with only aux commit
 
     data = aux_cmd.prs(workspace, state, use_gh=False)
-    synced = {row["id"]: row.get("main") for row in data["ensure_develop"]}
-    assert synced["launcher"]["action"] == "absorbed"
-    assert any(
-        "local main work" in (item.get("subject") or "")
-        for item in synced["launcher"]["moved"]
-    )
-    assert "Moved local-main-only commits" in data["note"]
-
-    assert git(launcher, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == (
-        "aux/codeartifact"
-    )
-    main_tip = git(launcher, "rev-parse", "main").stdout.strip()
-    origin_tip = git(launcher, "rev-parse", "origin/main").stdout.strip()
-    assert main_tip == origin_tip
-    assert git(launcher, "show", "main:REMOTE.md").stdout == "github\n"
-    assert git(launcher, "show", "aux/codeartifact:LOCAL.md").stdout == "laptop\n"
-    assert (launcher / "TOOL.md").read_text() == "aux change\n"
+    assert data["base"] == "develop"
+    assert (launcher / "REMOTE.md").read_text() == "from origin\n"
 
 
-def test_aux_prs_absorbs_ahead_only_local_main(workspace: Path, monkeypatch) -> None:
-    launcher, state = _prep_aux_prs(workspace, monkeypatch)
-    git(launcher, "checkout", "main")
-    origin = git(launcher, "rev-parse", "HEAD").stdout.strip()
-    git(launcher, "update-ref", "refs/remotes/origin/main", origin)
-    (launcher / "LOCAL.md").write_text("laptop\n")
-    git(launcher, "add", "LOCAL.md")
-    git(launcher, "commit", "-m", "local main work")
-
-    data = aux_cmd.prs(workspace, state, use_gh=False)
-    synced = {row["id"]: row.get("main") for row in data["ensure_develop"]}
-    assert synced["launcher"]["action"] == "absorbed"
-    assert git(launcher, "rev-parse", "main").stdout.strip() == origin
-    git(launcher, "checkout", "aux/codeartifact")
-    assert (launcher / "LOCAL.md").read_text() == "laptop\n"
-
-
-def test_aux_prs_absorb_conflict_leaves_main(workspace: Path, monkeypatch) -> None:
-    launcher, state = _prep_aux_prs(workspace, monkeypatch)
-    git(launcher, "checkout", "aux/codeartifact")
-    (launcher / "LOCAL.md").write_text("aux side\n")
-    git(launcher, "add", "LOCAL.md")
-    git(launcher, "commit", "-m", "aux already has LOCAL.md")
-    _diverge_main(launcher)
-    local_main = git(launcher, "rev-parse", "main").stdout.strip()
-
-    with pytest.raises(GitConvoyError, match="conflict moving local-main"):
-        aux_cmd.prs(workspace, state, use_gh=False)
-
-    assert git(launcher, "rev-parse", "main").stdout.strip() == local_main
-    from gitconvoy import gitutil
-
-    assert gitutil.cherry_pick_in_progress(launcher)
-
-
-def test_aux_close_merges_main_into_develop(workspace: Path) -> None:
+def test_aux_close_checks_out_develop(workspace: Path) -> None:
     _aux_workspace(workspace)
     launcher = workspace / "ops" / "launcher"
     (launcher / "TOOL.md").write_text("ship it\n")
@@ -271,16 +191,14 @@ def test_aux_close_merges_main_into_develop(workspace: Path) -> None:
         header_only=True,
         kind="aux",
     )
-    # Simulate PR merge into main without going through GitHub.
-    git(launcher, "checkout", "main")
+    # Simulate PR merge into develop without going through GitHub.
+    git(launcher, "checkout", "develop")
     git(launcher, "merge", "--no-edit", "aux/ship")
     git(launcher, "checkout", "aux/ship")
     state = load(workspace)
     data = aux_cmd.close(workspace, state, yes=True, keep_branch=True)
     assert data["closed"] is True
-    assert data["repos"][0]["mergeback"]["status"] in {"merged", "already"}
     assert git(launcher, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
-    # Aux tip is now an ancestor of develop.
     tip = git(launcher, "rev-parse", "aux/ship").stdout.strip()
     merge_base = git(launcher, "merge-base", tip, "develop").stdout.strip()
     assert tip == merge_base
@@ -325,14 +243,14 @@ def test_aux_abandon_keeps_merged_local_branch(workspace: Path) -> None:
         header_only=True,
         kind="aux",
     )
-    git(launcher, "checkout", "main")
+    git(launcher, "checkout", "develop")
     git(launcher, "merge", "--no-edit", "aux/ship")
     git(launcher, "checkout", "aux/ship")
     data = aux_cmd.abandon(workspace, load(workspace), yes=True)
     assert data["abandoned"] is True
     assert git(launcher, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "aux/ship"
     assert "aux/ship" in git(launcher, "branch", "--list", "aux/ship").stdout
-    assert git(launcher, "show", "main:TOOL.md").stdout == "ship it\n"
+    assert git(launcher, "show", "develop:TOOL.md").stdout == "ship it\n"
     row = next(item for item in data["repos"] if item["id"] == "launcher")
     assert row["kept_local_branch"] is True
     assert row["dirty"] is False
