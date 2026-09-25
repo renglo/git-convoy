@@ -223,9 +223,9 @@ def test_sync_workspace_moves_off_empty_topic_branch(workspace: Path) -> None:
     assert gitutil.current_branch(schd) == "develop"
 
 
-def test_sync_aux_develop_does_not_merge_raw_main(workspace: Path) -> None:
+def test_sync_ops_develop_does_not_merge_raw_main(workspace: Path) -> None:
     launcher = init_repo(workspace / "ops" / "launcher")
-    (launcher / "gitconvoy.toml").write_text('role = "aux"\n')
+    (launcher / "gitconvoy.toml").write_text('role = "ops"\n')
     git(launcher, "add", "gitconvoy.toml")
     git(launcher, "commit", "-m", "marker")
     from gitconvoy import membership
@@ -240,16 +240,16 @@ def test_sync_aux_develop_does_not_merge_raw_main(workspace: Path) -> None:
     git(launcher, "update-ref", "refs/remotes/origin/main", git(launcher, "rev-parse", "HEAD").stdout.strip())
     git(launcher, "checkout", "develop")
 
-    data = sync_cmd.sync_aux_repos(workspace, repo_ids=["launcher"], push=False)
+    data = sync_cmd.sync_ops_repos(workspace, repo_ids=["launcher"], push=False)
     row = next(item for item in data["repos"] if item["id"] == "launcher")
     assert data["ok"] is True
     assert row["branch"] == "develop"
     assert not (launcher / "MAIN.md").exists()
 
 
-def test_sync_aux_develop_merges_hotfix_tag(workspace: Path) -> None:
+def test_sync_ops_develop_merges_hotfix_tag(workspace: Path) -> None:
     launcher = init_repo(workspace / "ops" / "launcher")
-    (launcher / "gitconvoy.toml").write_text('role = "aux"\n')
+    (launcher / "gitconvoy.toml").write_text('role = "ops"\n')
     git(launcher, "add", "gitconvoy.toml")
     git(launcher, "commit", "-m", "marker")
     from gitconvoy import membership
@@ -265,7 +265,7 @@ def test_sync_aux_develop_merges_hotfix_tag(workspace: Path) -> None:
     git(launcher, "update-ref", "refs/remotes/origin/main", git(launcher, "rev-parse", "HEAD").stdout.strip())
     git(launcher, "checkout", "develop")
 
-    data = sync_cmd.sync_aux_repos(workspace, repo_ids=["launcher"], push=False)
+    data = sync_cmd.sync_ops_repos(workspace, repo_ids=["launcher"], push=False)
     row = next(item for item in data["repos"] if item["id"] == "launcher")
     assert data["ok"] is True
     assert row["status"] == "merged"

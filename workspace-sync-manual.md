@@ -19,7 +19,7 @@ git convoy --json status    # agents / scripts
 | Kind        | Examples                                                           | Integration branch | Production branch   | How code lands on production                                    |
 | ----------- | ------------------------------------------------------------------ | ------------------ | ------------------- | --------------------------------------------------------------- |
 | **Product** | `renglo-lib`, `renglo-api`, `console`, `extensions/*`              | `develop`          | `main` (stable tag) | Release train only                                              |
-| **Aux**     | `launcher`, `bom-helper`, `git-convoy`, `renglo-cli`, `bootstrap`, `publisher` | `develop` | `main` (relaxed)    | `aux/<name>` PR → `develop`; platform release manager graduates `develop` → `main` + tag |
+| **Ops**     | `launcher`, `bom-helper`, `git-convoy`, `renglo-cli`, `bootstrap`, `publisher` | `develop` | `main` (relaxed)    | `ops/<name>` PR → `develop`; platform release manager graduates `develop` → `main` + tag |
 | **BOM**     | `*-bom`                                                            | —                  | `main` only         | Release manager writes pins on `main`; **that push deploys**    |
 
 
@@ -41,12 +41,12 @@ git convoy --json status    # agents / scripts
 | ---------------------------------------------------------- | ---------------------------------------------- | ------------------------ |
 | Between features / starting something new                  | `git convoy sync`                              | **Yes**                  |
 | Product feature in progress                                | `git convoy feature refresh`                   | No (participants only)   |
-| Aux tooling change in progress                             | `git convoy aux refresh`                       | No (participants only)   |
+| Ops tooling change in progress                             | `git convoy ops refresh`                       | No (participants only)   |
 | `develop` behind stable `main` (one or more product repos) | `git convoy sync develop`                      | No                       |
 | Same, scoped                                               | `git convoy sync develop --repos console,data` | No                       |
 | After hotfix publish (feature branches need the patch)     | `git convoy feature refresh`                   | No                       |
 | BOM pins (read-only)                                       | `git checkout main && git pull` in `*-bom`     | Per-repo clean `main`    |
-| Aux repo not on current aux sheet                          | Manual pull on `develop` (see §5)              | —                        |
+| Ops repo not on current ops sheet                          | Manual pull on `develop` (see §5)              | —                        |
 
 
 ```mermaid
@@ -54,11 +54,11 @@ flowchart TD
   START["git convoy status"]
   START --> Q1{"In-progress feature?"}
   Q1 -->|yes| FR["git convoy feature refresh"]
-  Q1 -->|no| Q2{"In-progress aux?"}
-  Q2 -->|yes| AR["git convoy aux refresh"]
+  Q1 -->|no| Q2{"In-progress ops?"}
+  Q2 -->|yes| AR["git convoy ops refresh"]
   Q2 -->|no| Q3{"Workspace idle?"}
   Q3 -->|yes| SYNC["git convoy sync"]
-  Q3 -->|no| PARTIAL["git convoy sync develop --repos … + manual aux/BOM"]
+  Q3 -->|no| PARTIAL["git convoy sync develop --repos … + manual ops/BOM"]
   FR --> PARTIAL
   AR --> PARTIAL
 ```
@@ -71,7 +71,7 @@ flowchart TD
 
 ## 1. Full workspace catch-up (`git convoy sync`)
 
-Use when you are **between** features, trains, hotfixes, and aux sheets — ready to land on a clean integration branch everywhere.
+Use when you are **between** features, trains, hotfixes, and ops sheets — ready to land on a clean integration branch everywhere.
 
 ```bash
 git convoy sync
@@ -89,9 +89,9 @@ git convoy sync --no-push    # local only; do not push develop
 
 | Blocker                                    | Meaning                         | Next step                                                 |
 | ------------------------------------------ | ------------------------------- | --------------------------------------------------------- |
-| `dirty: …`                                 | Uncommitted files               | `feature commit` / `aux commit` / stash                   |
+| `dirty: …`                                 | Uncommitted files               | `feature commit` / `ops commit` / stash                   |
 | `feature X is in-progress`                 | Open feature sheet              | `feature refresh`, or `feature close` / `feature abandon` |
-| `aux X is in-progress`                     | Open aux sheet                  | `aux refresh`, or `aux close` / `aux abandon`             |
+| `ops X is in-progress`                     | Open ops sheet                  | `ops refresh`, or `ops close` / `ops abandon`             |
 | `hotfix X is …`                            | Open hotfix                     | Finish or `hotfix abandon`                                |
 | `train X is cut/stabilizing`               | Active train                    | Finish train workflow or `train delete --yes`             |
 | `on feature/… with commits not in develop` | Leftover topic branch           | Merge PR, `feature close`, or checkout `develop`          |
@@ -130,9 +130,9 @@ git convoy sync develop --no-push    # local only
 
 This checks out `develop` in those repos only. Each repo’s `develop` must be **clean** (no uncommitted files on `develop`).
 
-### Step C — aux and BOM while on a product feature
+### Step C — ops and BOM while on a product feature
 
-- **Aux** (`launcher`, `bom-helper`, …): not updated by `sync develop`. Either manual §5, or if you have an aux sheet open, `git convoy aux refresh`.
+- **Ops** (`launcher`, `bom-helper`, …): not updated by `sync develop`. Either manual §5, or if you have an ops sheet open, `git convoy ops refresh`.
 - **BOM:** `git -C ops/<tenant>-bom pull origin main` (read pins only unless you are the release manager).
 
 ---
@@ -151,7 +151,7 @@ git convoy sync develop --no-push
 
 Same merge logic as the automatic step inside `feature prs`, `train tag-rc`, and `train mergeback`. Continues past per-repo failures; re-run after fixing conflicts.
 
-**Scope:** **product repos only** (not aux, not BOM). For aux tooling, use §5 or `aux refresh`.
+**Scope:** **product repos only** (not ops, not BOM). For ops tooling, use §5 or `ops refresh`.
 
 Per-repo requirements:
 
@@ -188,15 +188,15 @@ git -C dev/renglo-lib log --oneline --left-right develop...origin/develop
 
 1. Before starting cross-repo work, run `git fetch` in every repo you will touch and ensure `develop` is not behind/diverged from `origin/develop`.
 2. If a teammate’s PR already merged, **pull that** — never re-cut the same change on local `develop`.
-3. For aux repos (`bom-helper`, `launcher`, `git-convoy`), same rule on `develop` vs `origin/develop`. Day-to-day aux work lands on `develop`; if you use an `aux/<name>` branch, run `aux refresh` to merge `origin/develop` into it.
+3. For ops repos (`bom-helper`, `launcher`, `git-convoy`), same rule on `develop` vs `origin/develop`. Day-to-day ops work lands on `develop`; if you use an `ops/<name>` branch, run `ops refresh` to merge `origin/develop` into it.
 
 ---
 
 
 
-## 5. Aux repos (develop-first, no git-convoy required)
+## 5. Ops repos (develop-first, no git-convoy required)
 
-**Neutral branch is `develop`.** You do not need `main` for daily aux work. The manual flow without git-convoy:
+**Neutral branch is `develop`.** You do not need `main` for daily ops work. The manual flow without git-convoy:
 
 ```bash
 cd ops/launcher   # or bom-helper, git-convoy, renglo-cli, bootstrap, …
@@ -211,23 +211,24 @@ git merge v1.2.3    # only when that tag exists and develop lacks it
 
 ```bash
 git checkout develop && git pull origin develop
-git checkout -b aux/my-change
-# edit, commit, push, open PR: aux/my-change → develop
+git checkout -b ops/my-change
+# edit, commit, push, open PR: ops/my-change → develop
 ```
 
 **Direct commit to develop (legal, not ideal):** edit on `develop`, commit, `git push origin develop`.
 
-**Platform release (infrequent):** a release manager merges `develop` → `main`, tags `main`, and pushes — not part of day-to-day developer workflow.
+**Platform release (infrequent):** `git convoy ops release <repo>` — bump, develop→main PR, or tag as needed. See README for flags (`--bump`, `--pin`, `--verify`, …).
 
-When you **are** on an aux sheet, prefer:
+When you **are** on an ops sheet, prefer:
 
 ```bash
-git convoy aux refresh    # merge origin/develop into each aux/<name> participant
-git convoy aux prs        # PRs target develop
-git convoy aux close      # after merge to develop; checks out develop, deletes aux branches
+git convoy ops refresh    # merge origin/develop into each ops/<name> participant
+git convoy ops prs        # PRs target develop
+git convoy ops close      # after merge to develop; checks out develop, deletes ops branches
+git convoy ops release bom-helper   # platform release: no sheet
 ```
 
-`git convoy sync develop` does **not** include aux repos; idle `git convoy sync` fast-forwards aux `develop` from `origin/develop` (and hotfix tags only, not raw `main`).
+`git convoy sync develop` does **not** include ops repos; idle `git convoy sync` fast-forwards ops `develop` from `origin/develop` (and hotfix tags only, not raw `main`).
 
 ---
 
@@ -243,7 +244,7 @@ git -C ops/<tenant>-bom checkout main
 git -C ops/<tenant>-bom pull --ff-only origin main
 ```
 
-Only **release managers** write BOM files (`git convoy bom`, `hotfix adopt`, manual pin edits). Never put `*-bom` on a feature, train, or aux branch.
+Only **release managers** write BOM files (`git convoy bom`, `hotfix bom`, manual pin edits). Never put `*-bom` on a feature, train, or ops branch.
 
 During `git convoy sync` (idle workspace), BOM clones are fast-forwarded on `main` automatically.
 
@@ -275,11 +276,11 @@ git convoy feature start <name>    # when ready
 
 
 
-### Start of day (aux change active)
+### Start of day (ops change active)
 
 ```bash
 git convoy status
-git convoy aux refresh
+git convoy ops refresh
 # optional: sync develop for product repos you might test against
 git convoy sync develop --repos renglo-lib,renglo-api
 ```
@@ -289,7 +290,7 @@ git convoy sync develop --repos renglo-lib,renglo-api
 ### End of day
 
 ```bash
-git convoy feature commit    # or aux commit / train commit
+git convoy feature commit    # or ops commit / train commit
 git convoy feature push      # backup to GitHub; no PR required
 ```
 
@@ -316,7 +317,7 @@ git convoy feature refresh   # if a feature is still open
 | Am I blocked?                      | `git convoy status`                        |
 | Catch up everything (idle)         | `git convoy sync`                          |
 | Catch up open product feature      | `git convoy feature refresh`               |
-| Catch up open aux work             | `git convoy aux refresh`                   |
+| Catch up open ops work             | `git convoy ops refresh`                   |
 | Heal product `develop` from stable | `git convoy sync develop [--repos a,b]`    |
 | Read BOM pins                      | `git pull` on `main` in `*-bom`            |
 | Local-only (no push)               | add `--no-push` to `sync` / `sync develop` |
@@ -326,7 +327,7 @@ git convoy feature refresh   # if a feature is still open
 
 - `git convoy feature adopt` — move dirty work from `develop` onto `feature/<name>`
 - `git convoy train mergeback` — release manager retries develop sync after publish
-- `git convoy init` — refresh `.gitconvoy/aux.toml` and Cursor skill after cloning new repos
+- `git convoy init` — refresh `.gitconvoy/ops.toml` and Cursor skill after cloning new repos
 
 ---
 
@@ -340,7 +341,7 @@ git convoy feature refresh   # if a feature is still open
 | Commit feature work on `develop` and push               | `feature adopt` → `feature commit` → `feature prs`           |
 | Implement the same teardown/PR twice on local `develop` | Merge `origin/develop` first; check GitHub for merged PRs    |
 | `git pull origin main` to start product coding          | `git convoy sync` or stay on `feature/*` + `feature refresh` |
-| Put aux repos on a feature sheet                        | `git convoy aux start` / `aux adopt`                         |
+| Put ops repos on a feature sheet                        | `git convoy ops start` / `ops adopt`                         |
 | Edit BOM on a feature branch                            | `git convoy bom` on `main` (release manager)                 |
 | Run `git convoy sync` with an open feature sheet        | `feature refresh` + `sync develop --repos …`                 |
 

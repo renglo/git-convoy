@@ -150,6 +150,32 @@ def test_delete_refuses_unmerged_commits(workspace: Path, monkeypatch) -> None:
     assert gitutil.current_branch(schd) == "release/2026-08-29"
 
 
+def test_delete_local_release_ahead_of_stale_origin_release(
+    workspace: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """Publish commit is on develop but never pushed to origin/release/*."""
+    monkeypatch.chdir(workspace)
+    state = State(current_train="2026-08-29")
+    train = Train(name="2026-08-29", branch="release/2026-08-29", status="published")
+    schd = workspace / "extensions" / "schd"
+    origin = tmp_path / "schd.git"
+    git(origin.parent, "init", "--bare", str(origin))
+    git(schd, "remote", "add", "origin", str(origin))
+    git(schd, "checkout", "-b", "release/2026-08-29")
+    git(schd, "commit", "--allow-empty", "-m", "rc")
+    git(schd, "push", "-u", "origin", "release/2026-08-29")
+    git(schd, "commit", "--allow-empty", "-m", "Release 1.0.1")
+    git(schd, "checkout", "develop")
+    git(schd, "merge", "--no-edit", "release/2026-08-29")
+    train.add_repo(TrainRepo(id="schd", path="extensions/schd", to="1.0.1"))
+    state.trains["2026-08-29"] = train
+    save(workspace, state)
+    data = train_cmd.delete(workspace, load(workspace), yes=True)
+    assert data["deleted"] is True
+    assert not gitutil.has_local_branch(schd, "release/2026-08-29")
+    assert gitutil.has_remote_branch(schd, "release/2026-08-29")
+
+
 def test_delete_refuses_unmerged_origin_commits(
     workspace: Path, tmp_path: Path, monkeypatch
 ) -> None:
@@ -531,7 +557,7 @@ def test_adopt_ignores_dirty_aux(workspace: Path, monkeypatch) -> None:
     from gitconvoy.workspace import discover_repos
 
     launcher = init_repo(workspace / "ops" / "launcher")
-    (launcher / "gitconvoy.toml").write_text('role = "aux"\n')
+    (launcher / "gitconvoy.toml").write_text('role = "ops"\n')
     git(launcher, "add", "gitconvoy.toml")
     git(launcher, "commit", "-m", "marker")
     membership.refresh_membership(workspace, discover_repos(workspace))
@@ -564,13 +590,13 @@ def test_adopt_repos_rejects_aux(workspace: Path, monkeypatch) -> None:
     from gitconvoy.workspace import discover_repos
 
     helper = init_repo(workspace / "ops" / "bom-helper")
-    (helper / "gitconvoy.toml").write_text('role = "aux"\n')
+    (helper / "gitconvoy.toml").write_text('role = "ops"\n')
     git(helper, "add", "gitconvoy.toml")
     git(helper, "commit", "-m", "marker")
     membership.refresh_membership(workspace, discover_repos(workspace))
     state = State()
     train_cmd.cut(workspace, state, "2026-09-03", repo_ids=["schd"])
-    with pytest.raises(GitConvoyError, match="aux repo"):
+    with pytest.raises(GitConvoyError, match="ops repo"):
         train_cmd.adopt(workspace, load(workspace), repo_ids=["bom-helper"])
 
 
@@ -643,7 +669,7 @@ def test_train_commit_plan_lists_dirty(
     assert gitutil.is_dirty(schd)
 
 
-def test_train_commit_ignores_dirty_bom_when_aux_toml_stale(
+def test_train_commit_ignores_dirty_bom_when_ops_toml_stale(
     workspace: Path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(workspace)
@@ -651,7 +677,7 @@ def test_train_commit_ignores_dirty_bom_when_aux_toml_stale(
 
     bom = init_repo(workspace / "ops" / "example-bom", develop=False)
     (bom / "gitconvoy.toml").write_text('role = "bom"\n')
-    membership.write_membership(workspace, aux=[], bom=["arbitium-bom"])
+    membership.write_membership(workspace, ops=[], bom=["arbitium-bom"])
     (bom / "NOTE.md").write_text("docs\n")
     state = State()
     train_cmd.cut(workspace, state, "2026-09-03", repo_ids=["schd"])

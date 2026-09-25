@@ -553,32 +553,32 @@ def test_refuses_when_several_bom_repos(tmp_path: Path) -> None:
         adopt_cmd.find_bom_repo(tmp_path)
 
 
-def test_discovers_bom_from_aux_toml_without_suffix(tmp_path: Path) -> None:
+def test_discovers_bom_from_ops_toml_without_suffix(tmp_path: Path) -> None:
     from gitconvoy import membership
 
     bom = tmp_path / "ops" / "arbitium_bill_of_materials"
     bom.mkdir(parents=True)
     membership.write_membership(
-        tmp_path, aux=[], bom=["arbitium_bill_of_materials"]
+        tmp_path, ops=[], bom=["arbitium_bill_of_materials"]
     )
     found = adopt_cmd.find_bom_repo(tmp_path)
     assert found.resolve() == bom.resolve()
 
 
-def test_aux_toml_bom_wins_over_suffix_walk(tmp_path: Path) -> None:
+def test_ops_toml_bom_wins_over_suffix_walk(tmp_path: Path) -> None:
     from gitconvoy import membership
 
     listed = tmp_path / "ops" / "arbitium_bill_of_materials"
     listed.mkdir(parents=True)
     (tmp_path / "ops" / "example-bom").mkdir(parents=True)
     membership.write_membership(
-        tmp_path, aux=[], bom=["arbitium_bill_of_materials"]
+        tmp_path, ops=[], bom=["arbitium_bill_of_materials"]
     )
     found = adopt_cmd.find_bom_repo(tmp_path)
     assert found.resolve() == listed.resolve()
 
 
-def test_explicit_bom_overrides_aux_toml(tmp_path: Path) -> None:
+def test_explicit_bom_overrides_ops_toml(tmp_path: Path) -> None:
     from gitconvoy import membership
 
     listed = tmp_path / "ops" / "arbitium_bill_of_materials"
@@ -586,7 +586,7 @@ def test_explicit_bom_overrides_aux_toml(tmp_path: Path) -> None:
     other = tmp_path / "ops" / "other-materials"
     other.mkdir(parents=True)
     membership.write_membership(
-        tmp_path, aux=[], bom=["arbitium_bill_of_materials"]
+        tmp_path, ops=[], bom=["arbitium_bill_of_materials"]
     )
     found = adopt_cmd.find_bom_repo(tmp_path, explicit="ops/other-materials")
     assert found.resolve() == other.resolve()

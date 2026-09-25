@@ -4,7 +4,7 @@
 
 `git-convoy` is a CLI that runs the [cross-repo feature manual](cross-repo-feature-manual.md) for you. It works in two modes — **Simple** (git only) or **Full** (git + GitHub via `gh`) — see below. Cycles 3 and 4 also need your tenant’s **publisher** (CodeArtifact) and **BOM** repos configured.
 
-**Stay current across clones:** [workspace-sync-manual.md](workspace-sync-manual.md) — when to use `sync`, `sync develop`, `feature refresh`, and `aux refresh` (including while a feature is already open).
+**Stay current across clones:** [workspace-sync-manual.md](workspace-sync-manual.md) — when to use `sync`, `sync develop`, `feature refresh`, and `ops refresh` (including while a feature is already open).
 
 State lives in `.gitconvoy/state.json` at the workspace root. That directory is gitignored. It is local to your machine.
 
@@ -94,11 +94,16 @@ That creates `gitconvoy-venv`, installs the CLI in editable mode (plus dev deps 
 
 `git convoy --help` asks Git for a man page. Use `git-convoy --help` or `gitconvoy --help`.
 
-For command sequences by cycle (reduced README, no concepts):
+For command sequences by topic (reduced README, no concepts):
 
 ```bash
-git convoy help
-git convoy --json help
+git convoy help                    # everything
+git convoy help feature            # cycle 1 process (+ related sync, hotfix refresh)
+git convoy help train              # cycles 2–4 (+ bom)
+git convoy help ops                # operator tooling + platform release
+git convoy help hotfix             # production emergency (+ bom, feature refresh)
+git convoy help staging -s              # one-line description per command
+git convoy --json help train
 ```
 
 Or manually:
@@ -145,9 +150,9 @@ git convoy --json status
 
 ### Start of a work session (`git convoy sync`)
 
-After a few days away, before you start a feature: fetch every clone, put product and aux repos on **`develop`** (not `main`), create `develop` from `main` if the clone has none, fast-forward `origin/develop`. **Product** repos also merge the latest stable tag / `main` (hotfixes). **Aux** repos fast-forward `develop` only and merge a stable tag when `main` received a hotfix that `develop` lacks — raw `origin/main` is not merged. BOM repos stay on `main`.
+After a few days away, before you start a feature: fetch every clone, put product and ops repos on **`develop`** (not `main`), create `develop` from `main` if the clone has none, fast-forward `origin/develop`. **Product** repos also merge the latest stable tag / `main` (hotfixes). **Ops** repos fast-forward `develop` only and merge a stable tag when `main` received a hotfix that `develop` lacks — raw `origin/main` is not merged. BOM repos stay on `main`.
 
-The workspace must be **idle**. The command refuses if anything is dirty, if a feature/hotfix/aux sheet still has in-progress work, if a train is still `cut`/`stabilizing`, or if you are sitting on a `feature/*` / `hotfix/*` / `aux/*` / `release/*` branch that has commits not in `develop`.
+The workspace must be **idle**. The command refuses if anything is dirty, if a feature/hotfix/ops sheet still has in-progress work, if a train is still `cut`/`stabilizing`, or if you are sitting on a `feature/*` / `hotfix/*` / `ops/*` / `release/*` branch that has commits not in `develop`.
 
 ```bash
 git convoy sync
@@ -215,7 +220,7 @@ Creates an empty feature sheet, sets it current, and checks out the integration 
 
 If `feature/blast-radius` already exists locally or on origin (you created it yourself, another machine, or a previous `start`/`adopt`), `feature start` checks that branch out and adds the repo to the sheet **only when it has work**: uncommitted files on that branch, or commits not already in `develop`. Empty leftover branches (created and then emptied) are left off the sheet; a clean checkout is returned to `develop`. Dirty work already on `feature/blast-radius` is kept. Dirty work on another branch is skipped (the existing feature branch is left as-is). It does **not** create `feature/blast-radius` in repos that have no such branch yet — that is `feature adopt`.
 
-Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `<tenant>-wl`, …). **`*-bom` is not a feature repo** — BOM pins land via `git convoy bom` / `hotfix adopt` on `main` (that push deploys). Platform tooling in `ops/` (`publisher`, `launcher`, `bom-helper`, `git-convoy`) is also excluded. Release trains still only cut product repos.
+Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `<tenant>-wl`, …). **`*-bom` is not a feature repo** — BOM pins land via `git convoy bom` / `hotfix bom` on `main` (that push deploys). Operator tooling in `ops/` (`publisher`, `launcher`, `bom-helper`, `git-convoy`) is also excluded. Release trains still only cut product repos.
 
 ### 2. Implement
 
@@ -394,7 +399,7 @@ git convoy train adopt
 git convoy train adopt --repos console,lab
 ```
 
-Creates or checks out `release/<name>` from the current integration branch and adds the repo to the train sheet. Refuses dirty work on `feature/*` (or any other branch). Ignores aux and BOM.
+Creates or checks out `release/<name>` from the current integration branch and adds the repo to the train sheet. Refuses dirty work on `feature/*` (or any other branch). Ignores ops and BOM.
 
 Commit stabilize work through convoy — do not leave the tool to guess which repos are dirty:
 
@@ -696,63 +701,301 @@ A manual staging check on **stable** pins before enabling production is recommen
 
 ---
 
-## Aux — Platform tooling (parallel to features)
+## Ops — Operator tooling (parallel to features)
 
-Use **`git convoy aux`** for platform/tooling repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, etc.).
+Use **`git convoy ops`** for operator tooling repos that must not ride product trains (`launcher`, `bom-helper`, `git-convoy`, `renglo-cli`, `publisher`, `bootstrap`, …).
 
-Membership:
+**Membership**
 
-1. Each aux repo commits `gitconvoy.toml` with `role = "aux"` (BOM repos use `role = "bom"`). Unmarked repos are **product**.
-2. `git convoy init` writes local `.gitconvoy/aux.toml` from those markers (workspace-local, not versioned).
-3. `git convoy bom` (and hotfix adopt) defaults to the single repo listed under `[bom]` in that file — any directory name is fine. Pass `--bom PATH` only to override. If `[bom]` is empty, discovery falls back to a `*-bom` directory name.
+1. Each ops repo commits `gitconvoy.toml` with `role = "ops"` plus a release policy (`version`, `publish`, `pin`). BOM repos use `role = "bom"`. Unmarked repos are **product**.
+2. `git convoy init` writes local `.gitconvoy/ops.toml` from those markers (workspace-local, not versioned).
+3. `git convoy bom` (and `hotfix bom`) defaults to the single repo listed under `[bom]` in that file. Pass `--bom PATH` only to override.
 
-Lifecycle mirrors product features on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`develop`** (one review). **`develop` is the neutral branch** for day-to-day work; `main` is updated only when a platform release manager graduates `develop` → `main` and tags. Independent of the current feature/train/hotfix. `aux promote` opens develop→main PRs for that release step.
+**Two paths**
+
+| Path | Branch | PR target | When |
+| ---- | ------ | --------- | ---- |
+| **Daily ops work** | `ops/<name>` | `develop` | Tooling changes under review (same shape as features) |
+| **Platform release** | `develop` → `main` | `develop` → `main` | Ship a versioned release of one ops repo (no sheet) |
+
+`develop` is the neutral branch for day-to-day work. Ops work is independent of the current feature, train, or hotfix. `feature adopt` ignores dirty ops repos; `ops adopt` ignores dirty product repos.
+
+You can also skip the sheet: checkout `develop`, branch `ops/my-change`, PR to `develop`, or commit directly to `develop` and push (legal but not ideal for review).
+
+---
+
+### Daily ops work — `ops/<name>` → `develop`
+
+### 1. Start an ops sheet
 
 ```bash
-git convoy aux start codeartifact-mosaic
-git convoy aux adopt
-git convoy aux adopt --repos bom-helper,git-convoy
-git convoy aux commit --header "fix: …" --header-only
-git convoy aux prs
-# merge PRs to develop in GitHub
-git convoy aux show
-git convoy aux close --yes      # after merge to develop; remove aux branches
-# platform release (infrequent):
-git convoy aux promote          # develop → main PRs when develop is ahead
+git convoy ops start codeartifact-mosaic
 ```
 
-`aux prs` merges `origin/develop` into each `aux/<name>` participant before push. You can also work without git-convoy: branch from `develop`, PR to `develop`, or commit directly to `develop` and push (legal but not ideal).
+Creates an empty ops sheet, sets it current, and checks out `develop` in every clean ops repo that does **not** already have `ops/codeartifact-mosaic`.
 
-`feature adopt` ignores dirty aux repos; `aux adopt` ignores dirty product repos. Pass `--repos` to force-include named aux ids even when they are clean.
+If `ops/<name>` already exists locally or on origin, `ops start` checks that branch out and adds the repo to the sheet **only when it has work** (dirty files or commits not in `develop`). Empty leftover branches are left off the sheet. It does **not** create `ops/<name>` in untouched repos — that is `ops adopt`.
+
+### 2. Implement
+
+Edit code in ops repos (`ops/launcher`, `ops/bom-helper`, …). Work may happen on `develop` before adopt — same as features.
+
+### 3. Adopt changed ops repos
+
+```bash
+git convoy ops adopt
+git convoy ops adopt --repos bom-helper,git-convoy   # force-include named repos
+```
+
+For each ops repo that is dirty, has local commits on `develop` not on `origin/develop`, or already has `ops/<name>` with unique commits:
+
+- Creates or checks out `ops/<name>`
+- If you committed on `develop` (and did not push), resets local `develop` to `origin/develop`
+- Adds the repo to the ops sheet
+
+Empty `ops/<name>` branches are dropped from the sheet. Product repos are never adopted onto an ops sheet.
+
+### 4. Commit
+
+```bash
+git convoy ops commit
+git convoy ops commit --header "fix: …" --header-only
+```
+
+Same commit UX as `feature commit` (interactive or `--json` plan). Only ops participants on `ops/<name>` are committed.
+
+### 5. Open PRs
+
+```bash
+git convoy ops prs          # Full: opens PRs via gh
+git convoy ops prs --no-gh  # Simple: compare URLs only
+```
+
+Merges `origin/develop` into each `ops/<name>` participant, pushes, then opens PRs onto **`develop`**. Merge order follows the same product ordering when several ops repos participate.
+
+### 6. Approve PRs (Full mode)
+
+```bash
+git convoy ops approve
+git convoy ops show
+```
+
+Approve the whole set when CI is green. Merge only when **every** sibling PR is approved. git-convoy does not merge — merge in GitHub.
+
+`ops show` reports `committed`, `pending`, `uncommitted`, or `merged` per participant (same semantics as `feature show`).
+
+### 7. Close the ops sheet
+
+After every PR is merged to `develop`:
+
+```bash
+git convoy ops close
+git convoy ops close codeartifact-mosaic --yes
+```
+
+Checks out `develop`, deletes local `ops/<name>`, and removes the ops sheet. No `main` → `develop` step — the PR merge already updated `develop`. Pass `--remote` to delete `origin/ops/<name>` too.
+
+To drop the sheet without touching git: `git convoy ops abandon --yes`.
+
+When those PRs merge, the tooling change is on `develop`. Platform release (below) graduates `develop` to `main` when you are ready to ship a version.
+
+---
+
+### Platform release — `develop` → `main` (per repo, no sheet)
+
+Ship a versioned release of one ops repo — **without** an ops sheet. Only **that** repo’s `develop` must be clean; other ops repos may be dirty.
+
+Each ops repo must declare `version`, `publish`, and `pin` in `gitconvoy.toml`. Repos with `publish = "python-wheel"` publish to CodeArtifact on every `v*` tag push.
+
+```bash
+git convoy ops release <repo-name>
+```
+
+The command bumps semver (when needed), opens a **develop→main** PR, or tags `main` — whichever the repo needs at that moment. Merge the PR in GitHub when one is opened, then run the same command again to tag. git-convoy does not merge PRs or push `*-bom`.
+
+#### Flags
+
+| Flag | Default | Effect |
+| ---- | ------- | ------ |
+| `--bump patch\|minor\|major` | `patch` | Semver part to bump before opening the develop→main PR |
+| `--pin` | off | Set `deploy_targets.yml` `helper.ref` to the release tag |
+| `--pin sha` | — | Pin by commit SHA instead (e.g. while the PR is still open) |
+| `--bom PATH` | workspace BOM | BOM repo to update when using `--pin` |
+| `--verify` | off | After tagging, check the `v*` publish workflow (Full mode) |
+| `--wait` | off | With `--verify`, poll until publish workflows finish |
+| `--no-gh` | off | Print a compare URL instead of opening the PR via `gh` |
+| `--no-push` | off | Do not push `develop`, `main`, or tags |
+
+Pass several repos in one run: `git convoy ops release bom-helper git-convoy`.
+
+#### Examples
+
+```bash
+# Default patch bump + develop→main PR
+git convoy ops release bom-helper
+
+# Minor bump before the PR
+git convoy ops release bom-helper --bump minor
+
+# After the PR is merged: tag, verify publish, pin helper in the BOM
+git convoy ops release bom-helper --verify --wait --pin --bom ops/arbitium-bom
+cd ops/arbitium-bom && git add deploy_targets.yml && git commit -m "Pin bom-helper" && git push
+
+# Pin by SHA while the develop→main PR is still open
+git convoy ops release bom-helper --pin sha --bom ops/arbitium-bom
+```
+
+---
+
+### Annex — Optional ops commands
+
+#### Push the ops branch (no PRs)
+
+```bash
+git convoy ops push
+```
+
+Pushes `ops/<name>` to origin. Does not open PRs. Uncommitted files stay local.
+
+#### Refresh from `develop`
+
+```bash
+git convoy ops refresh
+```
+
+Merges `origin/develop` into each `ops/<name>` participant.
+
+#### Switch ops sheets
+
+```bash
+git convoy ops switch other-name
+```
+
+#### Sheet-scoped promote (legacy)
+
+```bash
+git convoy ops promote
+```
+
+Opens `develop` → `main` PRs for repos on the **current ops sheet** only — no bump or tag. Prefer `ops release <repo>` for platform release.
+
+#### Abandon (sheet only)
+
+```bash
+git convoy ops abandon --yes
+```
+
+Drops the ops sheet. Does not delete branches or uncommitted files.
 
 ---
 
 ## Hotfix — Production emergency
 
-Do not wait for the next train. A hotfix can touch **more than one product repo**. PRs go to **`main`**. After tags land, the patch is merged into **`develop`** and absorbed into local in-progress **`feature/*`** branches so every branch in process gets it.
+**Hotfix** is a parallel path, not a fifth cycle. Use it when production is already on a stable train and you need a **PATCH** in one or more product repos **without** waiting for the next cut.
+
+PRs go to **`main`**, not `develop`. After tags land, the patch is merged into **`develop`** and absorbed into local in-progress **`feature/*`** branches so every branch in process gets it.
+
+Hotfix touches **product repos only** (repos with version files). Ops and BOM repos are out of scope for the hotfix sheet itself; BOM pins are updated separately via `hotfix bom`.
+
+You must be on `main`, `develop`, or an existing `hotfix/<name>` when you start — not a dirty `feature/*`. git-convoy does **not** convert `feature/<name>` into a hotfix.
+
+---
+
+### 1. Start a hotfix
 
 ```bash
-git convoy hotfix start fetch-file                 # dirty product repos, existing hotfix/<name>, or --repos a,b
-git convoy hotfix commit --header "fix: …" --header-only
-git convoy hotfix push
-git convoy hotfix prs                              # PRs into main
-# merge those PRs in GitHub (merge order)
-git convoy hotfix publish                          # tag vX.Y.Z; merge main → develop; absorb feature/*
-git convoy hotfix adopt --bom ops/acme-bom         # next BOM patch; pin only hotfix packages; staging only
+git convoy hotfix start fetch-file
+git convoy hotfix start fetch-file --repos renglo-lib,renglo-api
 ```
 
-`hotfix start` branches `hotfix/<name>` from `main` and bumps **PATCH** only. You must be on `main`, `develop`, or the hotfix branch (not a dirty `feature/*`). If `hotfix/<name>` already exists locally or on origin, start checks it out, puts those repos on the sheet, and does **not** bump PATCH again — even when the tree is clean and the sheet was empty. It does **not** convert `feature/<name>` into a hotfix; create a new hotfix from `main` or `develop`, or be clean so start can switch onto an existing `hotfix/<name>`.
+For each participant:
 
-`hotfix publish` refuses until each participant’s hotfix branch is on `main` (or `main` already has the expected PATCH — squash-safe). It tags `vX.Y.Z`, pushes `main` and the tag when origin exists, merges tagged `main` into `develop` (and pushes `develop`), then merges that `develop` into every **local** `feature/*`. Conflicts abort that merge and are listed; resolve and run `git convoy feature refresh`. Use `--no-push` to keep tags and merges local.
+- Branches `hotfix/<name>` from `main` (or picks up an existing `hotfix/<name>`)
+- Bumps **PATCH** only in version files (`1.2.4` → `1.2.5`) and commits that bump on the hotfix branch
 
-`hotfix adopt` drafts the next system PATCH, pins **only** the hotfix packages, and points **staging**. It does **not** enable production. Commit and push the BOM yourself; then `git convoy bom --production` when staging is acceptable.
+`hotfix start` discovers dirty product repos automatically. Pass `--repos` to name clean repos. If `hotfix/<name>` **already exists**, start checks it out, puts those repos on the sheet, and **does not bump PATCH again**.
+
+### 2. Implement
+
+Edit the fix on `hotfix/<name>` in each participant repo.
+
+### 3. Commit
+
+```bash
+git convoy hotfix commit
+git convoy hotfix commit --header "fix: …" --header-only
+```
+
+Same commit UX as `feature commit`. Only hotfix participants on `hotfix/<name>` are committed.
+
+### 4. Push (optional)
+
+```bash
+git convoy hotfix push
+```
+
+Pushes `hotfix/<name>` to origin. Does not open PRs. Use before `hotfix prs` if you want a backup on GitHub.
+
+### 5. Open PRs
+
+```bash
+git convoy hotfix prs          # Full: opens PRs via gh
+git convoy hotfix prs --no-gh  # Simple: compare URLs only
+```
+
+Opens PRs onto **`main`**. Merge in order: `renglo-lib` → `renglo-api` → console and extensions (same order as features).
+
+### 6. Approve and merge (GitHub)
 
 ```bash
 git convoy hotfix show
-git convoy hotfix abandon --yes                    # drop sheet; keep branches and files
 ```
 
-git-convoy does not merge the GitHub PRs and does not push `*-bom`.
+Approve and merge every sibling PR in GitHub before publish. git-convoy does not merge.
+
+### 7. Publish
+
+```bash
+git convoy hotfix publish
+git convoy hotfix publish --no-push    # local tags and merges only
+```
+
+Refuses until each participant’s hotfix branch is on `main` (squash-safe: `main` already has the expected PATCH). Then, per repo:
+
+- Tags `vX.Y.Z` on `main` and pushes tag + `main`
+- Merges tagged `main` into `develop` and pushes `develop`
+- Merges that `develop` into every **local** `feature/*`
+
+Conflicts on feature branches are listed; resolve and run `git convoy feature refresh`.
+
+### 8. Write the BOM (staging)
+
+```bash
+git convoy hotfix bom --bom ops/acme-bom
+```
+
+Drafts the next system PATCH, pins **only** the hotfix packages, and points **staging** — same role as `git convoy bom` after a train, but scoped to hotfix participants. Does **not** enable production.
+
+```bash
+cd ops/acme-bom && git add bom/ deploy_targets.yml && git commit -m "Hotfix (staging)" && git push
+git convoy bom --production --bom ops/acme-bom    # when staging is acceptable
+```
+
+Commit and push the BOM yourself. git-convoy does not push `*-bom`.
+
+When the hotfix is live in production, everyone else runs `git convoy sync develop` and `git convoy feature refresh` to pick up the patch locally.
+
+---
+
+### Annex — Optional hotfix commands
+
+#### Abandon (sheet only)
+
+```bash
+git convoy hotfix abandon --yes
+```
+
+Drops the hotfix sheet. Does not delete branches or uncommitted files.
 
 ---
 
@@ -784,9 +1027,9 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 
 | Command | Cycle | What it does |
 | ------- | ----- | ------------ |
-| `git convoy init` | 1 | State file, membership (`aux.toml`), gitignore, Cursor skill |
-| `git convoy status` | * | Current feature, aux, train, hotfix, dirty repos |
-| `git convoy sync` | * | Idle workspace: fetch all, check out `develop`; product merges stable/`main`; aux ff `develop` + hotfix tags only |
+| `git convoy init` | 1 | State file, membership (`ops.toml`), gitignore, Cursor skill |
+| `git convoy status` | * | Current feature, ops, train, hotfix, dirty repos |
+| `git convoy sync` | * | Idle workspace: fetch all, check out `develop`; product merges stable/`main`; ops ff `develop` + hotfix tags only |
 | `git convoy sync develop` | * | Merge stable/`main` into `develop` for **product** repos only (no idle check) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
 | `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
@@ -799,26 +1042,27 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy feature approve` | 1 | Approve sibling PRs (Full; requires `gh`) |
 | `git convoy feature show [NAME]` | 1 | Feature sheet + merge status |
 | `git convoy feature close` | 1 | After all PRs merged |
-| `git convoy aux start NAME` | * | Aux sheet; pick up existing `aux/NAME`; else checkout integration |
-| `git convoy aux adopt [--repos …]` | * | Branch changed **aux** repos onto `aux/NAME` (from develop or main); `--repos` force-includes |
-| `git convoy aux abandon` | * | Drop the aux sheet (no branch or file deletes) |
-| `git convoy aux commit` | * | Commit dirty aux participants |
-| `git convoy aux push` | * | Push `aux/<name>` (no PRs) |
-| `git convoy aux switch NAME` | * | Checkout that aux’s repos |
-| `git convoy aux refresh` | * | Merge `origin/develop` into aux participants |
-| `git convoy aux prs` | * | Merge `origin/develop`, push, open PRs into **develop** (Full); `--no-gh` for compare URLs |
-| `git convoy aux approve` | * | Approve sibling PRs (Full) |
-| `git convoy aux promote` | * | Platform release: open develop→main PRs when develop is ahead |
-| `git convoy aux show [NAME]` | * | Aux sheet + merge status |
-| `git convoy aux close` | * | After merge to develop: checkout develop; remove aux branches |
+| `git convoy ops start NAME` | * | Ops sheet; pick up existing `ops/NAME`; else checkout integration |
+| `git convoy ops adopt [--repos …]` | * | Branch changed **ops** repos onto `ops/NAME` (from develop or main); `--repos` force-includes |
+| `git convoy ops abandon` | * | Drop the ops sheet (no branch or file deletes) |
+| `git convoy ops commit` | * | Commit dirty ops participants |
+| `git convoy ops push` | * | Push `ops/<name>` (no PRs) |
+| `git convoy ops switch NAME` | * | Checkout that ops sheet's repos |
+| `git convoy ops refresh` | * | Merge `origin/develop` into ops participants |
+| `git convoy ops prs` | * | Merge `origin/develop`, push, open PRs into **develop** (Full); `--no-gh` for compare URLs |
+| `git convoy ops approve` | * | Approve sibling PRs (Full) |
+| `git convoy ops promote` | * | Sheet-scoped: open develop→main PRs when develop is ahead (no bump/tag) |
+| `git convoy ops release REPO…` | * | Per-repo release: bump, PR develop→main, tag, optional `--verify` / `--pin` |
+| `git convoy ops show [NAME]` | * | Ops sheet + merge status |
+| `git convoy ops close` | * | After merge to develop: checkout develop; remove ops branches |
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
 | `git convoy train adopt [--repos …]` | 2 | Late-join dirty (or named) product repos; no version bump |
-| `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/aux commit) |
+| `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/ops commit) |
 | `git convoy train show [NAME]` | 2 | Read train sheet |
 | `git convoy train delete` | 2, 4 | Delete merged `release/<train>` branches only; refuse dirty or unique commits |
 | `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
-| `git convoy bom` | 3 | Staging BOM from `.gitconvoy/aux.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)` |
+| `git convoy bom` | 3 | Staging BOM from `.gitconvoy/ops.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)` |
 | `git convoy bom --require-verify` | 3–4 | Strict: refuse writing the BOM when any publish workflow failed |
 | `git convoy bom --no-verify` | 3–4 | Skip verify; local workflow heuristic only (Simple mode) |
 | `git convoy train publish` | 4 | Stable tags → registry; then mergeback into `develop` |
@@ -829,7 +1073,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy hotfix push` | * | Push `hotfix/<name>` (no PRs) |
 | `git convoy hotfix prs` | * | PRs into **main** (Full); `--no-gh` for compare URLs |
 | `git convoy hotfix publish` | * | Tag on `main`; merge into `develop`; absorb local `feature/*` |
-| `git convoy hotfix adopt` | * | Next BOM patch; pin only hotfix packages; staging only |
+| `git convoy hotfix bom` | * | Next BOM patch; pin only hotfix packages; staging only |
 | `git convoy hotfix show [NAME]` | * | Hotfix sheet + merge status |
 | `git convoy hotfix abandon` | * | Drop the hotfix sheet (no branch or file deletes) |
 | `git convoy bom draft` | * | Copy BOM to new system version |
@@ -854,7 +1098,7 @@ git convoy --json feature push
 git convoy --json bom --bom ops/<system>-bom              # cycle 3: staging
 git convoy --json bom --production --bom ops/<system>-bom  # cycle 4: production
 git convoy --json hotfix show
-git convoy --json hotfix adopt --bom ops/<system>-bom
+git convoy --json hotfix bom --bom ops/<system>-bom
 ```
 
 Cycles 1–2 only: no `--bom`, no registry. Do not invent package pins. In cycle 3–4 with Full mode, `bom` verifies publish CI and self-heals failed repos to git SHAs. Use `--require-verify` when every publish must be green before writing the BOM.

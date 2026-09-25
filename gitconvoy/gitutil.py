@@ -496,7 +496,7 @@ def pr_merge_status(
     ``pending`` means an open PR is waiting (via ``gh``, or a PR URL on the sheet).
     ``committed`` means the feature branch has commits not in the merge base and no PR yet.
     ``base`` overrides the default integration tip (develop, else main) for the
-    ancestor check — pass ``main`` for aux/hotfix sheets that land on main.
+    ancestor check — pass ``main`` for ops/hotfix sheets that land on main.
     """
     gh = gh_bin()
     slug = github_slug(repo)

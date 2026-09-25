@@ -8,7 +8,7 @@ from gitconvoy import gitutil
 from gitconvoy import membership
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.workspace import (
-    aux_repos,
+    ops_repos,
     discover_repos,
     feature_repos,
     find_workspace,
@@ -19,14 +19,14 @@ from conftest import init_repo
 
 
 def _mark_aux(path: Path) -> None:
-    (path / "gitconvoy.toml").write_text('role = "aux"\n')
+    (path / "gitconvoy.toml").write_text('role = "ops"\n')
 
 
 def _mark_bom(path: Path) -> None:
     (path / "gitconvoy.toml").write_text('role = "bom"\n')
 
 
-def test_feature_repos_excludes_aux_and_bom_when_membership_refreshed(
+def test_feature_repos_excludes_ops_and_bom_when_membership_refreshed(
     workspace: Path,
 ) -> None:
     bootstrap = init_repo(workspace / "ops" / "bootstrap")
@@ -46,24 +46,24 @@ def test_feature_repos_excludes_aux_and_bom_when_membership_refreshed(
     assert "renglo-lib" in ids
     assert "schd" in ids
 
-    aux_ids = {repo.id for repo in aux_repos(workspace)}
+    aux_ids = {repo.id for repo in ops_repos(workspace)}
     assert aux_ids == {"bootstrap", "publisher"}
 
 
-def test_aux_marker_is_read_without_init(workspace: Path) -> None:
+def test_ops_marker_is_read_without_init(workspace: Path) -> None:
     bootstrap = init_repo(workspace / "ops" / "bootstrap")
-    (bootstrap / "gitconvoy.toml").write_text('role = "aux"\n')
+    (bootstrap / "gitconvoy.toml").write_text('role = "ops"\n')
     assert "bootstrap" not in {repo.id for repo in product_repos(workspace)}
-    assert "bootstrap" in {repo.id for repo in aux_repos(workspace)}
-    assert membership.is_aux_id(workspace, "bootstrap") is True
+    assert "bootstrap" in {repo.id for repo in ops_repos(workspace)}
+    assert membership.is_ops_id(workspace, "bootstrap") is True
 
 
-def test_without_aux_toml_unmarked_ops_are_product(workspace: Path) -> None:
+def test_without_ops_toml_unmarked_ops_are_product(workspace: Path) -> None:
     init_repo(workspace / "ops" / "publisher")
     discovered = {repo.id for repo in discover_repos(workspace)}
     assert "publisher" in discovered
     assert "publisher" in {repo.id for repo in product_repos(workspace)}
-    assert "publisher" not in {repo.id for repo in aux_repos(workspace)}
+    assert "publisher" not in {repo.id for repo in ops_repos(workspace)}
 
 
 def test_bom_id_fallback_without_membership(workspace: Path) -> None:
@@ -72,12 +72,12 @@ def test_bom_id_fallback_without_membership(workspace: Path) -> None:
     assert "example-bom" not in ids
 
 
-def test_bom_suffix_excluded_when_aux_toml_lists_another_bom(
+def test_bom_suffix_excluded_when_ops_toml_lists_another_bom(
     workspace: Path,
 ) -> None:
-    """Stale aux.toml must not turn example-bom into a product repo."""
+    """Stale ops.toml must not turn example-bom into a product repo."""
     init_repo(workspace / "ops" / "example-bom", develop=False)
-    membership.write_membership(workspace, aux=[], bom=["arbitium-bom"])
+    membership.write_membership(workspace, ops=[], bom=["arbitium-bom"])
     ids = {repo.id for repo in product_repos(workspace)}
     assert "example-bom" not in ids
     assert "renglo-lib" in ids

@@ -45,13 +45,13 @@ def find_bom_repo(workspace: Path, explicit: str | None = None) -> Path:
         names = ", ".join(_bom_label(workspace, path) for path in matches)
         raise GitConvoyError(f"multiple BOM repos ({names}); pass --bom")
     raise GitConvoyError(
-        "no BOM repo found; list one under [bom] in .gitconvoy/aux.toml "
+        "no BOM repo found; list one under [bom] in .gitconvoy/ops.toml "
         "(git convoy init), use a *-bom directory, or pass --bom"
     )
 
 
 def _discover_bom_repos(workspace: Path) -> list[Path]:
-    """Prefer `.gitconvoy/aux.toml` [bom]; else legacy `*-bom` directory names."""
+    """Prefer `.gitconvoy/ops.toml` [bom]; else legacy `*-bom` directory names."""
     listed = membership.load_membership(workspace)["bom"]
     if listed:
         return _resolve_membership_bom(workspace, listed)
@@ -80,7 +80,7 @@ def _resolve_membership_bom(workspace: Path, listed: list[str]) -> list[Path]:
         found.append(path)
     if missing:
         raise GitConvoyError(
-            "BOM repo(s) listed in .gitconvoy/aux.toml not found in workspace: "
+            "BOM repo(s) listed in .gitconvoy/ops.toml not found in workspace: "
             + ", ".join(missing)
         )
     return found

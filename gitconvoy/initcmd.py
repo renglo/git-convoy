@@ -32,7 +32,7 @@ def init(workspace: Path, state: State) -> dict:
         "gitignore": str(gitignore),
         "skill": str(skill),
         "membership": membership_info["path"],
-        "aux": membership_info["aux"],
+        "ops": membership_info["ops"],
         "bom": membership_info["bom"],
         "repo_count": len(repos),
         "repos": [{"id": repo.id, "path": repo.rel, "kind": repo.kind} for repo in repos],

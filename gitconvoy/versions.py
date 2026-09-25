@@ -30,6 +30,17 @@ def format_npm(major: int, minor: int, patch: int, rc: int | None = None) -> str
     return f"{base}-rc.{rc}" if rc else base
 
 
+def cmp_stable(left: str, right: str) -> int:
+    """Compare PEP/npm versions by major.minor.patch only (rc ignored)."""
+    left_t = parse(drop_rc(left)[0])[:3]
+    right_t = parse(drop_rc(right)[0])[:3]
+    if left_t > right_t:
+        return 1
+    if left_t < right_t:
+        return -1
+    return 0
+
+
 def bump(version: str, part: str) -> str:
     major, minor, patch, _rc = parse(version)
     if part == "major":

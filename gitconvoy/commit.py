@@ -10,8 +10,8 @@ from typing import Callable
 
 from gitconvoy import gitutil
 from gitconvoy.errors import GitConvoyError
-from gitconvoy.state import Aux, Feature, Hotfix, State, Train
-from gitconvoy.workspace import aux_repos, feature_repos, product_repos, merge_sort
+from gitconvoy.state import Feature, Hotfix, Ops, State, Train
+from gitconvoy.workspace import ops_repos, feature_repos, product_repos, merge_sort
 
 InputFn = Callable[[str], str]
 WriteFn = Callable[[str], None]
@@ -113,8 +113,8 @@ def _plan(
     }
     if kind == "hotfix":
         payload["hotfix"] = sheet.name
-    if kind == "aux":
-        payload["aux"] = sheet.name
+    if kind == "ops":
+        payload["ops"] = sheet.name
     if kind == "train":
         payload["train"] = sheet.name
     return payload
@@ -160,7 +160,7 @@ def _apply(
 
 
 def _commit_result(
-    sheet: Feature | Hotfix | Aux | Train,
+    sheet: Feature | Hotfix | Ops | Train,
     kind: str,
     *,
     header: str,
@@ -178,8 +178,8 @@ def _commit_result(
     }
     if kind == "hotfix":
         payload["hotfix"] = sheet.name
-    elif kind == "aux":
-        payload["aux"] = sheet.name
+    elif kind == "ops":
+        payload["ops"] = sheet.name
     elif kind == "train":
         payload["train"] = sheet.name
     if printed:
@@ -314,19 +314,19 @@ def _targets(
     *,
     include_diff: bool,
     kind: str = "feature",
-) -> tuple[Feature | Hotfix | Aux | Train, list[DirtyRepo]]:
+) -> tuple[Feature | Hotfix | Ops | Train, list[DirtyRepo]]:
     if kind == "hotfix":
-        sheet: Feature | Hotfix | Aux | Train = state.require_hotfix()
+        sheet: Feature | Hotfix | Ops | Train = state.require_hotfix()
         scan = product_repos(workspace)
         hint = "run: git convoy hotfix start"
         label = "hotfix sheet"
         dirty_label = "product"
-    elif kind == "aux":
-        sheet = state.require_aux()
-        scan = aux_repos(workspace)
-        hint = "run: git convoy aux adopt"
-        label = "aux sheet"
-        dirty_label = "aux"
+    elif kind == "ops":
+        sheet = state.require_ops()
+        scan = ops_repos(workspace)
+        hint = "run: git convoy ops adopt"
+        label = "ops sheet"
+        dirty_label = "ops"
     elif kind == "train":
         sheet = state.require_train()
         scan = product_repos(workspace)
