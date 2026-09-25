@@ -55,7 +55,7 @@ Treat workspace clones as three kinds. Do not mix them on one sheet.
 | Kind | Where | Rides trains / hotfixes / feature PRs onto `develop`? |
 | ---- | ----- | ----------------------------------------------------- |
 | **Product** | `console/`, `dev/*`, `extensions/*`, tenant ops such as `bootstrap` or `<tenant>-wl` | Yes |
-| **Aux** | Platform tooling: `publisher`, `launcher`, `extensions-service`, `git-convoy`, `bom-helper`, … | No. Own lifecycle: `aux/<name>` PRs into **`main`**. |
+| **Aux** | Platform tooling: `publisher`, `launcher`, `git-convoy`, `bom-helper`, … | No. Own lifecycle: `aux/<name>` PRs into **`main`**. |
 | **BOM** | `<name>-bom` | No. Pins land on `main` of that repo. **That push deploys.** Never put `*-bom` on a feature, train, or hotfix branch. |
 
 A repo with no `develop` branch uses `main` as its integration branch for feature work. Release trains still only cut **product** repos that have a version file (`pyproject.toml` and/or `package.json`).
@@ -700,7 +700,7 @@ Keep `production.enabled: true` if you want production to run the old pins immed
 
 # Aux — Platform tooling
 
-Use this for repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, extensions-service, …). Each such repo should mark itself aux (`gitconvoy.toml` with `role = "aux"`; BOM repos use `role = "bom"`). Unmarked repos are product.
+Use this for repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, …). Each such repo should mark itself aux (`gitconvoy.toml` with `role = "aux"`; BOM repos use `role = "bom"`). Unmarked repos are product.
 
 Lifecycle is hotfix-style on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`main`**. After those PRs merge, merge **`main` → `develop`** so develop stays current — no second PR. If `develop` is missing, create it from `main`. Independent of the current feature/train/hotfix.
 

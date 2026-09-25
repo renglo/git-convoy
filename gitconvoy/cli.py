@@ -54,8 +54,8 @@ def _dispatch(workspace: Path, args: argparse.Namespace) -> tuple[dict, str]:
         return _aux(workspace, state, args)
     if cmd == "train":
         return _train(workspace, state, args)
-    if cmd == "adopt":
-        return _adopt(workspace, state, args)
+    if cmd == "bom":
+        return _bom(workspace, state, args)
     if cmd == "hotfix":
         return _hotfix(workspace, state, args)
     if cmd == "sync":
@@ -383,12 +383,12 @@ def _sync(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
     raise GitConvoyError(f"unknown sync command: {sub}")
 
 
-def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
-    sub = args.adopt_cmd
+def _bom(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
+    sub = args.bom_cmd
     production = getattr(args, "production", False)
     if production and sub == "take":
         raise GitConvoyError(
-            "adopt --production promotes the current BOM; omit take / --train / --from / --to"
+            "bom --production promotes the current BOM; omit take / --train / --from / --to"
         )
     if sub == "production" or (sub is None and production):
         if any(
@@ -396,7 +396,7 @@ def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
             for name in ("train", "from_version", "to_version")
         ):
             raise GitConvoyError(
-                "adopt --production promotes the current BOM; omit --train, --from, and --to"
+                "bom --production promotes the current BOM; omit --train, --from, and --to"
             )
         data = adopt_cmd.promote(
             workspace,
@@ -450,7 +450,7 @@ def _adopt(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
         )
         stage = "production" if data["production_enabled"] else "staging only"
         return data, f"deploy_targets bom={data['bom']} ({stage})"
-    raise GitConvoyError(f"unknown adopt command: {sub}")
+    raise GitConvoyError(f"unknown bom command: {sub}")
 
 
 def _add_take_flags(parser: argparse.ArgumentParser) -> None:
@@ -471,7 +471,7 @@ def _add_take_flags(parser: argparse.ArgumentParser) -> None:
     verify.add_argument(
         "--require-verify",
         action="store_true",
-        help="Refuse adopt when any publish workflow failed (strict)",
+        help="Refuse writing the BOM when any publish workflow failed (strict)",
     )
     verify.add_argument(
         "--no-verify",
@@ -737,40 +737,40 @@ def _parser() -> argparse.ArgumentParser:
         help="Verify stable tags even when train is still stabilizing",
     )
 
-    adopt = sub.add_parser(
-        "adopt",
+    bom = sub.add_parser(
+        "bom",
         help="Write a release BOM from the current train, or promote it to production",
     )
-    _add_take_flags(adopt)
-    adopt.add_argument(
+    _add_take_flags(bom)
+    bom.add_argument(
         "--production",
         action="store_true",
         help="Promote the current BOM to production",
     )
-    asub = adopt.add_subparsers(dest="adopt_cmd", required=False)
-    take = asub.add_parser(
+    bsub = bom.add_subparsers(dest="bom_cmd", required=False)
+    take = bsub.add_parser(
         "take",
         help="Write a release BOM from the current train (staging)",
     )
     _add_take_flags(take)
-    production = asub.add_parser(
+    production = bsub.add_parser(
         "production",
         help="Promote the current BOM to production",
     )
     production.add_argument("--bom", help="BOM repo path (override aux.toml)")
-    draft = asub.add_parser("draft", help="Copy last version object to a new draft")
+    draft = bsub.add_parser("draft", help="Copy last version object to a new draft")
     draft.add_argument("--from", dest="from_version", required=True)
     draft.add_argument("--to", dest="to_version", required=True)
     draft.add_argument("--bom", help="BOM repo path (override aux.toml)")
     draft.add_argument("--train")
     draft.add_argument("--description")
-    pin = asub.add_parser("pin", help="Set one package pin on a draft")
+    pin = bsub.add_parser("pin", help="Set one package pin on a draft")
     pin.add_argument("version")
     pin.add_argument("package")
     pin.add_argument("pin")
     pin.add_argument("--bom")
     pin.add_argument("--ecosystem", choices=("python", "npm"))
-    point = asub.add_parser("point", help="Point deploy_targets.yml at a version")
+    point = bsub.add_parser("point", help="Point deploy_targets.yml at a version")
     point.add_argument("version")
     point.add_argument("--bom")
     point.add_argument(

@@ -327,7 +327,7 @@ def test_take_cli_uses_current_train(tmp_path: Path) -> None:
     _seed_train_packages(tmp_path)
     state = _train()
     save(tmp_path, state)
-    assert main(["--workspace", str(tmp_path), "--json", "adopt", "--bom", str(bom_repo)]) == 0
+    assert main(["--workspace", str(tmp_path), "--json", "bom", "--bom", str(bom_repo)]) == 0
     dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
     assert dest["python"]["renglo-lib"] == "1.2.4"
     assert dest["train"] == "2026-W34"
@@ -344,7 +344,7 @@ def test_take_named_subcommand(tmp_path: Path) -> None:
                 "--workspace",
                 str(tmp_path),
                 "--json",
-                "adopt",
+                "bom",
                 "take",
                 "--bom",
                 str(bom_repo),
@@ -360,7 +360,7 @@ def test_adopt_cli_prints_wrote_files(tmp_path: Path, capsys: pytest.CaptureFixt
     _seed_train_packages(tmp_path)
     state = _train()
     save(tmp_path, state)
-    assert main(["--workspace", str(tmp_path), "adopt", "--bom", str(bom_repo)]) == 0
+    assert main(["--workspace", str(tmp_path), "bom", "--bom", str(bom_repo)]) == 0
     out = capsys.readouterr().out
     assert "adopted v1.4.1 from train 2026-W34 (draft)" in out
     assert "wrote:" in out
@@ -494,7 +494,7 @@ def test_promote_cli_flag(tmp_path: Path) -> None:
                 "--workspace",
                 str(tmp_path),
                 "--json",
-                "adopt",
+                "bom",
                 "--production",
                 "--bom",
                 str(bom_repo),
@@ -518,7 +518,7 @@ def test_promote_named_subcommand(tmp_path: Path) -> None:
                 "--workspace",
                 str(tmp_path),
                 "--json",
-                "adopt",
+                "bom",
                 "production",
                 "--bom",
                 str(bom_repo),

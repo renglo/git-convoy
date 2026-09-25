@@ -95,7 +95,7 @@ def test_aux_adopt_repos_rejects_product(workspace: Path) -> None:
 def test_aux_adopt_fishes_dirty_work_from_main(workspace: Path) -> None:
     """Aux repos often land work on main even when develop exists."""
     _aux_workspace(workspace)
-    svc = init_repo(workspace / "ops" / "extensions-service")
+    svc = init_repo(workspace / "ops" / "publisher")
     (svc / "gitconvoy.toml").write_text('role = "aux"\n')
     git(svc, "add", "gitconvoy.toml")
     git(svc, "commit", "-m", "marker")
@@ -108,8 +108,8 @@ def test_aux_adopt_fishes_dirty_work_from_main(workspace: Path) -> None:
     aux_cmd.start(workspace, state, "initial-aux")
     data = aux_cmd.adopt(workspace, state)
     adopted = {row["id"]: row for row in data["adopted"]}
-    assert "extensions-service" in adopted
-    assert adopted["extensions-service"].get("fish_from") == "main"
+    assert "publisher" in adopted
+    assert adopted["publisher"].get("fish_from") == "main"
     assert git(svc, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "aux/initial-aux"
     assert (svc / "SERVICE.md").read_text() == "main-side change\n"
 

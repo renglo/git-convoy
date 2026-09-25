@@ -189,7 +189,7 @@ def draft(
         "to": str(dest),
         "version": data["version"],
         "train": data.get("train"),
-        "note": "edit pins, then git convoy adopt point --staging-only",
+        "note": "edit pins, then git convoy bom point",
     }
 
 
@@ -432,7 +432,7 @@ def promote(
     if train_obj.status != "published":
         raise GitConvoyError(
             f"train {train_obj.name} is {train_obj.status}; "
-            "run train publish before adopt --production"
+            "run train publish before bom --production"
         )
     taken = take(
         workspace,
@@ -496,21 +496,21 @@ def _validate_production_promotion(root: Path, state: State, version: str) -> Tr
     train_name = data.get("train")
     if not train_name:
         raise GitConvoyError(
-            f"bom/{_strip_v(_v(version))}.json has no train; run adopt first"
+            f"bom/{_strip_v(_v(version))}.json has no train; run git convoy bom first"
         )
     if train_name not in state.trains:
         raise GitConvoyError(
-            f"bom train {train_name} is not in git-convoy state; run adopt from that train"
+            f"bom train {train_name} is not in git-convoy state; run git convoy bom from that train"
         )
     train = state.trains[train_name]
     if train.status != "published":
         raise GitConvoyError(
-            f"train {train_name} is {train.status}; run train publish before adopt --production"
+            f"train {train_name} is {train.status}; run train publish before bom --production"
         )
     rc_pins = _rc_pins_in_bom(data)
     if rc_pins:
         raise GitConvoyError(
-            "BOM still has release-candidate pins; run adopt after train publish: "
+            "BOM still has release-candidate pins; run git convoy bom after train publish: "
             + ", ".join(rc_pins)
         )
     return train

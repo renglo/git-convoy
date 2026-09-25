@@ -78,7 +78,7 @@ git convoy --json feature adopt
 
 That creates `feature/<name>` only in repos that changed and resets local `develop` if you committed there. Do not commit feature work onto `develop`.
 
-If `feature/<name>` already exists (you created it, another checkout, or a previous start/adopt), `git convoy --json feature start NAME` checks those branches out and puts them on the sheet **only when they have work** (dirty files on the branch, or commits not in `develop`). Empty leftover branches stay off the sheet. Dirty work already on `feature/<name>` is kept. It still does not create the branch in untouched repos — that is `adopt`. `feature adopt` also drops empty `feature/<name>` participants already on the sheet. Do **not** put `*-bom` on a feature sheet — BOM pins land via `git convoy adopt` / `hotfix adopt` on `main` (that push deploys).
+If `feature/<name>` already exists (you created it, another checkout, or a previous start/adopt), `git convoy --json feature start NAME` checks those branches out and puts them on the sheet **only when they have work** (dirty files on the branch, or commits not in `develop`). Empty leftover branches stay off the sheet. Dirty work already on `feature/<name>` is kept. It still does not create the branch in untouched repos — that is `adopt`. `feature adopt` also drops empty `feature/<name>` participants already on the sheet. Do **not** put `*-bom` on a feature sheet — BOM pins land via `git convoy bom` / `hotfix adopt` on `main` (that push deploys).
 
 Then commit on the feature branch. `--json` without `--from` or `--header-only` prints a plan (never a prompt). Fill `header` and each repo `body`, send the same document back.
 
@@ -134,7 +134,7 @@ git convoy --json feature close --yes
 
 ## Aux (platform tooling, parallel to features)
 
-Use for ops tooling that must not ride product trains: launcher, bom-helper, git-convoy, publisher, bootstrap, extensions-service, etc. Repos declare `role = "aux"` in committed `gitconvoy.toml`; `git convoy init` refreshes local `.gitconvoy/aux.toml`. Default for unmarked repos is **product**.
+Use for ops tooling that must not ride product trains: launcher, bom-helper, git-convoy, publisher, bootstrap, etc. Repos declare `role = "aux"` in committed `gitconvoy.toml`; `git convoy init` refreshes local `.gitconvoy/aux.toml`. Default for unmarked repos is **product**.
 
 `aux *` is independent of the current feature/train/hotfix. It only touches aux repos. Branch prefix `aux/<name>`. PRs target **`main`** (hotfix-style, one PR). `aux close` merges **`main` → `develop`**. Missing `develop` is created from `main`. `aux promote` is recovery only.
 
@@ -155,18 +155,18 @@ Do **not** put aux repos on a feature sheet (and vice versa). Dirty product repo
 ```bash
 git convoy --json train verify
 git convoy --json train verify --wait
-git convoy --json adopt --bom ops/<system>-bom                    # verify + self-heal (default)
-git convoy --json adopt --require-verify --bom ops/<system>-bom    # strict: refuse on failure
-git convoy --json adopt --no-verify --bom ops/<system>-bom        # Simple heuristic only
+git convoy --json bom --bom ops/<system>-bom                    # verify + self-heal (default)
+git convoy --json bom --require-verify --bom ops/<system>-bom    # strict: refuse on failure
+git convoy --json bom --no-verify --bom ops/<system>-bom        # Simple heuristic only
 ```
 
-Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trigger in `.github/workflows/` (any filename). Skips repos without such a workflow (console today). Default adopt clears registry pins for failed publishes and falls back to `repos.*.commit`. `--require-verify` refuses to write the BOM when verify fails.
+Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trigger in `.github/workflows/` (any filename). Skips repos without such a workflow (console today). Default `bom` clears registry pins for failed publishes and falls back to `repos.*.commit`. `--require-verify` refuses to write the BOM when verify fails.
 
 ## Cycles (see README)
 
 - **1–2:** features and local release branches — git only (Full optional).
-- **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `adopt` → push BOM (staging).
-- **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `adopt --production` → push BOM.
+- **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging).
+- **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.
 - **Hotfix** (parallel, not a fifth cycle): production PATCH without a new train. May touch several repos. PRs into `main`. Publish merges tagged `main` into `develop` and absorbs local `feature/*`.
 
@@ -185,34 +185,34 @@ git convoy --json hotfix publish
 git convoy --json hotfix adopt --bom ops/<system>-bom
 ```
 
-`hotfix start` branches from `main` and bumps PATCH. Start from `main` or `develop`, not a dirty `feature/*`. If `hotfix/<name>` already exists, start picks it up and does not bump PATCH again. It does not convert `feature/<name>` into a hotfix. `hotfix publish` tags `vX.Y.Z` on `main`, merges into `develop` (and pushes when origin exists), then merges that `develop` into local `feature/*` so in-process work gets the patch. Conflicts are listed; then `git convoy feature refresh`. `hotfix adopt` pins **only** those packages on the next BOM patch and points **staging**. It does not enable production. Commit and push the BOM; `adopt --production` when staging is acceptable.
+`hotfix start` branches from `main` and bumps PATCH. Start from `main` or `develop`, not a dirty `feature/*`. If `hotfix/<name>` already exists, start picks it up and does not bump PATCH again. It does not convert `feature/<name>` into a hotfix. `hotfix publish` tags `vX.Y.Z` on `main`, merges into `develop` (and pushes when origin exists), then merges that `develop` into local `feature/*` so in-process work gets the patch. Conflicts are listed; then `git convoy feature refresh`. `hotfix adopt` pins **only** those packages on the next BOM patch and points **staging**. It does not enable production. Commit and push the BOM; `bom --production` when staging is acceptable.
 
 ## What not to do
 
 - Do not create `feature/<name>` in every repo.
 - Do not `git pull` on `main` to start product work; `git convoy sync` (idle workspace) or `feature refresh` (in-progress feature).
 - Do not put aux (tooling) repos on a feature sheet; use `git convoy aux`.
-- Do not put `*-bom` on a feature branch or feature PR; deploy only via adopt on `main`.
+- Do not put `*-bom` on a feature branch or feature PR; deploy only via `bom` on `main`.
 - `feature abandon` / `aux abandon` / `hotfix abandon` drop the sheet only. They never delete git branches or uncommitted files. Only `train delete --yes` deletes branches, and it refuses if that would lose work.
 - Do not merge PRs through git-convoy (approve is OK in Full mode).
 - Do not query CodeArtifact or invent unpublished pins.
-- In Full mode, default `adopt` self-heals failed publishes to git SHAs; use `--require-verify` when the BOM must not be written until CI is green.
-- Do not adopt with `--no-verify` on a real train unless you checked Actions manually.
+- In Full mode, default `bom` self-heals failed publishes to git SHAs; use `--require-verify` when the BOM must not be written until CI is green.
+- Do not run `bom --no-verify` on a real train unless you checked Actions manually.
 - Do not increment semver again at publish; drop the rc suffix only.
 - Do not skip merging a hotfix back to `develop`; in-process feature branches need that patch.
 
 To put a train onto a running system, two golden paths:
 
 ```bash
-git convoy --json adopt --bom ops/<system>-bom
+git convoy --json bom --bom ops/<system>-bom
 ```
 
-That is the **release** path. Run it after each `train tag-rc`. The first adopt for a train drafts a new system version (patch bump). Later adopts for the same train refresh pins in that same BOM file — the CLI prints `(refresh)`. If staging fails, go back to cycle 2, tag-rc again, and adopt again. Many attempts are fine.
+That is the **release** path. Run it after each `train tag-rc`. The first `bom` for a train drafts a new system version (patch bump). Later `bom` runs for the same train refresh pins in that same BOM file — the CLI prints `(refresh)`. If staging fails, go back to cycle 2, tag-rc again, and run `bom` again. Many attempts are fine.
 
-After `train publish`, either run `adopt` alone (optional staging smoke-test pause) or go straight to production adopt:
+After `train publish`, either run `bom` alone (optional staging smoke-test pause) or go straight to production:
 
 ```bash
-git convoy --json adopt --production --bom ops/<system>-bom
+git convoy --json bom --production --bom ops/<system>-bom
 ```
 
 That is the **production** path. Run it only after `train publish` (which also runs `train mergeback` into `develop`). If develop is still behind the stable tag, run `git convoy --json train mergeback` and retry. Refreshes stable pins and enables production in one step. Refuses while the train is still stabilizing. After push, CI deploys staging, verifies it, then production — production is blocked if staging fails (watch GitHub Actions or failure notifications).
