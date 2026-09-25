@@ -12,7 +12,7 @@ from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo, save
 from gitconvoy.workspace import (
     Repo,
-    aux_repos,
+    ops_repos,
     bom_repos,
     merge_sort,
     product_repos,
@@ -130,7 +130,7 @@ def adopt(
     """Add product repos to the current train without bumping versions.
 
     Default: dirty product repos on develop/main or ``release/<train>``.
-    ``--repos`` force-includes those ids even when clean. Aux and BOM are
+    ``--repos`` force-includes those ids even when clean. Ops and BOM are
     ignored. Does not rewrite ``from``/``to`` for repos already on the sheet.
     """
     train = state.require_train()
@@ -234,9 +234,9 @@ def _require_product(workspace: Path, repo_id: str) -> Repo:
     try:
         return require_repo(product_repos(workspace), repo_id)
     except GitConvoyError:
-        if any(row.id == repo_id or row.rel == repo_id for row in aux_repos(workspace)):
+        if any(row.id == repo_id or row.rel == repo_id for row in ops_repos(workspace)):
             raise GitConvoyError(
-                f"{repo_id} is an aux repo; train adopt only takes product repos"
+                f"{repo_id} is an ops repo; train adopt only takes product repos"
             ) from None
         if any(row.id == repo_id or row.rel == repo_id for row in bom_repos(workspace)):
             raise GitConvoyError(
@@ -710,7 +710,11 @@ def delete(
         on_origin = gitutil.has_remote_branch(repo.path, branch)
         deleted_local = False
         if gitutil.has_local_branch(repo.path, branch):
-            gitutil.delete_merged_branch(repo.path, branch)
+            # -D is safe here: the refuse loop already required every
+            # commit on develop/main (local or origin). ``branch -d`` also
+            # compares the branch's upstream, which is often a stale
+            # origin/release/<train> that never received the publish commit.
+            gitutil.delete_branch(repo.path, branch)
             deleted_local = True
         deleted_remote = False
         if remote and on_origin:

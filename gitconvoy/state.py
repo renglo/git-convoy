@@ -103,27 +103,27 @@ class Hotfix:
 
 
 @dataclass
-class AuxRepo:
+class OpsRepo:
     id: str
     path: str
     pr: str | None = None
 
 
 @dataclass
-class Aux:
+class Ops:
     name: str
     branch: str
     status: str = "in-progress"
-    repos: list[AuxRepo] = field(default_factory=list)
+    repos: list[OpsRepo] = field(default_factory=list)
 
     def repo_ids(self) -> list[str]:
         return [repo.id for repo in self.repos]
 
-    def add_repo(self, repo_id: str, path: str) -> AuxRepo:
+    def add_repo(self, repo_id: str, path: str) -> OpsRepo:
         for repo in self.repos:
             if repo.id == repo_id:
                 return repo
-        row = AuxRepo(id=repo_id, path=path)
+        row = OpsRepo(id=repo_id, path=path)
         self.repos.append(row)
         return row
 
@@ -138,11 +138,11 @@ class State:
     current_feature: str | None = None
     current_train: str | None = None
     current_hotfix: str | None = None
-    current_aux: str | None = None
+    current_ops: str | None = None
     features: dict[str, Feature] = field(default_factory=dict)
     trains: dict[str, Train] = field(default_factory=dict)
     hotfixes: dict[str, Hotfix] = field(default_factory=dict)
-    auxes: dict[str, Aux] = field(default_factory=dict)
+    ops_sheets: dict[str, Ops] = field(default_factory=dict)
 
     def require_feature(self, name: str | None = None) -> Feature:
         key = name or self.current_feature
@@ -168,13 +168,13 @@ class State:
             raise GitConvoyError(f"unknown hotfix: {key}")
         return self.hotfixes[key]
 
-    def require_aux(self, name: str | None = None) -> Aux:
-        key = name or self.current_aux
+    def require_ops(self, name: str | None = None) -> Ops:
+        key = name or self.current_ops
         if not key:
-            raise GitConvoyError("no current aux; run: git convoy aux start <name>")
-        if key not in self.auxes:
-            raise GitConvoyError(f"unknown aux: {key}")
-        return self.auxes[key]
+            raise GitConvoyError("no current ops; run: git convoy ops start <name>")
+        if key not in self.ops_sheets:
+            raise GitConvoyError(f"unknown ops: {key}")
+        return self.ops_sheets[key]
 
 
 def state_path(workspace: Path) -> Path:
@@ -201,7 +201,7 @@ def _to_dict(state: State) -> dict[str, Any]:
         "current_feature": state.current_feature,
         "current_train": state.current_train,
         "current_hotfix": state.current_hotfix,
-        "current_aux": state.current_aux,
+        "current_ops": state.current_ops,
         "features": {
             name: {
                 "name": feat.name,
@@ -250,14 +250,14 @@ def _to_dict(state: State) -> dict[str, Any]:
             }
             for name, item in state.hotfixes.items()
         },
-        "auxes": {
+        "ops_sheets": {
             name: {
                 "name": item.name,
                 "branch": item.branch,
                 "status": item.status,
                 "repos": [asdict(repo) for repo in item.repos],
             }
-            for name, item in state.auxes.items()
+            for name, item in state.ops_sheets.items()
         },
     }
 
@@ -315,14 +315,14 @@ def _from_dict(raw: dict[str, Any]) -> State:
                 for row in item.get("repos") or []
             ],
         )
-    auxes: dict[str, Aux] = {}
-    for name, item in (raw.get("auxes") or {}).items():
-        auxes[name] = Aux(
+    ops_sheets: dict[str, Ops] = {}
+    for name, item in (raw.get("ops_sheets") or {}).items():
+        ops_sheets[name] = Ops(
             name=item.get("name", name),
-            branch=item.get("branch", f"aux/{name}"),
+            branch=item.get("branch", f"ops/{name}"),
             status=item.get("status", "in-progress"),
             repos=[
-                AuxRepo(
+                OpsRepo(
                     id=row["id"],
                     path=row["path"],
                     pr=row.get("pr"),
@@ -334,9 +334,9 @@ def _from_dict(raw: dict[str, Any]) -> State:
         current_feature=raw.get("current_feature"),
         current_train=raw.get("current_train"),
         current_hotfix=raw.get("current_hotfix"),
-        current_aux=raw.get("current_aux"),
+        current_ops=raw.get("current_ops"),
         features=features,
         trains=trains,
         hotfixes=hotfixes,
-        auxes=auxes,
+        ops_sheets=ops_sheets,
     )

@@ -327,7 +327,7 @@ def publish(workspace: Path, state: State, push_remote: bool = True) -> dict:
     note = (
         "Stable tags are on main; develop has the patch. "
         "In-progress feature/* branches were merged from develop where possible. "
-        "Next: git convoy hotfix adopt --bom ops/<system>-bom"
+        "Next: git convoy hotfix bom --bom ops/<system>-bom"
     )
     if failed_develop:
         note += (
@@ -350,7 +350,7 @@ def publish(workspace: Path, state: State, push_remote: bool = True) -> dict:
     }
 
 
-def adopt(
+def bom(
     workspace: Path,
     state: State,
     *,
@@ -362,7 +362,7 @@ def adopt(
     hotfix = state.require_hotfix()
     if hotfix.status != "published":
         raise GitConvoyError(
-            f"hotfix {hotfix.name} is {hotfix.status}; run hotfix publish before adopt"
+            f"hotfix {hotfix.name} is {hotfix.status}; run hotfix publish before bom"
         )
     if not hotfix.repos:
         raise GitConvoyError("hotfix has no participant repos")
@@ -431,6 +431,9 @@ def adopt(
         "point": pointed_out,
         "note": pointed_out["note"],
     }
+
+
+adopt = bom  # backward-compatible alias; prefer hotfix bom
 
 
 def show(workspace: Path, state: State, name: str | None = None) -> dict:

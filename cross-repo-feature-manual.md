@@ -31,7 +31,7 @@ The two halves stay decoupled on purpose. A train can sit in the registry unused
 - **Cycle 2 → 3:** the first **rc tags you push** to origin. That triggers CI publish workflows. Watch GitHub Actions on each participant before you write registry pins into a BOM.
 - **Cycle 3 → 4:** merge to `main`, push **stable** tags, merge tagged `main` back into `develop`, then enable production on the BOM. Production stays off until that last step.
 
-**Hotfix** is a parallel path, not a fifth cycle: a production PATCH without a new train. **Aux** is a parallel path for platform tooling that must not ride product trains.
+**Hotfix** is a parallel path, not a fifth cycle: a production PATCH without a new train. **Ops** is a parallel path for operator tooling that must not ride product trains.
 
 **Extension publishers** (`*` in this manual) have no write access to core repos. They follow the same steps on the repos they own. They still need a full local environment, including read-only core.
 
@@ -55,7 +55,7 @@ Treat workspace clones as three kinds. Do not mix them on one sheet.
 | Kind | Where | Rides trains / hotfixes / feature PRs onto `develop`? |
 | ---- | ----- | ----------------------------------------------------- |
 | **Product** | `console/`, `dev/*`, `extensions/*`, tenant ops such as `bootstrap` or `<tenant>-wl` | Yes |
-| **Aux** | Platform tooling: `publisher`, `launcher`, `git-convoy`, `bom-helper`, `bootstrap`, … | No. Own lifecycle: `aux/<name>` PRs into **`develop`** (same integration model as product features). |
+| **Ops** | Operator tooling: `publisher`, `launcher`, `git-convoy`, `bom-helper`, `bootstrap`, … | No. Own lifecycle: `ops/<name>` PRs into **`develop`** (same integration model as product features). |
 | **BOM** | `<name>-bom` | No. Pins land on `main` of that repo. **That push deploys.** Never put `*-bom` on a feature, train, or hotfix branch. |
 
 A repo with no `develop` branch uses `main` as its integration branch for feature work. Release trains still only cut **product** repos that have a version file (`pyproject.toml` and/or `package.json`).
@@ -88,7 +88,7 @@ Rules:
 
 - Start with an empty repo list.
 - Add a row the first time that repo actually changes. Do not pre-list every repo in the workspace.
-- Do not add aux or `*-bom` rows.
+- Do not add ops or `*-bom` rows.
 - The `pr` column stays empty until you open PRs.
 - If `feature/<name>` already exists but has **no work** (clean tree, no commits beyond `develop`), leave that repo **off** the sheet and check out `develop`.
 
@@ -115,9 +115,9 @@ breakdown       extensions/breakdown  0.0.2    0.0.3     v0.0.3-rc.2
 
 Repos that did not change do **not** get a row and do **not** get a `release/…` branch.
 
-### Hotfix sheet / aux sheet
+### Hotfix sheet / ops sheet
 
-Same idea: one sheet per name, sparse membership, PR URLs when you open them. Hotfix branches are `hotfix/<name>` (PRs into `main`). Aux branches are `aux/<name>` (PRs into `develop`).
+Same idea: one sheet per name, sparse membership, PR URLs when you open them. Hotfix branches are `hotfix/<name>` (PRs into `main`). Ops branches are `ops/<name>` (PRs into `develop`).
 
 ### Adoption is already a file
 
@@ -143,9 +143,9 @@ You never merge GitHub PRs from a script. Approve in GitHub (or `gh`); merge in 
 
 After time away, before you write code: every product clone should be on **`develop`**, with other people’s merged features **and** any hotfix that landed on `main`. Do not `git pull` on `main` for this. Fetching while `main` is checked out is how local `develop` and `origin/develop` drift apart.
 
-The workspace must be idle: no dirty files, no in-progress feature/hotfix/aux sheet with participant repos, no train still `cut`/`stabilizing`, and no checkout of `feature/*` / `hotfix/*` / `aux/*` / `release/*` that still has unique commits.
+The workspace must be idle: no dirty files, no in-progress feature/hotfix/ops sheet with participant repos, no train still `cut`/`stabilizing`, and no checkout of `feature/*` / `hotfix/*` / `ops/*` / `release/*` that still has unique commits.
 
-For **each product repo** (and each aux repo that has `develop`):
+For **each product repo** (and each ops repo that has `develop`):
 
 ```bash
 git fetch origin --tags --prune
@@ -233,7 +233,7 @@ If `develop` was **pushed** with those commits, stop. Do not reset a shared `dev
 
 Empty `feature/<name>` branches (no unique commits, clean tree) stay off the sheet. If they were already listed, drop them and check out `develop`.
 
-Do **not** create `feature/<name>` in repos that did not change. Do **not** adopt aux or `*-bom`.
+Do **not** create `feature/<name>` in repos that did not change. Do **not** adopt ops or `*-bom`.
 
 Then commit **on the feature branch**. Do not commit on `develop`.
 
@@ -400,7 +400,7 @@ Do **not** push a `v*` tag yet. That is cycle 3. You may push `release/2026-W34`
 
 Status → `cut`.
 
-To add a product repo that was left off the cut (dirty work on `develop`/`main`, or a named clean repo), check out or create `release/<train>` from the current integration branch, add a sheet row, and **do not bump versions**. Refuse dirty work on `feature/*`. Ignore aux and BOM.
+To add a product repo that was left off the cut (dirty work on `develop`/`main`, or a named clean repo), check out or create `release/<train>` from the current integration branch, add a sheet row, and **do not bump versions**. Refuse dirty work on `feature/*`. Ignore ops and BOM.
 
 ---
 
@@ -698,24 +698,24 @@ Keep `production.enabled: true` if you want production to run the old pins immed
 
 ---
 
-# Aux — Platform tooling
+# Ops — Operator tooling
 
-Use this for repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, …). Each such repo should mark itself aux (`gitconvoy.toml` with `role = "aux"`; BOM repos use `role = "bom"`). Unmarked repos are product.
+Use this for repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, …). Each such repo should mark itself ops (`gitconvoy.toml` with `role = "ops"`; BOM repos use `role = "bom"`). Unmarked repos are product.
 
-Lifecycle mirrors product features on **aux repos only**. Branch prefix `aux/<name>`. PRs target **`develop`**. **`develop` is the neutral branch** for day-to-day work; `main` is updated only when a platform release manager graduates `develop` → `main` and tags. Independent of the current feature/train/hotfix.
+Lifecycle mirrors product features on **ops repos only**. Branch prefix `ops/<name>`. PRs target **`develop`**. **`develop` is the neutral branch** for day-to-day work; `main` is updated only when a platform release manager graduates `develop` → `main` and tags. Independent of the current feature/train/hotfix.
 
-You can do this without git-convoy: checkout `develop`, branch `aux/<name>`, PR back to `develop`, or commit directly to `develop` and push (legal but not ideal for review).
+You can do this without git-convoy: checkout `develop`, branch `ops/<name>`, PR back to `develop`, or commit directly to `develop` and push (legal but not ideal for review).
 
-1. Empty aux sheet. Check out `develop` in clean aux repos that do not already have `aux/<name>`. Pick up existing `aux/<name>` only when it has work (same rules as feature start).
-2. Edit. Then for each dirty aux repo (or one with unique commits): create or check out `aux/<name>`. If you committed on `develop` and did not push, reset local `develop` to `origin/develop`. Do not adopt dirty **product** repos onto an aux sheet.
-3. Commit on `aux/<name>`. Push if you want a backup without a PR.
-4. Before opening PRs: merge `origin/develop` into `aux/<name>` (same as `git convoy aux prs` / `aux refresh`).
-5. Open PRs: `aux/<name>` → `develop`. Approve the set. Merge in GitHub (merge order if several).
-6. After every PR is merged: check out `develop`, delete local `aux/<name>`, remove the sheet. No `main` → `develop` step — the PR merge already updated `develop`.
+1. Empty ops sheet. Check out `develop` in clean ops repos that do not already have `ops/<name>`. Pick up existing `ops/<name>` only when it has work (same rules as feature start).
+2. Edit. Then for each dirty ops repo (or one with unique commits): create or check out `ops/<name>`. If you committed on `develop` and did not push, reset local `develop` to `origin/develop`. Do not adopt dirty **product** repos onto an ops sheet.
+3. Commit on `ops/<name>`. Push if you want a backup without a PR.
+4. Before opening PRs: merge `origin/develop` into `ops/<name>` (same as `git convoy ops prs` / `ops refresh`).
+5. Open PRs: `ops/<name>` → `develop`. Approve the set. Merge in GitHub (merge order if several).
+6. After every PR is merged: check out `develop`, delete local `ops/<name>`, remove the sheet. No `main` → `develop` step — the PR merge already updated `develop`.
 
-**Platform release (infrequent):** when `develop` has accumulated enough aux changes, a release manager opens `develop` → `main` PRs (`git convoy aux promote`), merges, and tags `main`. Hotfixes that land directly on `main` are absorbed into local `develop` via stable tags during `git convoy sync` (not by merging raw `main`).
+**Platform release (per repo, no sheet):** `git convoy ops release <id>`. Bumps semver, opens a develop→main PR, or tags `main` as needed. Flags: `--bump`, `--pin` / `--pin sha`, `--bom`, `--verify`, `--wait`, `--no-gh`, `--no-push`. Merge any PR in GitHub, then run the same command again to tag. Hotfixes that land directly on `main` are absorbed into local `develop` via stable tags during `git convoy sync` (not by merging raw `main`).
 
-Do not use this path to change BOM pins. That is cycle 3–4 / hotfix adopt on the BOM repo’s `main`.
+Do not use this path to change BOM pins. That is cycle 3–4 / `hotfix bom` on the BOM repo’s `main`.
 
 ---
 
@@ -767,7 +767,7 @@ Do not wait for the next train. A hotfix may change **more than one product repo
 
    On conflict, abort or resolve; then refresh the feature from `develop` (§3).
 
-5. **Adopt onto staging.** Copy the last good system version to a new **PATCH** (`v1.4.0` → `v1.4.1`). Pin **only** the hotfix packages (stable versions, not rc). Leave every other pin. Point `bom:` at the new file. Keep `production.enabled: false`. Commit and push the BOM.
+5. **BOM onto staging.** `git convoy hotfix bom --bom ops/<tenant>-bom` copies the last good system version to a new **PATCH** (`v1.4.0` → `v1.4.1`), pins **only** the hotfix packages (stable versions, not rc), leaves every other pin, points `bom:` at the new file, and keeps `production.enabled: false`. Commit and push the BOM.
 
    When staging is acceptable, turn production on **for that same file** (description, `production.enabled: true`) and push. Do not enable production in the same push as the first staging draft.
 
@@ -814,10 +814,12 @@ Do not wait for the next train. A hotfix may change **more than one product repo
 - [ ] Tagged `main` merged into `develop` (and pushed); in-progress `feature/*` absorbed
 - [ ] BOM patch pins only those packages; staging first, then production
 
-**Aux**
+**Ops**
 
-- [ ] Only aux repos on the sheet; PRs into `develop`
-- [ ] After merge: checked out on `develop`; aux branches deleted
+- [ ] Only ops repos on the sheet; PRs into `develop`
+- [ ] After merge: checked out on `develop`; ops branches deleted
+- [ ] Each ops repo has `gitconvoy.toml` policy (`version`, `publish`, `pin`) and a version file
+- [ ] Platform release via `git convoy ops release <id>` (no sheet); tag `v*` after the develop→main PR merges
 
 **Adoption invariants**
 

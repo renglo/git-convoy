@@ -135,13 +135,13 @@ def adopt(workspace: Path, state: State) -> dict:
 
 
 def _drop_non_feature_sheet_repos(workspace: Path, feature: Feature) -> list[dict]:
-    """Remove bom/aux rows that do not belong on a product feature sheet."""
+    """Remove bom/ops rows that do not belong on a product feature sheet."""
     dropped: list[dict] = []
     for row in list(feature.repos):
         if is_bom_repo_id(row.id, workspace):
             reason = "bom-not-a-feature-repo"
-        elif membership.is_aux_id(workspace, row.id):
-            reason = "aux-not-a-feature-repo"
+        elif membership.is_ops_id(workspace, row.id):
+            reason = "ops-not-a-feature-repo"
         else:
             continue
         feature.drop_repo(row.id)

@@ -1,9 +1,9 @@
-"""Workspace membership: product (default), aux, bom, and incubating.
+"""Workspace membership: product (default), ops, bom, and incubating.
 
 Roles are declared in each repo's ``gitconvoy.toml``
-(``role = "aux"|"bom"|"incubating"``). ``git convoy init`` writes local
-``.gitconvoy/aux.toml``. Without that file, BOM falls back to ``*-bom`` ids;
-unmarked repos are product. ``incubating`` is valid but not listed in aux.toml
+(``role = "ops"|"bom"|"incubating"``). ``git convoy init`` writes local
+``.gitconvoy/ops.toml``. Without that file, BOM falls back to ``*-bom`` ids;
+unmarked repos are product. ``incubating`` is valid but not listed in ops.toml
 — trains skip it until the repo is ``product``.
 """
 
@@ -19,12 +19,15 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     tomllib = None  # type: ignore[assignment]
 
-AUX_FILENAME = "aux.toml"
-VALID_ROLES = frozenset({"product", "aux", "bom", "incubating"})
+OPS_FILENAME = "ops.toml"
+VALID_ROLES = frozenset({"product", "ops", "bom", "incubating"})
+OPS_VERSION_KINDS = frozenset({"python", "npm", "both"})
+OPS_PUBLISH_KINDS = frozenset({"none", "python-wheel", "npm"})
+OPS_PIN_KINDS = frozenset({"registry", "git-tag", "git-sha"})
 
 
-def aux_toml_path(workspace: Path) -> Path:
-    return workspace / STATE_DIRNAME / AUX_FILENAME
+def ops_toml_path(workspace: Path) -> Path:
+    return workspace / STATE_DIRNAME / OPS_FILENAME
 
 
 def read_repo_role(repo_path: Path) -> str:
@@ -37,35 +40,93 @@ def read_repo_role(repo_path: Path) -> str:
         role = str(data.get("role") or "product").strip().lower()
         if role not in VALID_ROLES:
             raise GitConvoyError(
-                f"{path}: invalid role {role!r} (expected product|aux|bom|incubating)"
+                f"{path}: invalid role {role!r} (expected product|ops|bom|incubating)"
             )
         return role
     return "product"
 
 
+def read_ops_policy(repo_path: Path) -> dict:
+    """Return the required ops release policy from repo-root gitconvoy.toml."""
+    marker = None
+    data: dict = {}
+    for name in ("gitconvoy.toml", ".gitconvoy.toml"):
+        path = repo_path / name
+        if path.is_file():
+            marker = path
+            data = _load_toml(path)
+            break
+    if marker is None:
+        raise GitConvoyError(
+            f"{repo_path.name}: missing gitconvoy.toml; ops repos must declare "
+            "role, version, publish, and pin"
+        )
+    role = str(data.get("role") or "").strip().lower()
+    if role != "ops":
+        raise GitConvoyError(f"{marker}: role must be ops for ops release")
+    version = str(data.get("version") or "").strip().lower()
+    publish = str(data.get("publish") or "").strip().lower()
+    pin = str(data.get("pin") or "").strip().lower()
+    missing = [
+        key
+        for key, value in (
+            ("version", version),
+            ("publish", publish),
+            ("pin", pin),
+        )
+        if not value
+    ]
+    if missing:
+        raise GitConvoyError(
+            f"{marker}: ops policy missing {', '.join(missing)} "
+            "(version=python|npm|both, publish=none|python-wheel|npm, "
+            "pin=registry|git-tag|git-sha)"
+        )
+    if version not in OPS_VERSION_KINDS:
+        raise GitConvoyError(
+            f"{marker}: invalid version {version!r} (expected python|npm|both)"
+        )
+    if publish not in OPS_PUBLISH_KINDS:
+        raise GitConvoyError(
+            f"{marker}: invalid publish {publish!r} "
+            "(expected none|python-wheel|npm)"
+        )
+    if pin not in OPS_PIN_KINDS:
+        raise GitConvoyError(
+            f"{marker}: invalid pin {pin!r} (expected registry|git-tag|git-sha)"
+        )
+    return {
+        "role": role,
+        "version": version,
+        "publish": publish,
+        "pin": pin,
+        "path": str(marker),
+    }
+
+
 def load_membership(workspace: Path) -> dict[str, list[str]]:
-    """Load local aux.toml. Missing file → empty aux, empty bom (caller applies *-bom fallback)."""
-    path = aux_toml_path(workspace)
+    """Load local ops.toml. Missing file → empty ops, empty bom (caller applies *-bom fallback)."""
+    path = ops_toml_path(workspace)
     if not path.is_file():
-        return {"aux": [], "bom": []}
+        return {"ops": [], "bom": []}
     data = _load_toml(path)
-    aux = _string_list((data.get("aux") or {}).get("repos") if isinstance(data.get("aux"), dict) else None)
+    ops = _string_list((data.get("ops") or {}).get("repos") if isinstance(data.get("ops"), dict) else None)
     bom = _string_list((data.get("bom") or {}).get("repos") if isinstance(data.get("bom"), dict) else None)
-    return {"aux": aux, "bom": bom}
+    return {"ops": ops, "bom": bom}
 
 
-def write_membership(workspace: Path, *, aux: list[str], bom: list[str]) -> Path:
-    path = aux_toml_path(workspace)
+def write_membership(workspace: Path, *, ops: list[str], bom: list[str]) -> Path:
+    path = ops_toml_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "# Local git-convoy membership (not versioned with the workspace).",
         "# Regenerated by: git convoy init",
         "# Default: every discovered repo is product. Listed repos are exceptions.",
         "",
-        "[aux]",
+        "[ops]",
         "repos = [",
     ]
-    for repo_id in aux:
+    for repo_id in ops:
         lines.append(f'  "{repo_id}",')
     lines.extend(
         [
@@ -83,34 +144,34 @@ def write_membership(workspace: Path, *, aux: list[str], bom: list[str]) -> Path
 
 
 def refresh_membership(workspace: Path, repos: list) -> dict:
-    """Scan repo markers and rewrite aux.toml. ``repos`` are workspace.Repo-like."""
-    aux: list[str] = []
+    """Scan repo markers and rewrite ops.toml. ``repos`` are workspace.Repo-like."""
+    ops: list[str] = []
     bom: list[str] = []
     scanned: list[dict] = []
     for repo in repos:
         role = read_repo_role(repo.path)
         scanned.append({"id": repo.id, "path": repo.rel, "role": role})
-        if role == "aux":
-            aux.append(repo.id)
+        if role == "ops":
+            ops.append(repo.id)
         elif role == "bom":
             bom.append(repo.id)
-    aux = sorted(set(aux))
+    ops = sorted(set(ops))
     bom = sorted(set(bom))
-    path = write_membership(workspace, aux=aux, bom=bom)
+    path = write_membership(workspace, ops=ops, bom=bom)
     return {
         "ok": True,
         "path": str(path),
-        "aux": aux,
+        "ops": ops,
         "bom": bom,
         "repos": scanned,
     }
 
 
-def is_aux_id(workspace: Path, repo_id: str) -> bool:
+def is_ops_id(workspace: Path, repo_id: str) -> bool:
     role = _live_role(workspace, repo_id)
     if role is not None:
-        return role == "aux"
-    return repo_id in set(load_membership(workspace)["aux"])
+        return role == "ops"
+    return repo_id in set(load_membership(workspace)["ops"])
 
 
 def is_bom_id(workspace: Path, repo_id: str) -> bool:
@@ -137,7 +198,7 @@ def _string_list(raw: object) -> list[str]:
     if raw is None:
         return []
     if not isinstance(raw, list):
-        raise GitConvoyError("aux.toml: repos must be a list of strings")
+        raise GitConvoyError("ops.toml: repos must be a list of strings")
     out: list[str] = []
     for item in raw:
         text = str(item or "").strip()

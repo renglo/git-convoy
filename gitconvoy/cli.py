@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 from gitconvoy import adopt as adopt_cmd
-from gitconvoy import aux as aux_cmd
+from gitconvoy import ops as ops_cmd
+from gitconvoy import ops_release as ops_release_cmd
 from gitconvoy import commit as commit_cmd
 from gitconvoy import feature as feature_cmd
 from gitconvoy import hotfix as hotfix_cmd
@@ -25,8 +26,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     as_json = args.json
     if args.cmd == "help":
-        payload = help_payload()
-        emit(payload, as_json, format_help_text())
+        try:
+            payload = help_payload(
+                topic=getattr(args, "help_topic", None),
+                summaries=getattr(args, "summaries", False),
+            )
+            emit(
+                payload,
+                as_json,
+                format_help_text(
+                    topic=getattr(args, "help_topic", None),
+                    summaries=getattr(args, "summaries", False),
+                ),
+            )
+        except GitConvoyError as exc:
+            return fail(exc.message, as_json)
         return 0
     try:
         workspace = find_workspace(Path(args.workspace) if args.workspace else None)
@@ -50,8 +64,8 @@ def _dispatch(workspace: Path, args: argparse.Namespace) -> tuple[dict, str]:
         return data, _status_text(data)
     if cmd == "feature":
         return _feature(workspace, state, args)
-    if cmd == "aux":
-        return _aux(workspace, state, args)
+    if cmd == "ops":
+        return _ops(workspace, state, args)
     if cmd == "train":
         return _train(workspace, state, args)
     if cmd == "bom":
@@ -138,25 +152,25 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
     raise GitConvoyError(f"unknown feature command: {sub}")
 
 
-def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
-    sub = args.aux_cmd
+def _ops(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
+    sub = args.ops_cmd
     if sub == "start":
-        data = aux_cmd.start(workspace, state, args.name)
+        data = ops_cmd.start(workspace, state, args.name)
         n = data.get("repo_count") or 0
         if n:
             names = ", ".join(item["id"] for item in data["repos"]) or f"{n} repos"
             return (
                 data,
-                f"aux {data['aux']} started ({data['branch']}): picked up {names}",
+                f"ops {data['ops']} started ({data['branch']}): picked up {names}",
             )
-        return data, f"aux {data['aux']} started ({data['branch']})"
+        return data, f"ops {data['ops']} started ({data['branch']})"
     if sub == "adopt":
         repos = (
             [item.strip() for item in args.repos.split(",") if item.strip()]
             if args.repos
             else None
         )
-        data = aux_cmd.adopt(workspace, state, repo_ids=repos)
+        data = ops_cmd.adopt(workspace, state, repo_ids=repos)
         names = ", ".join(item["id"] for item in data["adopted"]) or "(none)"
         dropped = ", ".join(item["id"] for item in data.get("dropped") or [])
         text = f"adopted {data['repo_count']} repos: {names}"
@@ -164,7 +178,7 @@ def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
             text += f"; dropped empty {dropped}"
         return data, text
     if sub == "abandon":
-        data = aux_cmd.abandon(
+        data = ops_cmd.abandon(
             workspace,
             state,
             args.name,
@@ -173,7 +187,7 @@ def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
         )
         return data, _abandon_text(data)
     if sub == "close":
-        data = aux_cmd.close(
+        data = ops_cmd.close(
             workspace,
             state,
             args.name,
@@ -184,11 +198,11 @@ def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
         )
         return data, _close_text(data)
     if sub == "switch":
-        data = aux_cmd.switch(workspace, state, args.name)
-        return data, f"switched to {data['aux']} ({', '.join(data['participants']) or 'no participants'})"
+        data = ops_cmd.switch(workspace, state, args.name)
+        return data, f"switched to {data['ops']} ({', '.join(data['participants']) or 'no participants'})"
     if sub == "refresh":
-        data = aux_cmd.refresh(workspace, state)
-        return data, f"refreshed {data['aux']} from origin/develop"
+        data = ops_cmd.refresh(workspace, state)
+        return data, f"refreshed {data['ops']} from origin/develop"
     if sub == "commit":
         data = commit_cmd.commit(
             workspace,
@@ -199,27 +213,40 @@ def _aux(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
             header_only=args.header_only,
             include_diff=args.diff,
             as_json=args.json,
-            kind="aux",
+            kind="ops",
         )
         if data.get("printed"):
             return data, "\n"
         return data, _commit_text(data)
     if sub == "push":
-        data = aux_cmd.push(workspace, state)
+        data = ops_cmd.push(workspace, state)
         return data, _push_text(data)
     if sub == "prs":
-        data = aux_cmd.prs(workspace, state, use_gh=not args.no_gh)
+        data = ops_cmd.prs(workspace, state, use_gh=not args.no_gh)
         return data, _prs_text(data)
     if sub == "approve":
-        data = aux_cmd.approve(workspace, state, args.name, force=args.force)
+        data = ops_cmd.approve(workspace, state, args.name, force=args.force)
         return data, _approve_text(data)
     if sub == "promote":
-        data = aux_cmd.promote(workspace, state, args.name, use_gh=not args.no_gh)
+        data = ops_cmd.promote(workspace, state, args.name, use_gh=not args.no_gh)
         return data, _promote_text(data)
+    if sub == "release":
+        data = ops_release_cmd.release(
+            workspace,
+            list(args.repos or []),
+            bump=args.bump,
+            pin=args.pin,
+            bom=args.bom,
+            verify=args.verify,
+            wait=args.wait,
+            use_gh=not args.no_gh,
+            push=not args.no_push,
+        )
+        return data, _ops_release_text(data)
     if sub == "show":
-        data = aux_cmd.show(workspace, state, args.name)
+        data = ops_cmd.show(workspace, state, args.name)
         return data, _feature_show_text(data)
-    raise GitConvoyError(f"unknown aux command: {sub}")
+    raise GitConvoyError(f"unknown ops command: {sub}")
 
 
 
@@ -333,8 +360,8 @@ def _hotfix(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str
     if sub == "publish":
         data = hotfix_cmd.publish(workspace, state, push_remote=not args.no_push)
         return data, _hotfix_publish_text(data)
-    if sub == "adopt":
-        data = hotfix_cmd.adopt(
+    if sub in ("bom", "adopt"):
+        data = hotfix_cmd.bom(
             workspace,
             state,
             bom=args.bom,
@@ -345,7 +372,7 @@ def _hotfix(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str
         pins = ", ".join(
             f"{row['package']}={row['pin']}" for row in data.get("pins") or []
         )
-        return data, f"hotfix adopt {data['version']}  {pins}"
+        return data, f"hotfix bom {data['version']}  {pins}"
     if sub == "show":
         data = hotfix_cmd.show(workspace, state, args.name)
         return data, _hotfix_show_text(data)
@@ -454,7 +481,7 @@ def _bom(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
 
 
 def _add_take_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--bom", help="BOM repo path (default: .gitconvoy/aux.toml [bom], else *-bom)")
+    parser.add_argument("--bom", help="BOM repo path (default: .gitconvoy/ops.toml [bom], else *-bom)")
     parser.add_argument("--train", help="Train to pin (default: current)")
     parser.add_argument(
         "--from",
@@ -490,11 +517,22 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init", help="Create local state, membership, gitignore, and Cursor skill")
-    sub.add_parser(
+    help_parser = sub.add_parser(
         "help",
-        help="Command sequences by cycle (reduced README)",
+        help="Command sequences by topic (reduced README)",
     )
-    sub.add_parser("status", help="Current feature, aux, train, hotfix, and dirty repos")
+    help_parser.add_argument(
+        "help_topic",
+        nargs="?",
+        help="Topic: all, feature, train, staging, production, ops, hotfix, bom, sync, init, status",
+    )
+    help_parser.add_argument(
+        "-s",
+        "--summaries",
+        action="store_true",
+        help="Print one-line description after each command",
+    )
+    sub.add_parser("status", help="Current feature, ops, train, hotfix, and dirty repos")
 
     feature = sub.add_parser("feature", help="Feature sheet commands")
     fsub = feature.add_subparsers(dest="feature_cmd", required=True)
@@ -578,44 +616,44 @@ def _parser() -> argparse.ArgumentParser:
     show = fsub.add_parser("show", help="Print the feature sheet")
     show.add_argument("name", nargs="?")
 
-    aux = sub.add_parser("aux", help="Auxiliary (platform tooling) sheet commands")
-    asub = aux.add_subparsers(dest="aux_cmd", required=True)
+    ops = sub.add_parser("ops", help="Operator tooling sheet commands")
+    asub = ops.add_subparsers(dest="ops_cmd", required=True)
     astart = asub.add_parser(
         "start",
-        help="Create the aux sheet; pick up existing aux/<name>; otherwise checkout integration",
+        help="Create the ops sheet; pick up existing ops/<name>; otherwise checkout integration",
     )
     astart.add_argument("name")
     aadopt = asub.add_parser(
         "adopt",
-        help="Move local aux-repo changes from develop or main onto aux/<name>",
+        help="Move local ops-repo changes from develop or main onto ops/<name>",
     )
     aadopt.add_argument(
         "--repos",
-        help="Comma-separated aux ids (force-include even when clean)",
+        help="Comma-separated ops repo ids (force-include even when clean)",
     )
     aabandon = asub.add_parser(
         "abandon",
-        help="Drop the aux sheet (does not delete branches or files)",
+        help="Drop the ops sheet (does not delete branches or files)",
     )
     aabandon.add_argument("name", nargs="?")
     aabandon.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     aclose = asub.add_parser(
         "close",
-        help="After PRs merge into develop: check out develop and remove aux branches",
+        help="After PRs merge into develop: check out develop and remove ops branches",
     )
     aclose.add_argument("name", nargs="?")
     aclose.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     aclose.add_argument(
         "--remote",
         action="store_true",
-        help="Also delete origin/aux/<name>",
+        help="Also delete origin/ops/<name>",
     )
     aclose.add_argument(
         "--keep-branch",
         action="store_true",
-        help="Keep local aux/<name> branches",
+        help="Keep local ops/<name> branches",
     )
-    acommit = asub.add_parser("commit", help="Commit dirty aux participant repos")
+    acommit = asub.add_parser("commit", help="Commit dirty ops participant repos")
     acommit.add_argument("--plan", action="store_true", help="Print the commit plan; do not commit")
     acommit.add_argument("--from", dest="from_file", help="Apply a filled plan (JSON file, or - for stdin)")
     acommit.add_argument("--header", help="Commit subject (required with --header-only)")
@@ -625,10 +663,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Commit every dirty participant with only --header",
     )
     acommit.add_argument("--diff", action="store_true", help="Include full patches in the plan")
-    aswitch = asub.add_parser("switch", help="Checkout an aux sheet's participant repos")
+    aswitch = asub.add_parser("switch", help="Checkout an ops sheet's participant repos")
     aswitch.add_argument("name")
-    asub.add_parser("refresh", help="Merge origin/develop into participant aux branches")
-    asub.add_parser("push", help="Push aux/<name> to origin (no PRs)")
+    asub.add_parser("refresh", help="Merge origin/develop into participant ops branches")
+    asub.add_parser("push", help="Push ops/<name> to origin (no PRs)")
     aprs = asub.add_parser("prs", help="Push branches and open PRs into develop (gh if available)")
     aprs.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
     aapprove = asub.add_parser("approve", help="Approve sibling PRs via gh (Full mode)")
@@ -640,11 +678,50 @@ def _parser() -> argparse.ArgumentParser:
     )
     apromote = asub.add_parser(
         "promote",
-        help="Platform release: open develop→main PRs when develop is ahead",
+        help="Sheet-scoped: open develop→main PRs when develop is ahead (no bump/tag)",
     )
     apromote.add_argument("name", nargs="?")
     apromote.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
-    ashow = asub.add_parser("show", help="Print the aux sheet")
+    arelease = asub.add_parser(
+        "release",
+        help="Per-repo platform release: bump, PR develop→main, tag, optional verify/pin",
+    )
+    arelease.add_argument(
+        "repos",
+        nargs="+",
+        help="Ops repo ids (no sheet required)",
+    )
+    arelease.add_argument(
+        "--bump",
+        choices=("patch", "minor", "major"),
+        default="patch",
+        help="Semver part to bump when develop still matches the last v* tag",
+    )
+    arelease.add_argument(
+        "--pin",
+        nargs="?",
+        const="tag",
+        choices=("tag", "sha"),
+        help="Update deploy_targets.yml helper.ref (tag first; omit value for tag, or --pin sha)",
+    )
+    arelease.add_argument("--bom", help="BOM repo path for --pin (default: workspace BOM)")
+    arelease.add_argument(
+        "--verify",
+        action="store_true",
+        help="After tagging, check v* publish workflows (Full mode)",
+    )
+    arelease.add_argument(
+        "--wait",
+        action="store_true",
+        help="With --verify, poll until publish workflows finish",
+    )
+    arelease.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
+    arelease.add_argument(
+        "--no-push",
+        action="store_true",
+        help="Do not push develop, main, or tags",
+    )
+    ashow = asub.add_parser("show", help="Print the ops sheet")
     ashow.add_argument("name", nargs="?")
 
     train = sub.add_parser("train", help="Release train commands")
@@ -757,11 +834,11 @@ def _parser() -> argparse.ArgumentParser:
         "production",
         help="Promote the current BOM to production",
     )
-    production.add_argument("--bom", help="BOM repo path (override aux.toml)")
+    production.add_argument("--bom", help="BOM repo path (override ops.toml)")
     draft = bsub.add_parser("draft", help="Copy last version object to a new draft")
     draft.add_argument("--from", dest="from_version", required=True)
     draft.add_argument("--to", dest="to_version", required=True)
-    draft.add_argument("--bom", help="BOM repo path (override aux.toml)")
+    draft.add_argument("--bom", help="BOM repo path (override ops.toml)")
     draft.add_argument("--train")
     draft.add_argument("--description")
     pin = bsub.add_parser("pin", help="Set one package pin on a draft")
@@ -804,11 +881,19 @@ def _parser() -> argparse.ArgumentParser:
         help="Tag vX.Y.Z on main, merge into develop, absorb local feature/* branches",
     )
     hpub.add_argument("--no-push", action="store_true")
-    hadopt = hsub.add_parser(
-        "adopt",
+    hbom = hsub.add_parser(
+        "bom",
         help="Draft next BOM, pin only hotfix packages, staging only",
     )
-    hadopt.add_argument("--bom", help="BOM repo path (override aux.toml)")
+    hbom.add_argument("--bom", help="BOM repo path (override ops.toml)")
+    hbom.add_argument("--from", dest="from_version")
+    hbom.add_argument("--to", dest="to_version")
+    hbom.add_argument("--description")
+    hadopt = hsub.add_parser(
+        "adopt",
+        help=argparse.SUPPRESS,
+    )
+    hadopt.add_argument("--bom", help=argparse.SUPPRESS)
     hadopt.add_argument("--from", dest="from_version")
     hadopt.add_argument("--to", dest="to_version")
     hadopt.add_argument("--description")
@@ -852,9 +937,9 @@ def _init_text(data: dict) -> str:
     ]
     if data.get("membership"):
         lines.append(f"membership:{data['membership']}")
-        aux = ", ".join(data.get("aux") or []) or "(none)"
+        ops_ids = ", ".join(data.get("ops") or []) or "(none)"
         bom = ", ".join(data.get("bom") or []) or "(none)"
-        lines.append(f"aux:       {aux}")
+        lines.append(f"ops:       {ops_ids}")
         lines.append(f"bom:       {bom}")
     for repo in data["repos"]:
         lines.append(f"  {repo['kind']:10} {repo['id']:20} {repo['path']}")
@@ -872,15 +957,15 @@ def _status_text(data: dict) -> str:
             lines.append("           " + ", ".join(feat["repos"]))
     else:
         lines.append("feature:   (none)")
-    if data.get("aux"):
-        item = data["aux"]
+    if data.get("ops"):
+        item = data["ops"]
         lines.append(
-            f"aux:       {item['name']}  ({item['repo_count']} repos)  {item['branch']}"
+            f"ops:       {item['name']}  ({item['repo_count']} repos)  {item['branch']}"
         )
         if item["repos"]:
             lines.append("           " + ", ".join(item["repos"]))
     else:
-        lines.append("aux:       (none)")
+        lines.append("ops:       (none)")
     if data["train"]:
         train = data["train"]
         lines.append(
@@ -1025,14 +1110,46 @@ def _sheet_name(data: dict) -> str:
     return (
         data.get("feature")
         or data.get("hotfix")
-        or data.get("aux")
+        or data.get("ops")
         or data.get("train")
         or "?"
     )
 
 
+def _ops_release_text(data: dict) -> str:
+    lines = [f"ops release  {len(data.get('repos') or [])} repos"]
+    note = (data.get("note") or "").strip()
+    if note:
+        lines.append(note)
+    for repo in data.get("repos") or []:
+        status = repo.get("status") or "?"
+        extra = repo.get("error") or repo.get("pr") or repo.get("compare") or ""
+        tag = repo.get("tag") or ""
+        ver = repo.get("to") or ""
+        bits = [status]
+        if ver:
+            bits.append(ver)
+        if tag:
+            bits.append(tag)
+        if extra:
+            bits.append(str(extra))
+        lines.append(f"  {repo.get('id', '?'):20} " + "  ".join(bits))
+        pin = repo.get("pin")
+        if pin:
+            lines.append(
+                f"    pin {pin.get('status')} {pin.get('kind') or ''} "
+                f"{pin.get('ref') or pin.get('reason') or ''}"
+            )
+        verify = repo.get("verify")
+        if verify:
+            lines.append(
+                f"    verify {verify.get('status')} {verify.get('detail') or ''}"
+            )
+    return "\n".join(lines)
+
+
 def _promote_text(data: dict) -> str:
-    lines = [f"{data.get('aux') or '?'}  promote  {len(data.get('repos') or [])} repos"]
+    lines = [f"{data.get('ops') or '?'}  promote  {len(data.get('repos') or [])} repos"]
     note = (data.get("note") or "").strip()
     if note:
         lines.append(note)

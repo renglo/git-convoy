@@ -9,7 +9,7 @@ from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State
 from gitconvoy.workspace import Repo, discover_repos, is_bom_repo_id
 
-_TOPIC_PREFIXES = ("feature/", "hotfix/", "aux/", "release/")
+_TOPIC_PREFIXES = ("feature/", "hotfix/", "ops/", "release/")
 _RETRY_WORKSPACE = "git convoy sync"
 _RETRY_DEVELOP = "git convoy sync develop"
 
@@ -41,7 +41,7 @@ def sync_develop_from_ref(
     """Merge tagged main (or a stable tag) into develop.
 
     Fetches first, creates ``develop`` from ``main`` when it is missing (product
-    and aux repos always have an integration branch), updates local ``main``
+    and ops repos always have an integration branch), updates local ``main``
     without leaving you on it, then checks out ``develop``. On merge conflict
     the merge is aborted so the repo is not left mid-merge.
     """
@@ -193,7 +193,7 @@ def sync_workspace(
 ) -> dict:
     """Fetch every clone and leave a clean integration branch to start work.
 
-    Product and aux repos end on ``develop`` (or ``main`` when there is no
+    Product and ops repos end on ``develop`` (or ``main`` when there is no
     develop). BOM repos stay on ``main``. Refuses when the workspace is not
     idle: dirty trees, in-progress sheets, or leftover topic-branch work.
     """
@@ -234,16 +234,16 @@ def sync_workspace(
     return data
 
 
-def sync_aux_develop(
+def sync_ops_develop(
     repo_path: Path,
     *,
     repo_id: str,
     push: bool,
     retry_hint: str = _RETRY_DEVELOP,
 ) -> dict:
-    """Fast-forward aux ``develop`` from origin.
+    """Fast-forward ops ``develop`` from origin.
 
-    Day-to-day aux work integrates on ``develop``; ``main`` is updated only by
+    Day-to-day ops work integrates on ``develop``; ``main`` is updated only by
     platform release or hotfix. When a ``v*`` stable tag exists on ``main`` and
     is not yet in ``develop`` (hotfix landed on ``main``), merge that tag.
     """
@@ -313,17 +313,17 @@ def sync_aux_develop(
     }
 
 
-def sync_aux_repos(
+def sync_ops_repos(
     workspace: Path,
     *,
     repo_ids: list[str] | None = None,
     push: bool = True,
     retry_hint: str = _RETRY_DEVELOP,
 ) -> dict:
-    """Fast-forward ``develop`` for aux repos (no merge of raw ``main``)."""
-    from gitconvoy.workspace import aux_repos, require_repo
+    """Fast-forward ``develop`` for ops repos (no merge of raw ``main``)."""
+    from gitconvoy.workspace import ops_repos, require_repo
 
-    repos = aux_repos(workspace)
+    repos = ops_repos(workspace)
     if repo_ids:
         chosen = [require_repo(repos, repo_id) for repo_id in repo_ids]
     else:
@@ -340,7 +340,7 @@ def sync_aux_repos(
             "synced": False,
         }
         try:
-            result = sync_aux_develop(
+            result = sync_ops_develop(
                 repo_path,
                 repo_id=entry.id,
                 push=push,
@@ -375,8 +375,8 @@ def _sync_one_workspace_repo(
     role = membership.read_repo_role(repo.path)
     if role == "bom" or is_bom_repo_id(repo.id, workspace):
         return _sync_main_only(repo, push=push, role="bom")
-    if role == "aux":
-        result = sync_aux_develop(
+    if role == "ops":
+        result = sync_ops_develop(
             repo.path,
             repo_id=repo.id,
             push=push,
@@ -462,13 +462,13 @@ def _pending_sheet_errors(state: State) -> list[str]:
                 f"hotfix {item.name} is {item.status} ({ids}). "
                 "finish or abandon it first"
             )
-    if state.current_aux and state.current_aux in state.auxes:
-        item = state.auxes[state.current_aux]
+    if state.current_ops and state.current_ops in state.ops_sheets:
+        item = state.ops_sheets[state.current_ops]
         if item.repos and item.status in {"in-progress", "in-review"}:
             ids = ", ".join(item.repo_ids())
             errors.append(
-                f"aux {item.name} is {item.status} ({ids}). "
-                "git convoy aux refresh, or close/abandon first"
+                f"ops {item.name} is {item.status} ({ids}). "
+                "git convoy ops refresh, or close/abandon first"
             )
     if state.current_train and state.current_train in state.trains:
         train = state.trains[state.current_train]

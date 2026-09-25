@@ -6,6 +6,7 @@ from gitconvoy.state import TrainRepo
 from gitconvoy.adopt import _python_package_names
 from gitconvoy.versions import (
     bump,
+    cmp_stable,
     drop_rc,
     next_rc,
     parse,
@@ -13,6 +14,12 @@ from gitconvoy.versions import (
     read_python_package_name,
     with_rc,
 )
+
+
+def test_cmp_stable_ignores_rc() -> None:
+    assert cmp_stable("1.2.3rc1", "1.2.3") == 0
+    assert cmp_stable("1.2.4", "1.2.3") == 1
+    assert cmp_stable("1.2.3", "1.3.0") == -1
 
 
 def test_bump_patch() -> None:

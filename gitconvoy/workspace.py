@@ -39,7 +39,7 @@ class Repo:
 
 
 def is_bom_repo_id(repo_id: str, workspace: Path | None = None) -> bool:
-    """BOM repos: explicit .gitconvoy/aux.toml [bom], else *-bom id convention."""
+    """BOM repos: explicit .gitconvoy/ops.toml [bom], else *-bom id convention."""
     if workspace is not None:
         return membership.is_bom_id(workspace, repo_id)
     return repo_id.endswith("-bom")
@@ -120,7 +120,7 @@ def discover_repos(workspace: Path) -> list[Repo]:
 
 
 def product_repos(workspace: Path) -> list[Repo]:
-    """Repos eligible for features, trains, and hotfixes (not aux, not bom)."""
+    """Repos eligible for features, trains, and hotfixes (not ops, not bom)."""
     return [
         repo
         for repo in discover_repos(workspace)
@@ -134,12 +134,12 @@ def feature_repos(workspace: Path) -> list[Repo]:
     return product_repos(workspace)
 
 
-def aux_repos(workspace: Path) -> list[Repo]:
-    """Repos whose gitconvoy.toml says role = aux (not the local aux.toml cache)."""
+def ops_repos(workspace: Path) -> list[Repo]:
+    """Repos whose gitconvoy.toml says role = ops (not the local ops.toml cache)."""
     return [
         repo
         for repo in discover_repos(workspace)
-        if membership.read_repo_role(repo.path) == "aux"
+        if membership.read_repo_role(repo.path) == "ops"
     ]
 
 
