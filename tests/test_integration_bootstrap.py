@@ -78,3 +78,23 @@ def test_ops_start_then_adopt_on_unborn_main(workspace: Path) -> None:
     assert git(helper, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "ops/implement"
     assert gitutil.is_dirty(helper)
     assert "tool.py" not in git(helper, "ls-tree", "-r", "--name-only", "HEAD").stdout
+
+
+def test_ensure_develop_pushes_existing_local_develop(tmp_path: Path) -> None:
+    repo = tmp_path / "tool"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    git(repo, "commit", "--allow-empty", "-m", "Initial commit")
+    git(repo, "checkout", "-b", "develop")
+    _bare_remote(repo)
+    git(repo, "checkout", "-b", "ops/work")
+    (repo / "work.txt").write_text("feature\n")
+    git(repo, "add", "work.txt")
+    git(repo, "commit", "-m", "First commit")
+    git(repo, "push", "-u", "origin", "ops/work")
+
+    ensured = gitutil.ensure_develop(repo, push=True)
+    assert ensured["status"] == "already"
+    assert git(repo, "ls-remote", "--heads", "origin", "main").stdout.strip()
+    assert git(repo, "ls-remote", "--heads", "origin", "develop").stdout.strip()

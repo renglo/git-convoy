@@ -546,10 +546,17 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
         gitutil.checkout_branch(repo_path, branch)
         gitutil.fetch(repo_path)
         integration = gitutil.integration_branch(repo_path)
-        merged = gitutil.merge(repo_path, f"origin/{integration}")
+        remote_base = f"origin/{integration}"
+        if not gitutil.rev_parse(repo_path, remote_base):
+            raise GitConvoyError(
+                f"{repo_row.id}: {remote_base} does not exist "
+                f"(GitHub only has other branches). Push {integration} first, "
+                "or re-run git convoy ops prs after git-convoy publishes it."
+            )
+        merged = gitutil.merge(repo_path, remote_base)
         if merged.returncode != 0:
             raise GitConvoyError(
-                f"{repo_row.id}: merge origin/{integration} into {branch} failed; "
+                f"{repo_row.id}: merge {remote_base} into {branch} failed; "
                 "resolve, then git convoy ops prs"
             )
     _push_ops_branches(workspace, feature)
