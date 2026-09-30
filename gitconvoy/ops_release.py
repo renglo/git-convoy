@@ -120,16 +120,6 @@ def _release_one(
             raise GitConvoyError(
                 f"{repo.id}: cannot fast-forward develop; reconcile, then retry"
             )
-    current = _require_policy_version(repo.path, repo.id, policy)
-    tag = gitutil.last_stable_tag(repo.path)
-    tag_ver = tag[1:] if tag and tag.startswith("v") else None
-    target, bumped = _resolve_target(current, tag_ver, bump)
-    if bumped:
-        pep, npm = versions.drop_rc(target)
-        versions.write_version(repo.path, pep, npm)
-        gitutil.commit_all(repo.path, f"Release {pep}")
-        if push and gitutil.origin_url(repo.path):
-            gitutil.push(repo.path, "origin", "develop")
     develop_ref = (
         "origin/develop"
         if gitutil.has_remote_branch(repo.path, "develop")
@@ -140,12 +130,42 @@ def _release_one(
     )
     if not gitutil.rev_parse(repo.path, main_ref):
         raise GitConvoyError(f"{repo.id}: missing {main_ref}")
-    if gitutil.ahead_of(repo.path, main_ref, develop_ref):
+    current = _require_policy_version(repo.path, repo.id, policy)
+    tag = gitutil.last_stable_tag(repo.path)
+    tag_ver = tag[1:] if tag and tag.startswith("v") else None
+    has_release_work = _has_release_work(repo.path, develop_ref, main_ref)
+    if _release_up_to_date(
+        repo.path, develop_ref, main_ref, current, tag_ver, has_release_work
+    ):
+        shipped = tag_ver or current
+        return {
+            "id": repo.id,
+            "path": repo.rel,
+            "status": "already",
+            "from": shipped,
+            "to": shipped,
+            "bumped": False,
+            "tag": f"v{shipped}" if shipped else None,
+            "policy": policy,
+        }
+    target, bumped = _resolve_target(
+        current, tag_ver, bump, has_release_work=has_release_work
+    )
+    if bumped:
+        pep, npm = versions.drop_rc(target)
+        versions.write_version(repo.path, pep, npm)
+        gitutil.commit_all(repo.path, f"Release {pep}")
+        if push and gitutil.origin_url(repo.path):
+            gitutil.push(repo.path, "origin", "develop")
+        has_release_work = True
+    if gitutil.ahead_of(repo.path, main_ref, develop_ref) and not gitutil.same_tree(
+        repo.path, develop_ref, main_ref
+    ):
         raise GitConvoyError(
             f"{repo.id}: main is ahead of develop; "
             "absorb the hotfix tag into develop, then retry"
         )
-    if gitutil.ahead_of(repo.path, develop_ref, main_ref):
+    if _needs_release_pr(repo.path, develop_ref, main_ref, target, has_release_work):
         pr_info = _open_release_pr(
             repo.path, repo.id, target, use_gh=use_gh
         )
@@ -227,7 +247,20 @@ def _require_policy_version(repo: Path, repo_id: str, policy: dict) -> str:
     return versions.drop_rc(current)[0]
 
 
-def _resolve_target(current: str, tag_ver: str | None, bump: str) -> tuple[str, bool]:
+def _has_release_work(repo: Path, develop_ref: str, main_ref: str) -> bool:
+    """True when develop has commits or content not yet on main."""
+    if gitutil.ahead_of(repo, develop_ref, main_ref):
+        return True
+    return not gitutil.same_tree(repo, develop_ref, main_ref)
+
+
+def _resolve_target(
+    current: str,
+    tag_ver: str | None,
+    bump: str,
+    *,
+    has_release_work: bool,
+) -> tuple[str, bool]:
     if tag_ver is None:
         return current, False
     cmp = versions.cmp_stable(current, tag_ver)
@@ -237,7 +270,50 @@ def _resolve_target(current: str, tag_ver: str | None, bump: str) -> tuple[str, 
         raise GitConvoyError(
             f"develop version {current} is behind last tag v{tag_ver}"
         )
+    if not has_release_work:
+        return current, False
     return versions.bump(current, bump), True
+
+
+def _release_up_to_date(
+    repo: Path,
+    develop_ref: str,
+    main_ref: str,
+    current: str,
+    tag_ver: str | None,
+    has_release_work: bool,
+) -> bool:
+    """True when main already ships the current semver and develop has no new release."""
+    if has_release_work or not tag_ver:
+        return False
+    if versions.cmp_stable(current, tag_ver) != 0:
+        return False
+    tag = f"v{tag_ver}"
+    if not gitutil.rev_parse(repo, tag):
+        return False
+    main_version = _version_on_ref(repo, main_ref)
+    if not main_version or versions.drop_rc(main_version)[0] != tag_ver:
+        return False
+    tag_sha = gitutil.rev_parse(repo, tag)
+    main_sha = gitutil.rev_parse(repo, main_ref)
+    if not tag_sha or not main_sha or not gitutil.is_ancestor(repo, tag_sha, main_sha):
+        return False
+    return gitutil.same_tree(repo, develop_ref, main_ref)
+
+
+def _needs_release_pr(
+    repo: Path,
+    develop_ref: str,
+    main_ref: str,
+    target: str,
+    has_release_work: bool,
+) -> bool:
+    if has_release_work:
+        return True
+    main_version = _version_on_ref(repo, main_ref)
+    if not main_version:
+        return False
+    return versions.cmp_stable(target, versions.drop_rc(main_version)[0]) > 0
 
 
 def _same_commit(repo: Path, left: str, right: str) -> bool:
@@ -549,7 +625,35 @@ def _release_note(rows: list[dict], *, pin: str | None, verify: bool) -> str:
             + " to tag."
         )
     if tagged:
-        bits.append("Tagged " + ", ".join(tagged) + "; v* push publishes wheels.")
+        wheel_ids = [
+            row["id"]
+            for row in rows
+            if row.get("status") == "tagged"
+            and (row.get("policy") or {}).get("publish") == "python-wheel"
+        ]
+        tag_only_ids = [
+            row["id"]
+            for row in rows
+            if row.get("status") == "tagged"
+            and (row.get("policy") or {}).get("publish") == "none"
+        ]
+        other_ids = [
+            id_
+            for id_ in tagged
+            if id_ not in wheel_ids and id_ not in tag_only_ids
+        ]
+        if wheel_ids:
+            bits.append(
+                "Tagged " + ", ".join(wheel_ids) + "; v* push publishes wheels."
+            )
+        if tag_only_ids:
+            bits.append(
+                "Tagged "
+                + ", ".join(tag_only_ids)
+                + " (publish=none; no registry workflow expected)."
+            )
+        if other_ids:
+            bits.append("Tagged " + ", ".join(other_ids) + ".")
     if already:
         bits.append("Already tagged: " + ", ".join(already) + ".")
     if failed:
