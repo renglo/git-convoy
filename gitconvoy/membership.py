@@ -31,7 +31,12 @@ def ops_toml_path(workspace: Path) -> Path:
 
 
 def read_repo_role(repo_path: Path) -> str:
-    """Return role from repo-root gitconvoy.toml, else product."""
+    """Return role from repo-root gitconvoy.toml, else product.
+
+    Raises when a marker declares an unknown role — use ``git convoy init``
+    (refresh_membership) to validate the whole workspace, or
+    ``repo_role_if_valid`` when scanning siblings must not abort.
+    """
     for name in ("gitconvoy.toml", ".gitconvoy.toml"):
         path = repo_path / name
         if not path.is_file():
@@ -45,6 +50,20 @@ def read_repo_role(repo_path: Path) -> str:
             raise GitConvoyError(
                 f"{path}: invalid role {role!r} (expected product|ops|bom|incubating)"
             )
+        return role
+    return "product"
+
+
+def repo_role_if_valid(repo_path: Path) -> str | None:
+    """Return role from gitconvoy.toml, ``product`` when unmarked, ``None`` when invalid."""
+    for name in ("gitconvoy.toml", ".gitconvoy.toml"):
+        path = repo_path / name
+        if not path.is_file():
+            continue
+        data = _load_toml(path)
+        role = str(data.get("role") or "product").strip().lower()
+        if role not in VALID_ROLES:
+            return None
         return role
     return "product"
 
@@ -193,7 +212,7 @@ def _live_role(workspace: Path, repo_id: str) -> str | None:
 
     for repo in discover_repos(workspace):
         if repo.id == repo_id or repo.rel == repo_id:
-            return read_repo_role(repo.path)
+            return repo_role_if_valid(repo.path)
     return None
 
 

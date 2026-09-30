@@ -65,6 +65,17 @@ def test_ops_marker_is_read_without_init(workspace: Path) -> None:
     assert membership.is_ops_id(workspace, "bootstrap") is True
 
 
+def test_invalid_role_repo_is_skipped_without_init(workspace: Path) -> None:
+    bootstrap = init_repo(workspace / "ops" / "bootstrap")
+    (bootstrap / "gitconvoy.toml").write_text('role = "ops"\n')
+    publisher = init_repo(workspace / "ops" / "publisher")
+    (publisher / "gitconvoy.toml").write_text('role = "aux"\n')
+
+    assert "bootstrap" in {repo.id for repo in ops_repos(workspace)}
+    assert "publisher" not in {repo.id for repo in ops_repos(workspace)}
+    assert "publisher" not in {repo.id for repo in product_repos(workspace)}
+
+
 def test_without_ops_toml_unmarked_ops_are_product(workspace: Path) -> None:
     init_repo(workspace / "ops" / "publisher")
     discovered = {repo.id for repo in discover_repos(workspace)}

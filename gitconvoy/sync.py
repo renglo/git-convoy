@@ -385,7 +385,14 @@ def _sync_one_workspace_repo(
     workspace: Path, repo: Repo, *, push: bool
 ) -> dict:
     gitutil.fetch(repo.path)
-    role = membership.read_repo_role(repo.path)
+    role = membership.repo_role_if_valid(repo.path)
+    if role is None:
+        return {
+            "status": "skipped",
+            "synced": False,
+            "role": None,
+            "reason": "invalid role in gitconvoy.toml; run git convoy init to validate",
+        }
     branch = gitutil.current_branch(repo.path)
     if gitutil.cherry_pick_in_progress(repo.path):
         raise GitConvoyError(

@@ -338,6 +338,15 @@ def ahead_of(repo: Path, local: str, remote: str) -> bool:
     return is_ancestor(repo, remote, local)
 
 
+def same_tree(repo: Path, left: str, right: str) -> bool:
+    """True when two refs point at commits with identical trees."""
+    if not rev_parse(repo, left) or not rev_parse(repo, right):
+        return False
+    if capture(repo, "rev-parse", left) == capture(repo, "rev-parse", right):
+        return True
+    return run(repo, "diff", "--quiet", left, right, check=False).returncode == 0
+
+
 def last_stable_tag(repo: Path) -> str | None:
     result = run(repo, "tag", "-l", "v*", check=False)
     tags = []

@@ -121,12 +121,15 @@ def discover_repos(workspace: Path) -> list[Repo]:
 
 def product_repos(workspace: Path) -> list[Repo]:
     """Repos eligible for features, trains, and hotfixes (not ops, not bom)."""
-    return [
-        repo
-        for repo in discover_repos(workspace)
-        if membership.read_repo_role(repo.path) == "product"
-        and not is_bom_repo_id(repo.id, workspace)
-    ]
+    rows: list[Repo] = []
+    for repo in discover_repos(workspace):
+        role = membership.repo_role_if_valid(repo.path)
+        if role != "product":
+            continue
+        if is_bom_repo_id(repo.id, workspace):
+            continue
+        rows.append(repo)
+    return rows
 
 
 def feature_repos(workspace: Path) -> list[Repo]:
@@ -139,7 +142,7 @@ def ops_repos(workspace: Path) -> list[Repo]:
     return [
         repo
         for repo in discover_repos(workspace)
-        if membership.read_repo_role(repo.path) == "ops"
+        if membership.repo_role_if_valid(repo.path) == "ops"
     ]
 
 

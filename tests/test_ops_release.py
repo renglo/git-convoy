@@ -101,6 +101,117 @@ def test_ops_release_tags_after_merge(workspace: Path) -> None:
     assert "v1.0.1" in git(helper, "tag", "-l", "v1.0.1").stdout
 
 
+def test_ops_release_already_when_rerun_after_tag(workspace: Path) -> None:
+    helper = _ops_repo(workspace, "bom-helper")
+    _tag_current(helper)
+    (helper / "CHANGE.md").write_text("work\n")
+    git(helper, "add", "CHANGE.md")
+    git(helper, "commit", "-m", "work")
+    first = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    assert first["repos"][0]["status"] == "pr-needed"
+
+    git(helper, "checkout", "main")
+    git(helper, "merge", "--no-edit", "develop")
+    git(helper, "checkout", "develop")
+    second = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    assert second["repos"][0]["status"] == "tagged"
+
+    third = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    row = third["repos"][0]
+    assert third["ok"] is True
+    assert row["status"] == "already"
+    assert row["tag"] == "v1.0.1"
+    assert row["to"] == "1.0.1"
+    assert "version = \"1.0.1\"" in (helper / "pyproject.toml").read_text()
+
+
+def test_ops_release_bumps_when_same_version_has_unmerged_changes(
+    workspace: Path,
+) -> None:
+    """Content changed at the current semver after the last tag (e.g. package rename)."""
+    helper = _ops_repo(workspace, "bom-helper")
+    git(helper, "checkout", "main")
+    git(helper, "tag", "v1.0.0")
+    git(helper, "checkout", "develop")
+    text = (helper / "pyproject.toml").read_text().replace(
+        "bom-helper", "renglo-bom-helper"
+    )
+    (helper / "pyproject.toml").write_text(text)
+    git(helper, "add", "pyproject.toml")
+    git(helper, "commit", "-m", "Rename package")
+
+    data = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    row = data["repos"][0]
+    assert data["ok"] is True
+    assert row["status"] == "pr-needed"
+    assert row["to"] == "1.0.1"
+    assert row["bumped"] is True
+
+
+def test_ops_release_pr_needed_when_target_ahead_of_main_version(
+    workspace: Path,
+) -> None:
+    helper = _ops_repo(workspace, "bom-helper")
+    git(helper, "checkout", "main")
+    git(helper, "tag", "v1.0.0")
+    git(helper, "checkout", "develop")
+    text = (helper / "pyproject.toml").read_text().replace("1.0.0", "1.0.1")
+    (helper / "pyproject.toml").write_text(text)
+    git(helper, "add", "pyproject.toml")
+    git(helper, "commit", "-m", "Release 1.0.1")
+
+    data = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    row = data["repos"][0]
+    assert data["ok"] is True
+    assert row["status"] == "pr-needed"
+    assert row["to"] == "1.0.1"
+    assert row["bumped"] is False
+
+
+def test_ops_release_tags_when_origin_main_has_merge_commit(workspace: Path) -> None:
+    """GitHub merge leaves origin/main ahead of origin/develop with the same tree."""
+    helper = _ops_repo(workspace, "bom-helper")
+    bare = workspace / "bom-helper.git"
+    git(workspace, "init", "--bare", str(bare))
+    git(helper, "remote", "add", "origin", str(bare))
+    git(helper, "push", "-u", "origin", "develop")
+    git(helper, "push", "origin", "main")
+    _tag_current(helper)
+    (helper / "CHANGE.md").write_text("work\n")
+    git(helper, "add", "CHANGE.md")
+    git(helper, "commit", "-m", "work")
+    git(helper, "push", "origin", "develop")
+    first = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    assert first["repos"][0]["status"] == "pr-needed"
+    git(helper, "push", "origin", "develop")
+
+    git(helper, "checkout", "main")
+    git(helper, "merge", "--no-edit", "develop")
+    git(helper, "push", "origin", "main")
+    git(helper, "checkout", "develop")
+    git(helper, "fetch", "origin")
+
+    second = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    row = second["repos"][0]
+    assert row["status"] == "tagged"
+    assert row["tag"] == "v1.0.1"
+
+
+def test_ops_release_ignores_sibling_with_invalid_role(workspace: Path) -> None:
+    helper = _ops_repo(workspace, "bom-helper")
+    publisher = init_repo(workspace / "ops" / "publisher")
+    (publisher / "gitconvoy.toml").write_text('role = "aux"\n')
+    _tag_current(helper)
+    (helper / "CHANGE.md").write_text("work\n")
+    git(helper, "add", "CHANGE.md")
+    git(helper, "commit", "-m", "work")
+
+    data = release_cmd.release(workspace, ["bom-helper"], use_gh=False, push=False)
+    assert data["ok"] is True
+    assert data["repos"][0]["id"] == "bom-helper"
+    assert data["repos"][0]["status"] == "pr-needed"
+
+
 def test_ops_release_ignores_dirty_neighbor(workspace: Path) -> None:
     helper = _ops_repo(workspace, "bom-helper")
     launcher = _ops_repo(workspace, "launcher")
