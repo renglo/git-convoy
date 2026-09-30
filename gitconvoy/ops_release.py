@@ -108,8 +108,7 @@ def _release_one(
     ensured = gitutil.ensure_develop(repo.path, push=push)
     if ensured.get("status") == "failed":
         raise GitConvoyError(
-            f"{repo.id}: cannot ensure develop"
-            + (f" ({ensured.get('error')})" if ensured.get("error") else "")
+            gitutil.format_ensure_develop_failure(repo.id, repo.path, ensured)
         )
     gitutil.checkout_branch(repo.path, "develop")
     if gitutil.rev_parse(repo.path, "origin/develop"):
@@ -423,6 +422,38 @@ def _verify_once(repo: Path, slug: str, tag: str, workflows: list[str]) -> dict:
     }
 
 
+def _pin_platform(path: Path, repo, *, style: str, tag: str | None, sha: str, workspace: Path) -> dict:
+    """``platform:`` in renglo.yaml is the renglo-ops package version."""
+    relative = str(path.relative_to(workspace))
+    if repo.id != "renglo-ops":
+        return {
+            "status": "skipped",
+            "reason": "renglo.yaml platform is the renglo-ops package version",
+            "file": relative,
+        }
+    if style == "tag" and tag:
+        ref = tag[1:] if tag.startswith("v") else tag
+        kind = "tag"
+    else:
+        if not sha:
+            raise GitConvoyError(f"{repo.id}: no SHA available to pin")
+        ref = sha
+        kind = "sha"
+    text = path.read_text(encoding="utf-8")
+    updated, count = re.subn(r"(?m)^platform:\s+\S+", f"platform: {ref}", text, count=1)
+    if count != 1:
+        raise GitConvoyError(f"{path}: no platform: field")
+    if updated != text:
+        path.write_text(updated, encoding="utf-8")
+    return {
+        "status": "updated",
+        "kind": kind,
+        "ref": ref,
+        "file": relative,
+        "note": "commit and push the BOM repo; git-convoy does not push *-bom",
+    }
+
+
 def _pin_sha(repo: Path, ref: str) -> str:
     return gitutil.rev_parse(repo, ref) or ""
 
@@ -437,6 +468,9 @@ def _pin_helper(
     bom: str | None,
 ) -> dict:
     root = adopt_cmd.find_bom_repo(workspace, bom)
+    renglo = root / "renglo.yaml"
+    if renglo.is_file():
+        return _pin_platform(renglo, repo, style=style, tag=tag, sha=sha, workspace=workspace)
     targets = root / "deploy_targets.yml"
     if not targets.is_file():
         raise GitConvoyError(f"missing {targets}")

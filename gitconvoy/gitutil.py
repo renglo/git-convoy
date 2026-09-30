@@ -87,6 +87,16 @@ def commit_all(repo: Path, message: str) -> str:
     return capture(repo, "rev-parse", "--short", "HEAD")
 
 
+def commit_empty(repo: Path, message: str = "Initial commit") -> str:
+    """Create a root commit that does not include the working tree."""
+    run(repo, "rm", "-r", "--cached", "-f", ".", check=False)
+    result = run(repo, "commit", "--allow-empty", "-m", message, check=False)
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        raise GitConvoyError(f"git commit --allow-empty failed in {repo}: {err}")
+    return capture(repo, "rev-parse", "--short", "HEAD")
+
+
 def current_branch(repo: Path) -> str:
     result = run(repo, "branch", "--show-current", check=False)
     name = (result.stdout or "").strip()
@@ -433,34 +443,158 @@ def checkout_integration(repo: Path) -> str:
     return branch
 
 
-def ensure_develop(repo: Path, *, push: bool = True) -> dict:
+def has_main_commits(repo: Path) -> bool:
+    return bool(rev_parse(repo, "origin/main") or rev_parse(repo, "main"))
+
+
+def ensure_main_on_origin(repo: Path, *, push: bool = True) -> dict:
+    """Push local ``main`` when the remote has no ``main`` yet."""
+    fetch(repo)
+    if rev_parse(repo, "origin/main"):
+        return {"status": "already", "pushed": False}
+    local_main = rev_parse(repo, "main")
+    if not local_main:
+        return {"status": "skipped", "pushed": False, "reason": "no local main"}
+    checkout_branch(repo, "main")
+    if not push or not origin_url(repo):
+        return {"status": "local-only", "pushed": False}
+    result = run(repo, "push", "-u", "origin", "main", check=False)
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "push main failed").strip()
+        return {"status": "failed", "pushed": False, "error": err}
+    return {"status": "pushed", "pushed": True}
+
+
+def integration_setup_hint(repo: Path, *, bootstrap: bool = False) -> str:
+    """Steps when ``main``/``develop`` could not be created or published."""
+    rel = str(repo)
+    lines = [
+        f"Repository {rel} could not get main and develop.",
+        "",
+        "git-convoy creates an empty Initial commit on main (your files stay uncommitted),",
+        "then develop from that, then pushes both. Typical cause: push rejected or git identity unset.",
+        "",
+        f"  cd {rel}",
+        "  git commit --allow-empty -m \"Initial commit\"",
+        "  git push -u origin main",
+        "  git checkout -b develop && git push -u origin develop",
+        "",
+        "Leave your working tree dirty. Then:",
+        "  git convoy ops start NAME",
+        "  git convoy ops adopt",
+    ]
+    if origin_url(repo) and has_main_commits(repo) and not rev_parse(repo, "origin/main"):
+        lines.extend(
+            [
+                "",
+                "main exists locally but origin/main is missing:",
+                f"  git -C {rel} push -u origin main",
+            ]
+        )
+    if bootstrap:
+        lines.append("")
+        lines.append("--bootstrap is no longer needed; ops start does this automatically.")
+    return "\n".join(lines)
+
+
+def format_ensure_develop_failure(
+    repo_id: str,
+    repo_path: Path,
+    ensured: dict,
+    *,
+    retry: str = "",
+) -> str:
+    parts = [f"{repo_id}: cannot ensure develop"]
+    if ensured.get("error"):
+        parts[0] += f" ({ensured['error']})"
+    hint = ensured.get("hint") or integration_setup_hint(repo_path)
+    message = parts[0] + "\n\n" + hint
+    if retry:
+        message += f"\n\nThen {retry}"
+    return message
+
+
+def ensure_develop(
+    repo: Path,
+    *,
+    push: bool = True,
+    bootstrap: bool = False,
+    initial_commit_message: str = "Initial commit",
+) -> dict:
     """Create ``develop`` from ``main`` when missing.
+
+    A brand-new clone (unborn ``main``) gets an empty Initial commit so ``main``
+    and ``develop`` exist. Working-tree files are not committed; ``ops adopt``
+    (or ``feature adopt``) is what picks them up. ``bootstrap`` is ignored.
+
+    When ``main`` has commits locally but ``origin/main`` is empty, pushes ``main``
+    first.
 
     Returns ``{"status": "already"|"created"|"failed", "created": bool, ...}``.
     Leaves HEAD on ``develop`` when creating; otherwise does not change branches
     except checking out a remote-only ``develop`` into a local tracking branch.
     """
+    del bootstrap
     fetch(repo)
     if has_local_branch(repo, "develop"):
         return {"status": "already", "created": False}
     if has_remote_branch(repo, "develop"):
         checkout_branch(repo, "develop")
         return {"status": "already", "created": False}
+
     main_tip = rev_parse(repo, "origin/main") or rev_parse(repo, "main")
     if not main_tip:
-        return {"status": "failed", "created": False, "error": "no main branch"}
+        if current_branch(repo) != "main":
+            run(repo, "checkout", "--orphan", "main", check=False)
+        try:
+            commit_empty(repo, initial_commit_message)
+        except GitConvoyError as exc:
+            return {
+                "status": "failed",
+                "created": False,
+                "error": str(exc),
+                "hint": integration_setup_hint(repo),
+            }
+        main_tip = rev_parse(repo, "main")
+
+    if not main_tip:
+        return {
+            "status": "failed",
+            "created": False,
+            "error": "no main branch",
+            "hint": integration_setup_hint(repo),
+        }
+
+    published = ensure_main_on_origin(repo, push=push)
+    if published.get("status") == "failed":
+        return {
+            "status": "failed",
+            "created": False,
+            "error": published.get("error") or "push main failed",
+            "hint": integration_setup_hint(repo),
+        }
+
+    main_tip = rev_parse(repo, "origin/main") or rev_parse(repo, "main")
+    if not main_tip:
+        return {
+            "status": "failed",
+            "created": False,
+            "error": "no main branch",
+            "hint": integration_setup_hint(repo),
+        }
+
     checkout_branch(repo, "main")
     if rev_parse(repo, "origin/main"):
         run(repo, "pull", "--ff-only", "origin", "main", check=False)
     checkout(repo, "develop", create=True)
     if push and origin_url(repo):
-        push_cmd = ["-u", "origin", "develop"]
-        result = run(repo, "push", *push_cmd, check=False)
+        result = run(repo, "push", "-u", "origin", "develop", check=False)
         if result.returncode != 0:
             return {
                 "status": "failed",
                 "created": True,
                 "error": (result.stderr or result.stdout or "push develop failed").strip(),
+                "hint": integration_setup_hint(repo),
             }
     return {"status": "created", "created": True}
 

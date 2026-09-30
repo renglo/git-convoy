@@ -155,7 +155,7 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
 def _ops(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
     sub = args.ops_cmd
     if sub == "start":
-        data = ops_cmd.start(workspace, state, args.name)
+        data = ops_cmd.start(workspace, state, args.name, bootstrap=args.bootstrap)
         n = data.get("repo_count") or 0
         if n:
             names = ", ".join(item["id"] for item in data["repos"]) or f"{n} repos"
@@ -634,6 +634,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Create the ops sheet; pick up existing ops/<name>; otherwise checkout integration",
     )
     astart.add_argument("name")
+    astart.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="Deprecated no-op. New repos already get empty main/develop; files stay uncommitted for ops adopt",
+    )
     aadopt = asub.add_parser(
         "adopt",
         help="Move local ops-repo changes from develop or main onto ops/<name>",

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from gitconvoy.catalog import PackageSlot, load_package_catalog
+from gitconvoy.catalog import PackageSlot, load_package_catalog, tenant_config_path
 
 HUB_PYTHON_CORE = ("renglo-lib", "renglo-api")
 PEER_PYTHON_CORE = ("renglo-lib",)
@@ -107,10 +107,31 @@ def parse_placement_text(text: str) -> Placement:
 
 
 def load_placement(root: Path) -> Placement:
-    path = root / "deploy_targets.yml"
+    path = tenant_config_path(root)
     if not path.is_file():
         return Placement()
-    return parse_placement_text(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    if path.name == "renglo.yaml":
+        return _placement_from_renglo(text)
+    return parse_placement_text(text)
+
+
+def _placement_from_renglo(text: str) -> Placement:
+    """``placement.hub`` is a list of dists. Peer python lists stay under ``placement.peers``."""
+    hub: list[str] = []
+    in_hub = False
+    for line in text.splitlines():
+        if re.match(r"^  hub:\s*$", line):
+            in_hub = True
+            continue
+        if not in_hub:
+            continue
+        item = re.match(r"^  - (.+?)\s*$", line)
+        if item:
+            hub.append(item.group(1).strip().strip("'\""))
+            continue
+        in_hub = False
+    return Placement(hub_python=tuple(hub))
 
 
 def tenant_wl_dist(catalog: list[PackageSlot] | None) -> str:
@@ -373,8 +394,20 @@ def write_split_boms(
 
 
 def sync_deploy_target_versions(root: Path, version: str) -> None:
-    """Update ``bom:``, ``console_bom:``, and ``peers.*.peers_bom`` pointers."""
+    """Update release pins in ``renglo.yaml``, or the legacy ``deploy_targets.yml`` pointers."""
     number = _strip_v(_v(version))
+    renglo = root / "renglo.yaml"
+    if renglo.is_file():
+        text = renglo.read_text(encoding="utf-8")
+        text, n = re.subn(r"(?m)^(\s+)bom:\s+\S+", rf"\1bom: {number}", text, count=1)
+        if n != 1:
+            raise ValueError("could not update release.bom in renglo.yaml")
+        if re.search(r"(?m)^\s+console:\s+\S+", text):
+            text, n = re.subn(r"(?m)^(\s+)console:\s+\S+", rf"\1console: {number}", text, count=1)
+            if n != 1:
+                raise ValueError("could not update release.console in renglo.yaml")
+        renglo.write_text(text, encoding="utf-8")
+        return
     targets = root / "deploy_targets.yml"
     if not targets.is_file():
         return
