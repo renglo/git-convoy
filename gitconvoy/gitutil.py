@@ -458,20 +458,40 @@ def has_main_commits(repo: Path) -> bool:
 
 def ensure_main_on_origin(repo: Path, *, push: bool = True) -> dict:
     """Push local ``main`` when the remote has no ``main`` yet."""
+    return _push_missing_branch(repo, "main", push=push)
+
+
+def _push_missing_branch(repo: Path, branch: str, *, push: bool) -> dict:
     fetch(repo)
-    if rev_parse(repo, "origin/main"):
-        return {"status": "already", "pushed": False}
-    local_main = rev_parse(repo, "main")
-    if not local_main:
-        return {"status": "skipped", "pushed": False, "reason": "no local main"}
-    checkout_branch(repo, "main")
+    if rev_parse(repo, f"origin/{branch}"):
+        return {"status": "already", "pushed": False, "branch": branch}
+    if not rev_parse(repo, branch):
+        return {"status": "skipped", "pushed": False, "reason": f"no local {branch}"}
     if not push or not origin_url(repo):
-        return {"status": "local-only", "pushed": False}
-    result = run(repo, "push", "-u", "origin", "main", check=False)
+        return {"status": "local-only", "pushed": False, "branch": branch}
+    result = run(repo, "push", "-u", "origin", branch, check=False)
     if result.returncode != 0:
-        err = (result.stderr or result.stdout or "push main failed").strip()
-        return {"status": "failed", "pushed": False, "error": err}
-    return {"status": "pushed", "pushed": True}
+        err = (result.stderr or result.stdout or f"push {branch} failed").strip()
+        return {"status": "failed", "pushed": False, "error": err, "branch": branch}
+    return {"status": "pushed", "pushed": True, "branch": branch}
+
+
+def publish_missing_integration(repo: Path, *, push: bool = True) -> dict:
+    """Push local main/develop when origin has not learned those branches yet.
+
+    Typical after an ops branch is the first thing pushed to an empty GitHub repo.
+    """
+    main = _push_missing_branch(repo, "main", push=push)
+    if main.get("status") == "failed":
+        return main
+    develop = _push_missing_branch(repo, "develop", push=push)
+    if develop.get("status") == "failed":
+        return develop
+    return {
+        "status": "ok",
+        "main": main.get("status"),
+        "develop": develop.get("status"),
+    }
 
 
 def integration_setup_hint(repo: Path, *, bootstrap: bool = False) -> str:
@@ -546,6 +566,14 @@ def ensure_develop(
     del bootstrap
     fetch(repo)
     if has_local_branch(repo, "develop"):
+        published = publish_missing_integration(repo, push=push)
+        if published.get("status") == "failed":
+            return {
+                "status": "failed",
+                "created": False,
+                "error": published.get("error") or "push integration failed",
+                "hint": integration_setup_hint(repo),
+            }
         return {"status": "already", "created": False}
     if has_remote_branch(repo, "develop"):
         checkout_branch(repo, "develop")
