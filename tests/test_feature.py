@@ -306,6 +306,36 @@ def test_abandon_keeps_unmerged_commits(workspace: Path, monkeypatch, capsys) ->
     assert schd_row["dirty"] is False
 
 
+def test_abandon_prompt_separates_sheet_from_leftover_branches(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    save(workspace, State())
+    assert main(["--json", "init"]) == 0
+    assert main(["--json", "feature", "start", "blast-radius"]) == 0
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "-b", "feature/blast-radius")
+    prompts: list[str] = []
+
+    def _no(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return "no"
+
+    data = feature_cmd.abandon(
+        workspace,
+        load(workspace),
+        yes=False,
+        as_json=False,
+        is_tty=True,
+        input_fn=_no,
+    )
+    assert data["abandoned"] is False
+    assert prompts
+    assert "(0 repos: (none))" in prompts[0]
+    assert "not on the sheet" in prompts[0]
+    assert "schd" in prompts[0]
+
+
 def test_abandon_no_keeps_branch(workspace: Path, monkeypatch) -> None:
     monkeypatch.chdir(workspace)
     save(workspace, State())

@@ -5,7 +5,7 @@ description: >-
   release trains, hotfixes, and BOM adoption. Use when the user mentions git
   convoy, git-convoy, gitconvoy, a feature sheet, an ops sheet, a release train,
   a production hotfix, which repos a feature touches, what is on the current
-  train, catch up an idle workspace onto develop, adopt onto a feature or ops
+  train, catch up every clone in place, adopt onto a feature or ops
   branch, commit participant repos, refresh from develop, or staging/production
   pins.
 ---
@@ -49,13 +49,13 @@ Do not guess membership by scanning dirty directories. The state file is `.gitco
 
 ## Start of a work session
 
-When the workspace is idle (nothing dirty, no in-progress feature/hotfix/ops/train) and you need latest `develop` plus any hotfix that landed on `main`:
+Bring every clone up to date without requiring an idle workspace:
 
 ```bash
 git convoy --json sync
 ```
 
-Fetches every clone, checks out **`develop`** (not `main`), creates `develop` from `main` when missing, fast-forwards `origin/develop`. **Product** repos merge the latest stable tag (or `origin/main`). **Ops** repos fast-forward `develop` only and merge a stable tag when a hotfix landed on `main` that `develop` lacks — not raw `origin/main`. BOM stays on `main`. Refuses if the workspace is not idle — then commit, `feature refresh`, or close/abandon first. Do not `git pull` on `main` to start product work.
+Updates each clean repo **in place** and continues when one repo cannot move. A repo on `develop` fast-forwards `origin/develop` and, for product repos, merges the latest stable tag (or `origin/main`). Ops repos on `develop` fast-forward `develop` and merge a stable tag only when a hotfix landed on `main` — not raw `origin/main`. A repo on `feature/*` or `ops/*` stays there and receives `develop`. `release/*` receives only `origin/release/<name>`, so work committed to `develop` after the cut stays off the train. `hotfix/*` and `main` receive `main`. BOM on `main` fast-forwards `origin/main`. Tracked local edits are left untouched and reported as `needs-commit`. Merge conflicts abort that repo only. The summary lists how many repos are still behind and the next step for each. Re-run `git convoy sync` until `remaining` is 0. Do not `git pull` on `main` to start product work.
 
 ## Heal develop from main (no idle workspace required)
 
@@ -200,10 +200,10 @@ git convoy --json hotfix bom --bom ops/<system>-bom
 ## What not to do
 
 - Do not create `feature/<name>` in every repo.
-- Do not `git pull` on `main` to start product work; `git convoy sync` (idle workspace) or `feature refresh` (in-progress feature).
+- Do not `git pull` on `main` to start product work; `git convoy sync` updates clean repos in place and reports the rest.
 - Do not put ops (tooling) repos on a feature sheet; use `git convoy ops`.
 - Do not put `*-bom` on a feature branch or feature PR; deploy only via `bom` on `main`.
-- `feature abandon` / `ops abandon` / `hotfix abandon` drop the sheet only. They never delete git branches or uncommitted files. Only `train delete --yes` deletes branches, and it refuses if that would lose work.
+- `feature abandon` / `ops abandon` / `hotfix abandon` drop the sheet only. They never delete git branches or uncommitted files. `feature close`, `ops close`, `hotfix close`, and `train close` remove merged branches, and they refuse if that would lose work.
 - Do not merge PRs through git-convoy (approve is OK in Full mode).
 - Do not query CodeArtifact or invent unpublished pins.
 - In Full mode, default `bom` self-heals failed publishes to git SHAs; use `--require-verify` when the BOM must not be written until CI is green.

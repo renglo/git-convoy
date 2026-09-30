@@ -128,7 +128,7 @@ def test_delete_requires_yes_for_json(workspace: Path, monkeypatch, capsys) -> N
     schd = workspace / "extensions" / "schd"
     git(schd, "checkout", "-b", "release/2026-08-29")
     capsys.readouterr()
-    assert main(["--json", "train", "delete"]) == 1
+    assert main(["--json", "train", "close"]) == 1
     err = json.loads(capsys.readouterr().out)
     assert "--yes" in err["error"]
     assert gitutil.has_local_branch(schd, "release/2026-08-29")

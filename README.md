@@ -150,18 +150,16 @@ git convoy --json status
 
 ### Start of a work session (`git convoy sync`)
 
-After a few days away, before you start a feature: fetch every clone, put product and ops repos on **`develop`** (not `main`), create `develop` from `main` if the clone has none, fast-forward `origin/develop`. **Product** repos also merge the latest stable tag / `main` (hotfixes). **Ops** repos fast-forward `develop` only and merge a stable tag when `main` received a hotfix that `develop` lacks — raw `origin/main` is not merged. BOM repos stay on `main`.
+After a few days away, or in the middle of a feature: fetch every clone and bring latest commits into the branch you are already on. Clean repos update. Dirty repos and merge conflicts are listed with a next step. Re-run until the summary says every repo is synchronized. An open feature, ops sheet, hotfix, or train does not block the other repos.
 
-The workspace must be **idle**. The command refuses if anything is dirty, if a feature/hotfix/ops sheet still has in-progress work, if a train is still `cut`/`stabilizing`, or if you are sitting on a `feature/*` / `hotfix/*` / `ops/*` / `release/*` branch that has commits not in `develop`.
+On `develop`, product repos fast-forward `origin/develop` and merge the latest stable tag (or `origin/main`). Ops repos fast-forward `develop` and merge a stable tag only when `main` received a hotfix — raw `origin/main` is not merged. On `feature/*` and `ops/*`, that same integration line is merged into the current branch. `release/*` receives only `origin/release/<name>` — work that landed on `develop` after the cut stays off the train. `hotfix/*` and `main` receive `main`. BOM repos on `main` fast-forward `origin/main`.
 
 ```bash
 git convoy sync
 git convoy sync --no-push    # local only; do not push develop
 ```
 
-You end on `develop`, ready for `feature start` / implement. Do not `git pull` on `main` to “get latest” for product work.
-
-If you already have an in-progress feature, this is the wrong command: `git convoy feature refresh` instead.
+Do not `git pull` on `main` to “get latest” for product work. `feature refresh` still merges `origin/develop` into the feature sheet only; `sync` covers every clone.
 
 ### Heal `develop` from `main` (any time)
 
@@ -173,7 +171,7 @@ git convoy sync develop --repos data,console
 git convoy sync develop --no-push    # local merge only
 ```
 
-For each product repo: fetch, create ``develop`` from ``main`` if it is missing, fast-forward local `main` **without checking it out**, check out `develop`, fast-forward `origin/develop`, merge the latest `v*` stable tag (or `origin/main` if none), push `origin/develop` when the remote exists. BOM repos stay on `main`. Continues past per-repo failures; re-run after resolving conflicts. Same logic used automatically by `feature prs`, `train tag-rc`, and `train publish` / `train mergeback`. Bare `git convoy sync` uses this after the idle check.
+For each product repo: fetch, create ``develop`` from ``main`` if it is missing, fast-forward local `main` **without checking it out**, check out `develop`, fast-forward `origin/develop`, merge the latest `v*` stable tag (or `origin/main` if none), push `origin/develop` when the remote exists. BOM repos stay on `main`. Continues past per-repo failures; re-run after resolving conflicts. Same logic used automatically by `feature prs`, `train tag-rc`, and `train publish` / `train mergeback`. Bare `git convoy sync` uses this when the repo is already on `develop`; on any other branch it merges that same line into the branch you are on.
 
 No AWS, CodeArtifact, or BOM setup is required for Cycles 1–2.
 
@@ -204,7 +202,7 @@ git-convoy is four cycles. They run at different times and they do not substitut
 
 ## Cycle 1 — Daily feature work
 
-At the beginning of cycle 1, run `git convoy sync` so every product repo is on current `develop` (other people’s merged features and hotfixes). The workspace must be idle. If a feature is already in progress, use `git convoy feature refresh` instead. Details: [Start of a work session](#start-of-a-work-session-git-convoy-sync).
+At the beginning of cycle 1, run `git convoy sync` so every clean clone picks up other people’s merged features and hotfixes. Repos with uncommitted work are listed; commit or stash those, then re-run. Details: [Start of a work session](#start-of-a-work-session-git-convoy-sync).
 
 ```bash
 git convoy sync
@@ -346,7 +344,7 @@ git convoy feature abandon
 git convoy feature abandon blast-radius --yes
 ```
 
-You stay on `feature/<name>` with your files. The only command that deletes git branches is `git convoy train delete --yes`.
+You stay on `feature/<name>` with your files. `feature close`, `hotfix close`, and `train close` remove the branch after the work is merged.
 
 ---
 
@@ -410,7 +408,7 @@ git convoy train commit --header "fix: …" --header-only
 
 `train tag-rc` still sets the rc version later. It **refuses** if any train participant is dirty and tells you to run `train commit`.
 
-Repeat **`train cut`** only after **`train delete`** if you need to abandon the cut entirely.
+Repeat **`train cut`** only after **`train close`** if you need to abandon the cut entirely.
 
 You can inspect the sheet at any time:
 
@@ -421,8 +419,8 @@ git convoy train show
 To throw away a botched or abandoned cut:
 
 ```bash
-git convoy train delete
-git convoy train delete 2026-08-29 --yes
+git convoy train close
+git convoy train close 2026-08-29 --yes
 ```
 
 Deletes local `release/<name>` **only if every commit is already on develop or main**. Refuses if the tree is dirty or the branch has unique commits. Never `reset --hard` / `clean`. Pass `--remote` to delete `origin/release/<name>` too, and only after that same merge check on the origin tip. `--json` requires `--yes`.
@@ -685,7 +683,7 @@ CI runs **staging deploy → smoke check → production deploy** in one workflow
 Once production is up, the published train is finished. Do not `tag-rc` or `bom` it again. Clear the sheet and leftover `release/<name>` branches:
 
 ```bash
-git convoy train delete --yes
+git convoy train close --yes
 ```
 
 That unsets `current_train`, removes the train sheet, and checks participants out to `develop`/`main`. It does **not** unpublish packages or disable production. Pass `--remote` if `origin/release/<name>` is still present. The next ship starts with a new `train cut`.
@@ -1029,7 +1027,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | ------- | ----- | ------------ |
 | `git convoy init` | 1 | State file, membership (`ops.toml`), gitignore, Cursor skill |
 | `git convoy status` | * | Current feature, ops, train, hotfix, dirty repos |
-| `git convoy sync` | * | Idle workspace: fetch all, check out `develop`; product merges stable/`main`; ops ff `develop` + hotfix tags only |
+| `git convoy sync` | * | Update every clean clone in place; report repos that still need a commit or conflict fix |
 | `git convoy sync develop` | * | Merge stable/`main` into `develop` for **product** repos only (no idle check) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
 | `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
@@ -1059,7 +1057,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy train adopt [--repos …]` | 2 | Late-join dirty (or named) product repos; no version bump |
 | `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/ops commit) |
 | `git convoy train show [NAME]` | 2 | Read train sheet |
-| `git convoy train delete` | 2, 4 | Delete merged `release/<train>` branches only; refuse dirty or unique commits |
+| `git convoy train close` | 2, 4 | Delete merged `release/<train>` branches only; refuse dirty or unique commits |
 | `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
 | `git convoy bom` | 3 | Staging BOM from `.gitconvoy/ops.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)` |
@@ -1074,7 +1072,8 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy hotfix prs` | * | PRs into **main** (Full); `--no-gh` for compare URLs |
 | `git convoy hotfix publish` | * | Tag on `main`; merge into `develop`; absorb local `feature/*` |
 | `git convoy hotfix bom` | * | Next BOM patch; pin only hotfix packages; staging only |
-| `git convoy hotfix show [NAME]` | * | Hotfix sheet + merge status |
+| `git convoy hotfix show [NAME]` | * | Sheet status, including whether the stable tag is in develop |
+| `git convoy hotfix close` | * | After the patch is in develop: checkout develop, delete the hotfix branch, drop the sheet |
 | `git convoy hotfix abandon` | * | Drop the hotfix sheet (no branch or file deletes) |
 | `git convoy bom draft` | * | Copy BOM to new system version |
 | `git convoy bom pin` | * | Set one package version |
@@ -1103,7 +1102,7 @@ git convoy --json hotfix bom --bom ops/<system>-bom
 
 Cycles 1–2 only: no `--bom`, no registry. Do not invent package pins. In cycle 3–4 with Full mode, `bom` verifies publish CI and self-heals failed repos to git SHAs. Use `--require-verify` when every publish must be green before writing the BOM.
 
-`init` installs a Cursor skill (`.cursor/skills/gitconvoy/SKILL.md`). After time away, with a clean workspace: `git convoy --json sync` (ends on `develop`). After editing code: `feature adopt`, then `feature commit`. Do not commit feature work on `develop`. Do not `git pull` on `main` to start product work.
+`init` installs a Cursor skill (`.cursor/skills/gitconvoy/SKILL.md`). After time away: `git convoy --json sync` (clean repos update in place; re-run until `remaining` is 0). After editing code: `feature adopt`, then `feature commit`. Do not commit feature work on `develop`. Do not `git pull` on `main` to start product work.
 
 ---
 

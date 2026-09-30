@@ -44,11 +44,11 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
-        "name": "Start of session (idle workspace)",
+        "name": "Catch up",
         "commands": [
             {
                 "cmd": "git convoy sync",
-                "summary": "Fetch all clones, checkout develop, absorb hotfixes; refuses if workspace is busy.",
+                "summary": "Update every clean clone in place; report repos that still need a commit or conflict fix.",
             },
         ],
     },
@@ -130,7 +130,7 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Print the train sheet, versions, and tags.",
             },
             {
-                "cmd": "git convoy train delete --yes",
+                "cmd": "git convoy train close --yes",
                 "summary": "Delete merged local release/NAME branches after publish (never drops uncommitted work).",
             },
         ],
@@ -184,7 +184,7 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Commit and push production BOM — that push deploys production.",
             },
             {
-                "cmd": "git convoy train delete --yes",
+                "cmd": "git convoy train close --yes",
                 "summary": "Remove merged release/NAME branches after production adoption.",
             },
         ],
@@ -305,7 +305,11 @@ HELP_SECTIONS: list[HelpSection] = [
             },
             {
                 "cmd": "git convoy hotfix show",
-                "summary": "Print hotfix sheet status per participant.",
+                "summary": "Print hotfix sheet: published or not, and whether the tag is in develop.",
+            },
+            {
+                "cmd": "git convoy hotfix close --yes",
+                "summary": "After the patch is in develop: checkout develop, delete the hotfix branch, drop the sheet.",
             },
             {
                 "cmd": "git convoy feature refresh",
@@ -378,11 +382,11 @@ HELP_SECTIONS: list[HelpSection] = [
 HELP_TOPICS: dict[str, list[HelpSection]] = {
     "feature": [
         {
-            "name": "Start of session (idle workspace)",
+            "name": "Catch up",
             "commands": [
                 {
                     "cmd": "git convoy sync",
-                    "summary": "Fetch all clones, checkout develop, absorb hotfixes; refuses if workspace is busy.",
+                    "summary": "Update every clean clone in place; report repos that still need a commit or conflict fix.",
                 },
             ],
         },
@@ -538,7 +542,7 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                     "summary": "Push production BOM — that push deploys production.",
                 },
                 {
-                    "cmd": "git convoy train delete --yes",
+                    "cmd": "git convoy train close --yes",
                     "summary": "Delete merged release/NAME branches.",
                 },
             ],
@@ -617,7 +621,7 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                     "summary": "Commit and push production BOM — that push deploys production.",
                 },
                 {
-                    "cmd": "git convoy train delete --yes",
+                    "cmd": "git convoy train close --yes",
                     "summary": "Remove merged release/NAME branches after production adoption.",
                 },
             ],
@@ -785,7 +789,11 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                 },
                 {
                     "cmd": "git convoy hotfix show",
-                    "summary": "Print hotfix sheet status per participant.",
+                    "summary": "Print hotfix sheet: published or not, and whether the tag is in develop.",
+                },
+                {
+                    "cmd": "git convoy hotfix close --yes",
+                    "summary": "After the patch is in develop: checkout develop, delete the hotfix branch, drop the sheet.",
                 },
                 {
                     "cmd": "git convoy feature refresh",
@@ -861,7 +869,7 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
             "commands": [
                 {
                     "cmd": "git convoy sync",
-                    "summary": "Idle workspace: fetch all, checkout develop, absorb hotfixes (refuses if busy).",
+                    "summary": "Update every clean clone in place; report repos that still need a commit or conflict fix.",
                 },
                 {
                     "cmd": "git convoy sync develop",

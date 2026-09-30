@@ -338,12 +338,7 @@ def abandon(
             raise GitConvoyError(
                 "abandon drops the ops sheet only; pass --yes to confirm"
             )
-        ids = ", ".join(item.id for item in targets) or "(none)"
-        prompt = (
-            f"This will drop the ops sheet for {feature.name} "
-            f"({len(targets)} repos: {ids}). "
-            "Git branches and uncommitted files are not touched. Continue? : "
-        )
+        prompt = _abandon_prompt(feature, targets)
         answer = _confirm_yes(input_fn or input, prompt)
         if not answer:
             return {
@@ -377,10 +372,30 @@ def abandon(
         "branch": branch,
         "note": (
             "Ops sheet removed. Local branches and uncommitted files were not "
-            "touched. Only git convoy train delete --yes removes git branches."
+            "touched. feature close, ops close, hotfix close, and train close "
+            "remove merged branches."
         ),
         "repos": removed,
     }
+
+
+def _abandon_prompt(feature: Ops, targets) -> str:
+    sheet_ids = feature.repo_ids()
+    on_sheet = set(sheet_ids)
+    leftover = [item.id for item in targets if item.id not in on_sheet]
+    ids = ", ".join(sheet_ids) or "(none)"
+    prompt = (
+        f"This will drop the ops sheet for {feature.name} "
+        f"({len(sheet_ids)} repos: {ids}). "
+    )
+    if leftover:
+        prompt += (
+            f"{len(leftover)} repos have a local {feature.branch} branch "
+            "that is not on the sheet; those branches stay: "
+            f"{', '.join(leftover)}. "
+        )
+    prompt += "Git branches and uncommitted files are not touched. Continue? : "
+    return prompt
 
 
 def _abandon_targets(workspace: Path, feature: Ops):

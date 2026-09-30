@@ -143,7 +143,7 @@ You never merge GitHub PRs from a script. Approve in GitHub (or `gh`); merge in 
 
 After time away, before you write code: every product clone should be on **`develop`**, with other people’s merged features **and** any hotfix that landed on `main`. Do not `git pull` on `main` for this. Fetching while `main` is checked out is how local `develop` and `origin/develop` drift apart.
 
-The workspace must be idle: no dirty files, no in-progress feature/hotfix/ops sheet with participant repos, no train still `cut`/`stabilizing`, and no checkout of `feature/*` / `hotfix/*` / `ops/*` / `release/*` that still has unique commits.
+`git convoy sync` does this for you and does not require an idle workspace. Clean repos update in place. A repo on `feature/*` or `ops/*` receives `develop` on that branch. A repo on `release/*` receives only `origin/release/<name>`, so features merged to `develop` after the cut stay off the train. Tracked local edits and merge conflicts are reported; re-run until every repo is synchronized.
 
 For **each product repo** (and each ops repo that has `develop`):
 
@@ -269,7 +269,7 @@ This is ordinary branch switching. Worktrees are not required. If any product re
 
 **Return** is the same: read **that** sheet, check out listed branches, stay on `develop` everywhere else. If you skip a listed repo, the feature is incomplete and will not run.
 
-To drop a feature sheet: `feature abandon` removes convoy’s table only. It never deletes git branches or uncommitted files. The only command that deletes git branches is `git convoy train delete --yes`, and that refuses dirty trees and unmerged unique commits.
+To drop a feature sheet: `feature abandon` removes convoy’s table only. It never deletes git branches or uncommitted files. `feature close`, `hotfix close`, and `train close` remove those branches once the work is merged. They refuse dirty trees and unmerged unique commits. `abandon` never deletes branches.
 
 ---
 
