@@ -187,7 +187,7 @@ def sync_product_repos(
     )
 
 
-_DONE_STATUSES = frozenset({"merged", "pulled", "already"})
+_DONE_STATUSES = frozenset({"merged", "pulled", "already", "ignored"})
 
 
 def sync_workspace(
@@ -392,6 +392,13 @@ def _sync_one_workspace_repo(
             "synced": False,
             "role": None,
             "reason": "invalid role in gitconvoy.toml; run git convoy init to validate",
+        }
+    if role in {"incubating", "registry"}:
+        return {
+            "status": "ignored",
+            "synced": False,
+            "role": role,
+            "reason": f"{role} repos are not on product, ops, or BOM sync",
         }
     branch = gitutil.current_branch(repo.path)
     if gitutil.cherry_pick_in_progress(repo.path):

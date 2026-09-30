@@ -1,10 +1,11 @@
-"""Workspace membership: product (default), ops, bom, and incubating.
+"""Workspace membership: product (default), ops, bom, incubating, and registry.
 
 Roles are declared in each repo's ``gitconvoy.toml``
-(``role = "ops"|"bom"|"incubating"``). ``git convoy init`` writes local
+(``role = "ops"|"bom"|"incubating"|"registry"``). ``git convoy init`` writes local
 ``.gitconvoy/ops.toml``. Without that file, BOM falls back to ``*-bom`` ids;
-unmarked repos are product. ``incubating`` is valid but not listed in ops.toml
-— trains skip it until the repo is ``product``.
+unmarked repos are product. ``incubating`` and ``registry`` are valid but not
+listed in ops.toml — trains skip both; registry is a CodeArtifact publisher
+checkout, not a BOM.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None  # type: ignore[assignment]
 
 OPS_FILENAME = "ops.toml"
-VALID_ROLES = frozenset({"product", "ops", "bom", "incubating"})
+VALID_ROLES = frozenset({"product", "ops", "bom", "incubating", "registry"})
 OPS_VERSION_KINDS = frozenset({"python", "npm", "both"})
 OPS_PUBLISH_KINDS = frozenset({"none", "python-wheel", "npm"})
 OPS_PIN_KINDS = frozenset({"registry", "git-tag", "git-sha"})
@@ -48,7 +49,7 @@ def read_repo_role(repo_path: Path) -> str:
             role = "ops"
         if role not in VALID_ROLES:
             raise GitConvoyError(
-                f"{path}: invalid role {role!r} (expected product|ops|bom|incubating)"
+                f"{path}: invalid role {role!r} (expected product|ops|bom|incubating|registry)"
             )
         return role
     return "product"
@@ -200,6 +201,8 @@ def is_bom_id(workspace: Path, repo_id: str) -> bool:
     role = _live_role(workspace, repo_id)
     if role == "bom":
         return True
+    if role in {"ops", "incubating", "registry"}:
+        return False
     listed = load_membership(workspace)["bom"]
     if repo_id in set(listed):
         return True

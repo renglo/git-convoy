@@ -1,5 +1,5 @@
 # git-convoy membership marker (repo root).
-# role: product (default if absent) | ops | bom | incubating
+# role: product (default if absent) | ops | bom | incubating | registry
 role = "ops"
 # How this repo versions itself: python | npm | both
 version = "python"

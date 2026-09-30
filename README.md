@@ -705,7 +705,7 @@ Use **`git convoy ops`** for operator tooling repos that must not ride product t
 
 **Membership**
 
-1. Each ops repo commits `gitconvoy.toml` with `role = "ops"` plus a release policy (`version`, `publish`, `pin`). BOM repos use `role = "bom"`. Unmarked repos are **product**.
+1. Each ops repo commits `gitconvoy.toml` with `role = "ops"` plus a release policy (`version`, `publish`, `pin`). BOM repos use `role = "bom"`. A CodeArtifact publisher checkout uses `role = "registry"` (not a BOM, not ops CLI). Unmarked repos are **product**.
 2. `git convoy init` writes local `.gitconvoy/ops.toml` from those markers (workspace-local, not versioned).
 3. `git convoy bom` (and `hotfix bom`) defaults to the single repo listed under `[bom]` in that file. Pass `--bom PATH` only to override.
 

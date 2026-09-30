@@ -700,7 +700,7 @@ Keep `production.enabled: true` if you want production to run the old pins immed
 
 # Ops — Operator tooling
 
-Use this for repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, …). Each such repo should mark itself ops (`gitconvoy.toml` with `role = "ops"`; BOM repos use `role = "bom"`). Unmarked repos are product.
+Use this for repos that must not ride product trains (launcher, bom-helper, git-convoy, publisher, bootstrap, …). Each such repo should mark itself ops (`gitconvoy.toml` with `role = "ops"`; BOM repos use `role = "bom"`; a CodeArtifact host checkout uses `role = "registry"`). Unmarked repos are product.
 
 Lifecycle mirrors product features on **ops repos only**. Branch prefix `ops/<name>`. PRs target **`develop`**. **`develop` is the neutral branch** for day-to-day work; `main` is updated only when a platform release manager graduates `develop` → `main` and tags. Independent of the current feature/train/hotfix.
 

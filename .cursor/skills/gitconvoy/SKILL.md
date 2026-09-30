@@ -134,7 +134,7 @@ git convoy --json feature close --yes
 
 ## Ops (operator tooling, parallel to features)
 
-Use for ops tooling that must not ride product trains: launcher, bom-helper, git-convoy, publisher, bootstrap, etc. Repos declare `role = "ops"` in committed `gitconvoy.toml`; `git convoy init` refreshes local `.gitconvoy/ops.toml`. Default for unmarked repos is **product**.
+Use for ops tooling that must not ride product trains: launcher, bom-helper, git-convoy, publisher, bootstrap, etc. Repos declare `role = "ops"` in committed `gitconvoy.toml`; `git convoy init` refreshes local `.gitconvoy/ops.toml`. BOM repos use `role = "bom"`. A CodeArtifact host checkout uses `role = "registry"`. Default for unmarked repos is **product**.
 
 `ops *` is independent of the current feature/train/hotfix. It only touches ops repos. Branch prefix `ops/<name>`. PRs target **`develop`**. **`develop` is the neutral branch**. `ops close` checks out `develop` after PRs merge — no `main` → `develop` step.
 
