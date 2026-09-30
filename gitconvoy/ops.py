@@ -14,7 +14,7 @@ from gitconvoy.workspace import Repo, ops_repos, merge_sort, product_repos, requ
 _OPS_PR_BASE = "develop"
 
 
-def start(workspace: Path, state: State, name: str) -> dict:
+def start(workspace: Path, state: State, name: str, *, bootstrap: bool = False) -> dict:
     slug = _slug(name)
     branch = f"ops/{slug}"
     if slug not in state.ops_sheets:
@@ -25,11 +25,14 @@ def start(workspace: Path, state: State, name: str) -> dict:
     picked: list[dict] = []
     for repo in ops_repos(workspace):
         gitutil.fetch(repo.path)
-        ensured = gitutil.ensure_develop(repo.path, push=bool(gitutil.origin_url(repo.path)))
+        ensured = gitutil.ensure_develop(
+            repo.path,
+            push=bool(gitutil.origin_url(repo.path)),
+            bootstrap=bootstrap,
+        )
         if ensured.get("status") == "failed":
             raise GitConvoyError(
-                f"{repo.id}: cannot ensure develop"
-                + (f" ({ensured.get('error')})" if ensured.get("error") else "")
+                gitutil.format_ensure_develop_failure(repo.id, repo.path, ensured)
             )
         current = gitutil.current_branch(repo.path)
         dirty = gitutil.is_dirty(repo.path)
@@ -525,9 +528,12 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
         )
         if ensured.get("status") == "failed":
             raise GitConvoyError(
-                f"{repo_row.id}: cannot ensure develop"
-                + (f" ({ensured.get('error')})" if ensured.get("error") else "")
-                + "; fix, then git convoy ops prs"
+                gitutil.format_ensure_develop_failure(
+                    repo_row.id,
+                    repo_path,
+                    ensured,
+                    retry="git convoy ops prs",
+                )
             )
         ensured_rows.append(
             {

@@ -25,8 +25,16 @@ _FIELD_LINE = re.compile(
 )
 
 
+def tenant_config_path(root: Path) -> Path:
+    """Tenant desired state. ``renglo.yaml`` when the repo has moved off deploy_targets.yml."""
+    renglo = root / "renglo.yaml"
+    if renglo.is_file():
+        return renglo
+    return root / "deploy_targets.yml"
+
+
 def load_package_catalog(root: Path) -> list[PackageSlot] | None:
-    path = root / "deploy_targets.yml"
+    path = tenant_config_path(root)
     if not path.is_file():
         return None
     return parse_package_catalog(path.read_text(encoding="utf-8"))

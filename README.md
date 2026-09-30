@@ -734,6 +734,14 @@ Creates an empty ops sheet, sets it current, and checks out `develop` in every c
 
 If `ops/<name>` already exists locally or on origin, `ops start` checks that branch out and adds the repo to the sheet **only when it has work** (dirty files or commits not in `develop`). Empty leftover branches are left off the sheet. It does **not** create `ops/<name>` in untouched repos — that is `ops adopt`.
 
+**Brand-new ops repository** (empty GitHub repo, unborn `main`): `ops start` creates an **empty** Initial commit on `main`, branches `develop` from it, and pushes both when `origin` exists. Your files stay uncommitted. `ops start` then skips that repo as dirty. Next:
+
+```bash
+git convoy ops adopt
+```
+
+That is what puts the work on `ops/<name>`. Do not commit the tree onto `main` or `develop` first — that short-circuits the funnel.
+
 ### 2. Implement
 
 Edit code in ops repos (`ops/launcher`, `ops/bom-helper`, …). Work may happen on `develop` before adopt — same as features.

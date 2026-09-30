@@ -48,9 +48,12 @@ def sync_develop_from_ref(
     ensured = gitutil.ensure_develop(repo_path, push=push)
     if ensured.get("status") == "failed":
         raise GitConvoyError(
-            f"{repo_id}: cannot create develop"
-            + (f" ({ensured.get('error')})" if ensured.get("error") else "")
-            + f"; {retry_hint}"
+            gitutil.format_ensure_develop_failure(
+                repo_id,
+                repo_path,
+                ensured,
+                retry=retry_hint,
+            )
         )
     has_develop = gitutil.has_local_branch(
         repo_path, "develop"
@@ -258,9 +261,12 @@ def sync_ops_develop(
     ensured = gitutil.ensure_develop(repo_path, push=push)
     if ensured.get("status") == "failed":
         raise GitConvoyError(
-            f"{repo_id}: cannot create develop"
-            + (f" ({ensured.get('error')})" if ensured.get("error") else "")
-            + f"; {retry_hint}"
+            gitutil.format_ensure_develop_failure(
+                repo_id,
+                repo_path,
+                ensured,
+                retry=retry_hint,
+            )
         )
     has_develop = gitutil.has_local_branch(
         repo_path, "develop"

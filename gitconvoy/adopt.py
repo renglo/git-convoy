@@ -12,6 +12,7 @@ from gitconvoy.catalog import (
     catalog_allowlist,
     load_package_catalog,
     slot_for_repo,
+    tenant_config_path,
 )
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo
@@ -231,7 +232,7 @@ def point(
     production: bool = False,
 ) -> dict:
     root = find_bom_repo(workspace, bom)
-    targets = root / "deploy_targets.yml"
+    targets = tenant_config_path(root)
     if not targets.exists():
         raise GitConvoyError(f"missing {targets}")
     number = version.lstrip("v")
@@ -250,13 +251,13 @@ def point(
         if n != 1:
             raise GitConvoyError("could not update bom: in deploy_targets.yml")
     text, n = re.subn(
-        r"(?m)^(\s+)production:\n(\s+)enabled:\s+\S+",
-        rf"\1production:\n\2enabled: {enabled}",
+        r"(?m)^(\s+production:\n(?:[ \t].*\n)*?[ \t]+enabled:\s+)\S+",
+        rf"\g<1>{enabled}",
         text,
         count=1,
     )
     if n != 1:
-        raise GitConvoyError("could not update production.enabled in deploy_targets.yml")
+        raise GitConvoyError(f"could not update production.enabled in {targets.name}")
     targets.write_text(text)
     return {
         "ok": True,
@@ -537,12 +538,16 @@ def _pin_is_rc(pin: str) -> bool:
 
 
 def _pointed_version(root: Path) -> str:
-    targets = root / "deploy_targets.yml"
+    targets = tenant_config_path(root)
     if not targets.exists():
         raise GitConvoyError(f"missing {targets}")
-    match = re.search(r"(?m)^bom:\s+(\S+)", targets.read_text())
+    text = targets.read_text()
+    if targets.name == "renglo.yaml":
+        match = re.search(r"(?m)^[ \t]+bom:\s+(\S+)", text)
+    else:
+        match = re.search(r"(?m)^bom:\s+(\S+)", text)
     if not match:
-        raise GitConvoyError("could not read bom: in deploy_targets.yml")
+        raise GitConvoyError(f"could not read the release pin in {targets.name}")
     return match.group(1).strip().strip("'\"")
 
 
@@ -568,14 +573,14 @@ def _resolve_take_target(
 
 
 def _production_enabled(root: Path) -> bool:
-    targets = root / "deploy_targets.yml"
+    targets = tenant_config_path(root)
     if not targets.exists():
         return False
     match = re.search(
-        r"(?m)^(\s+)production:\n\s+enabled:\s+(\S+)",
+        r"(?m)^\s+production:\n(?:[ \t].*\n)*?[ \t]+enabled:\s+(\S+)",
         targets.read_text(),
     )
-    return bool(match and match.group(2).lower() == "true")
+    return bool(match and match.group(1).lower() == "true")
 
 
 def _production_description(train: str) -> str:
