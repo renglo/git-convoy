@@ -8,6 +8,7 @@ from gitconvoy import gitutil
 from gitconvoy import membership
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.workspace import (
+    bom_repos,
     ops_repos,
     discover_repos,
     feature_repos,
@@ -48,6 +49,27 @@ def test_feature_repos_excludes_ops_and_bom_when_membership_refreshed(
 
     aux_ids = {repo.id for repo in ops_repos(workspace)}
     assert aux_ids == {"bootstrap", "publisher"}
+
+
+def test_registry_role_is_not_product_ops_or_bom(workspace: Path) -> None:
+    publisher = init_repo(workspace / "ops" / "example-registry", develop=False)
+    (publisher / "gitconvoy.toml").write_text('role = "registry"\n')
+    membership.refresh_membership(workspace, discover_repos(workspace))
+    assert "example-registry" not in {repo.id for repo in product_repos(workspace)}
+    assert "example-registry" not in {repo.id for repo in ops_repos(workspace)}
+    assert "example-registry" not in {repo.id for repo in bom_repos(workspace)}
+    assert membership.read_repo_role(publisher) == "registry"
+    assert membership.is_ops_id(workspace, "example-registry") is False
+    assert membership.is_bom_id(workspace, "example-registry") is False
+
+
+def test_registry_role_beats_bom_suffix(workspace: Path) -> None:
+    repo = init_repo(workspace / "ops" / "acme-publisher-bom", develop=False)
+    (repo / "gitconvoy.toml").write_text('role = "registry"\n')
+    membership.refresh_membership(workspace, discover_repos(workspace))
+    assert membership.is_bom_id(workspace, "acme-publisher-bom") is False
+    assert "acme-publisher-bom" not in {row.id for row in bom_repos(workspace)}
+    assert "acme-publisher-bom" not in {row.id for row in product_repos(workspace)}
 
 
 def test_aux_role_is_read_as_ops(tmp_path: Path) -> None:
