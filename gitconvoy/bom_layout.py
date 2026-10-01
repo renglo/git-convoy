@@ -190,6 +190,33 @@ def _filter_repos(repos: dict[str, Any], repo_keys: set[str]) -> dict[str, Any]:
     return {key: value for key, value in repos.items() if key in repo_keys}
 
 
+def required_master_pins(
+    placement: Placement,
+    catalog: list[PackageSlot] | None,
+) -> tuple[set[str], set[str]]:
+    """Master BOM must include these pins so hub/console/peer deploys match placement."""
+    placed_python: set[str] = set(HUB_PYTHON_CORE)
+    placed_python.update(placement.hub_python)
+    for dists in placement.peers.values():
+        placed_python.update(dists)
+    wl_dist = tenant_wl_dist(catalog)
+    if wl_dist:
+        placed_python.add(wl_dist)
+
+    required_npm: set[str] = set()
+    if catalog:
+        for slot in catalog:
+            if slot.npm and slot.python and slot.python in placed_python:
+                required_npm.add(slot.npm)
+        for slot in catalog:
+            if slot.id == "console" and slot.npm:
+                required_npm.add(slot.npm)
+    wl_npm = tenant_wl_npm(catalog)
+    if wl_npm and wl_dist and wl_dist in placed_python:
+        required_npm.add(wl_npm)
+    return placed_python, required_npm
+
+
 def console_npm_for_placement(
     master_npm: dict[str, str],
     *,
@@ -393,19 +420,39 @@ def write_split_boms(
     }
 
 
+def _replace_renglo_release_field(text: str, field: str, value: str) -> str:
+    """Update ``release.<field>`` without touching homonymous keys (e.g. ``packages.console``)."""
+    block = re.search(r"(?ms)^release:\n(.*?)(?=^\S|\Z)", text)
+    if not block:
+        raise ValueError("missing release: in renglo.yaml")
+    section = block.group(0)
+    new_section, n = re.subn(
+        rf"(?m)^(\s+){re.escape(field)}:\s+\S+",
+        rf"\1{field}: {value}",
+        section,
+        count=1,
+    )
+    if n != 1:
+        raise ValueError(f"could not update release.{field} in renglo.yaml")
+    return text[: block.start()] + new_section + text[block.end() :]
+
+
+def _renglo_release_has_field(text: str, field: str) -> bool:
+    block = re.search(r"(?ms)^release:\n(.*?)(?=^\S|\Z)", text)
+    if not block:
+        return False
+    return bool(re.search(rf"(?m)^\s+{re.escape(field)}:\s+\S+", block.group(1)))
+
+
 def sync_deploy_target_versions(root: Path, version: str) -> None:
     """Update release pins in ``renglo.yaml``, or the legacy ``deploy_targets.yml`` pointers."""
     number = _strip_v(_v(version))
     renglo = root / "renglo.yaml"
     if renglo.is_file():
         text = renglo.read_text(encoding="utf-8")
-        text, n = re.subn(r"(?m)^(\s+)bom:\s+\S+", rf"\1bom: {number}", text, count=1)
-        if n != 1:
-            raise ValueError("could not update release.bom in renglo.yaml")
-        if re.search(r"(?m)^\s+console:\s+\S+", text):
-            text, n = re.subn(r"(?m)^(\s+)console:\s+\S+", rf"\1console: {number}", text, count=1)
-            if n != 1:
-                raise ValueError("could not update release.console in renglo.yaml")
+        text = _replace_renglo_release_field(text, "bom", number)
+        if _renglo_release_has_field(text, "console"):
+            text = _replace_renglo_release_field(text, "console", number)
         renglo.write_text(text, encoding="utf-8")
         return
     targets = root / "deploy_targets.yml"

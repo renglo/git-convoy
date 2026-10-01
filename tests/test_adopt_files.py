@@ -663,6 +663,60 @@ def test_take_catalog_keeps_console_pin(tmp_path: Path) -> None:
     assert dest["npm"]["@renglo/console"] == "0.8.0"
 
 
+def test_placement_carries_hub_package_not_on_train(tmp_path: Path) -> None:
+    bom_repo = _bom_repo(tmp_path)
+    src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())
+    src["python"]["renglo-gro"] = "9.9.9"
+    (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
+    (bom_repo / "renglo.yaml").write_text(
+        """
+name: acme
+github:
+  repo: acme/acme-bom
+email:
+  from: a@b.c
+  identity: email
+accounts:
+  staging:
+    id: "1"
+    region: us-east-1
+    enabled: true
+  production:
+    id: "1"
+    region: us-east-1
+    enabled: false
+placement:
+  hub:
+  - renglo-gro
+packages:
+  renglo-lib:
+    python: renglo-lib
+  gro:
+    python: renglo-gro
+release:
+  bom: 1.4.0
+""",
+        encoding="utf-8",
+    )
+    _seed_train_packages(tmp_path)
+    state = State(current_train="2026-W34")
+    train = Train(name="2026-W34", branch="release/2026-W34", status="published")
+    train.add_repo(
+        TrainRepo(
+            id="renglo-lib",
+            path="dev/renglo-lib",
+            from_version="1.2.3",
+            to="1.2.4",
+            stable_tag="v1.2.4",
+        )
+    )
+    state.trains["2026-W34"] = train
+    adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["python"]["renglo-gro"] == "9.9.9"
+    assert dest["python"]["renglo-lib"] == "1.2.4"
+
+
 def test_take_without_catalog_keeps_copy_forward(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
     src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())

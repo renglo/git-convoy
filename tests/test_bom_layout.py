@@ -16,6 +16,26 @@ from gitconvoy.catalog import PackageSlot
 
 
 class BomLayoutTests(unittest.TestCase):
+    def test_sync_renglo_release_console_not_packages_console(self) -> None:
+        root = Path(self._tmp()) / "bom"
+        root.mkdir()
+        (root / "renglo.yaml").write_text(
+            """
+name: acme
+packages:
+  console:
+    npm: "@renglo/console"
+release:
+  bom: 1.0.0
+  console: 1.0.0
+""",
+            encoding="utf-8",
+        )
+        sync_deploy_target_versions(root, "1.1.0")
+        text = (root / "renglo.yaml").read_text(encoding="utf-8")
+        self.assertIn("release:\n  bom: 1.1.0\n  console: 1.1.0", text)
+        self.assertIn('  console:\n    npm: "@renglo/console"', text)
+
     def test_sync_deploy_target_versions(self) -> None:
         root = Path(self._tmp()) / "bom"
         root.mkdir()

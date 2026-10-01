@@ -111,6 +111,20 @@ def catalog_allowlist(catalog: list[PackageSlot]) -> dict[str, set[str]]:
     return allowed
 
 
+def slot_for_python(catalog: list[PackageSlot], dist: str) -> PackageSlot | None:
+    for slot in catalog:
+        if slot.python == dist:
+            return slot
+    return None
+
+
+def slot_for_npm(catalog: list[PackageSlot], name: str) -> PackageSlot | None:
+    for slot in catalog:
+        if slot.npm == name:
+            return slot
+    return None
+
+
 def slot_for_repo(
     catalog: list[PackageSlot],
     repo_id: str,

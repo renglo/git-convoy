@@ -11,6 +11,8 @@ from gitconvoy.catalog import (
     PackageSlot,
     catalog_allowlist,
     load_package_catalog,
+    slot_for_npm,
+    slot_for_python,
     slot_for_repo,
     tenant_config_path,
 )
@@ -19,9 +21,11 @@ from gitconvoy.state import State, Train, TrainRepo
 from gitconvoy import ghutil
 from gitconvoy import membership
 from gitconvoy.bom_layout import (
+    CONSOLE_NPM_HOST,
     copy_split_bom_draft,
     load_placement,
     merge_union_bom,
+    required_master_pins,
     sync_deploy_target_versions,
     write_split_boms,
 )
@@ -384,6 +388,19 @@ def take(
             pinned.extend(
                 _clear_repo_shas(root, dest, repo, workspace, bom_data)
             )
+    placement = load_placement(root)
+    pinned.extend(
+        _ensure_placement_pins(
+            workspace,
+            root,
+            dest,
+            bom_data,
+            train_obj,
+            src,
+            catalog,
+            placement,
+        )
+    )
     if catalog is not None:
         pinned.extend(_prune_bom_to_catalog(root, dest, bom_data, catalog))
         _restore_adopt_pins(root, dest, bom_data, pinned)
@@ -774,6 +791,154 @@ def _candidate_package_pins(
     for name in _npm_package_names(repo, workspace, required=False):
         pins.append(("npm", name))
     return pins
+
+
+def _master_at_version(root: Path, version: str) -> dict:
+    text = (version or "").strip()
+    if not text:
+        return {}
+    if _uses_three_bom_layout(root):
+        return merge_union_bom(root, text)
+    path = _bom_file(root, text)
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text())
+    return data if isinstance(data, dict) else {}
+
+
+def _repo_id_for_python_dist(dist: str, catalog: list[PackageSlot] | None) -> str | None:
+    if catalog:
+        slot = slot_for_python(catalog, dist)
+        if slot:
+            return slot.id
+    if dist in ("renglo-lib", "renglo-api"):
+        return dist
+    if dist.startswith("renglo-"):
+        return dist.removeprefix("renglo-")
+    return None
+
+
+def _repo_path_by_id(workspace: Path, repo_id: str) -> Path | None:
+    try:
+        repos = discover_repos(workspace)
+    except GitConvoyError:
+        return None
+    for repo in repos:
+        if repo.id == repo_id:
+            path = workspace / repo.path
+            return path if path.is_dir() else None
+    return None
+
+
+def _stable_pep_npm(workspace: Path, repo_id: str) -> tuple[str, str] | None:
+    repo_path = _repo_path_by_id(workspace, repo_id)
+    if repo_path is None:
+        return None
+    tag = gitutil.last_stable_tag(repo_path)
+    if not tag:
+        return None
+    info = versions.read_version_at_ref(repo_path, tag)
+    pep = str(info.get("python") or "").strip()
+    npm = str(info.get("npm") or "").strip()
+    if pep:
+        try:
+            return versions.drop_rc(pep)
+        except GitConvoyError:
+            return pep, npm
+    if npm:
+        try:
+            return versions.drop_rc(npm)
+        except GitConvoyError:
+            return npm, npm
+    return None
+
+
+def _ensure_placement_pins(
+    workspace: Path,
+    root: Path,
+    version: str,
+    bom_data: dict,
+    train: Train,
+    from_version: str,
+    catalog: list[PackageSlot] | None,
+    placement,
+) -> list[dict]:
+    """Guarantee every placement dist/npm has a pin (train updates; others carry or stable)."""
+    del version  # bom_data is the working master; split happens later.
+    if not placement.hub_python and not placement.peers:
+        return []
+    required_python, required_npm = required_master_pins(placement, catalog)
+    previous = _master_at_version(root, from_version)
+    pinned: list[dict] = []
+
+    prev_py = previous.get("python") if isinstance(previous.get("python"), dict) else {}
+    prev_npm = previous.get("npm") if isinstance(previous.get("npm"), dict) else {}
+
+    for dist in sorted(required_python):
+        live = bom_data.get("python")
+        if isinstance(live, dict) and str(live.get(dist) or "").strip():
+            continue
+        pin = str(prev_py.get(dist) or "").strip()
+        kind = "carried"
+        repo_id = _repo_id_for_python_dist(dist, catalog)
+        if not pin:
+            stable = _stable_pep_npm(workspace, repo_id) if repo_id else None
+            if stable:
+                pin = stable[0]
+                kind = "stable"
+        if not pin:
+            where = f"bom {_strip_v(from_version)}" if from_version else "previous BOM"
+            raise GitConvoyError(
+                f"placement requires python package {dist!r}, but it is not pinned "
+                f"and could not be resolved from {where} or a stable tag"
+                + (f" (repo {repo_id!r})" if repo_id else "")
+            )
+        bom_data.setdefault("python", {})[dist] = pin
+        pinned.append(
+            {
+                "section": "python",
+                "package": dist,
+                "pin": pin,
+                "kind": kind,
+                "action": "placement",
+                **({"id": repo_id} if repo_id else {}),
+            }
+        )
+
+    for name in sorted(required_npm):
+        live = bom_data.get("npm")
+        if isinstance(live, dict) and str(live.get(name) or "").strip():
+            continue
+        pin = str(prev_npm.get(name) or "").strip()
+        kind = "carried"
+        slot = slot_for_npm(catalog, name) if catalog else None
+        repo_id = slot.id if slot else None
+        if name == CONSOLE_NPM_HOST and not repo_id:
+            repo_id = "console"
+        if not pin:
+            stable = _stable_pep_npm(workspace, repo_id) if repo_id else None
+            if stable and stable[1]:
+                pin = stable[1]
+                kind = "stable"
+        if not pin:
+            where = f"bom {_strip_v(from_version)}" if from_version else "previous BOM"
+            raise GitConvoyError(
+                f"placement requires npm package {name!r}, but it is not pinned "
+                f"and could not be resolved from {where} or a stable tag"
+                + (f" (repo {repo_id!r})" if repo_id else "")
+            )
+        bom_data.setdefault("npm", {})[name] = pin
+        pinned.append(
+            {
+                "section": "npm",
+                "package": name,
+                "pin": pin,
+                "kind": kind,
+                "action": "placement",
+                **({"id": repo_id} if repo_id else {}),
+            }
+        )
+    return pinned
 
 
 def _prune_bom_to_catalog(

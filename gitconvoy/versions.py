@@ -79,6 +79,33 @@ def _replace_quoted_version(text: str, new: str, key_pattern: str) -> tuple[str,
     return text[:start] + new + text[end:], True
 
 
+def read_version_at_ref(repo: Path, ref: str) -> dict[str, str]:
+    """Read package versions from ``ref`` without checking out (for stable carry-forward)."""
+    from gitconvoy import gitutil
+
+    found: dict[str, str] = {}
+    for rel in ("package/pyproject.toml", "pyproject.toml"):
+        text = gitutil.run(repo, "show", f"{ref}:{rel}", check=False).stdout or ""
+        if not text.strip():
+            continue
+        match = re.search(r'(?m)^version\s*=\s*["\']([^"\']+)["\']', text)
+        if match:
+            found["python"] = match.group(1)
+            break
+    for rel in ("ui/package.json", "package.json"):
+        text = gitutil.run(repo, "show", f"{ref}:{rel}", check=False).stdout or ""
+        if not text.strip():
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data.get("version"), str):
+            found["npm"] = data["version"]
+            break
+    return found
+
+
 def read_version(repo: Path) -> dict[str, str]:
     found: dict[str, str] = {}
     pyproject = repo / "pyproject.toml"
