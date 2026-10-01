@@ -175,6 +175,7 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 ## Cycles (see README)
 
 - **1–2:** features and local release branches — git only (Full optional).
+- **Ops cycle 2:** after ops sheets merge to `develop`, `git convoy ops cut NAME` then `git convoy ops tag-rc` tags every ops repo that is ahead of its last stable tag. `ops release` is one named repo, not that convoy. `ops tag-rc` writes `platform` when `renglo-ops` is on the sheet; commit and push the BOM.
 - **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging).
 - **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.

@@ -139,10 +139,12 @@ class State:
     current_train: str | None = None
     current_hotfix: str | None = None
     current_ops: str | None = None
+    current_ops_release: str | None = None
     features: dict[str, Feature] = field(default_factory=dict)
     trains: dict[str, Train] = field(default_factory=dict)
     hotfixes: dict[str, Hotfix] = field(default_factory=dict)
     ops_sheets: dict[str, Ops] = field(default_factory=dict)
+    ops_trains: dict[str, Train] = field(default_factory=dict)
 
     def require_feature(self, name: str | None = None) -> Feature:
         key = name or self.current_feature
@@ -176,6 +178,14 @@ class State:
             raise GitConvoyError(f"unknown ops: {key}")
         return self.ops_sheets[key]
 
+    def require_ops_release(self, name: str | None = None) -> Train:
+        key = name or self.current_ops_release
+        if not key:
+            raise GitConvoyError("no current ops release; run: git convoy ops cut <name>")
+        if key not in self.ops_trains:
+            raise GitConvoyError(f"unknown ops release: {key}")
+        return self.ops_trains[key]
+
 
 def state_path(workspace: Path) -> Path:
     return workspace / STATE_DIRNAME / STATE_FILENAME
@@ -202,6 +212,7 @@ def _to_dict(state: State) -> dict[str, Any]:
         "current_train": state.current_train,
         "current_hotfix": state.current_hotfix,
         "current_ops": state.current_ops,
+        "current_ops_release": state.current_ops_release,
         "features": {
             name: {
                 "name": feat.name,
@@ -258,6 +269,26 @@ def _to_dict(state: State) -> dict[str, Any]:
                 "repos": [asdict(repo) for repo in item.repos],
             }
             for name, item in state.ops_sheets.items()
+        },
+        "ops_trains": {
+            name: {
+                "name": train.name,
+                "branch": train.branch,
+                "status": train.status,
+                "features": train.features,
+                "repos": [
+                    {
+                        "id": repo.id,
+                        "path": repo.path,
+                        "from": repo.from_version,
+                        "to": repo.to,
+                        "rc_tag": repo.rc_tag,
+                        "stable_tag": repo.stable_tag,
+                    }
+                    for repo in train.repos
+                ],
+            }
+            for name, train in state.ops_trains.items()
         },
     }
 
@@ -330,13 +361,34 @@ def _from_dict(raw: dict[str, Any]) -> State:
                 for row in item.get("repos") or []
             ],
         )
+    ops_trains: dict[str, Train] = {}
+    for name, item in (raw.get("ops_trains") or {}).items():
+        ops_trains[name] = Train(
+            name=item.get("name", name),
+            branch=item.get("branch", f"release/{name}"),
+            status=item.get("status", "cut"),
+            features=list(item.get("features") or []),
+            repos=[
+                TrainRepo(
+                    id=row["id"],
+                    path=row["path"],
+                    from_version=row.get("from") or row.get("from_version"),
+                    to=row.get("to"),
+                    rc_tag=row.get("rc_tag"),
+                    stable_tag=row.get("stable_tag"),
+                )
+                for row in item.get("repos") or []
+            ],
+        )
     return State(
         current_feature=raw.get("current_feature"),
         current_train=raw.get("current_train"),
         current_hotfix=raw.get("current_hotfix"),
         current_ops=raw.get("current_ops"),
+        current_ops_release=raw.get("current_ops_release"),
         features=features,
         trains=trains,
         hotfixes=hotfixes,
         ops_sheets=ops_sheets,
+        ops_trains=ops_trains,
     )

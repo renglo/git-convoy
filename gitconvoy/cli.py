@@ -6,6 +6,7 @@ from pathlib import Path
 
 from gitconvoy import adopt as adopt_cmd
 from gitconvoy import ops as ops_cmd
+from gitconvoy import ops_cycle as ops_cycle_cmd
 from gitconvoy import ops_release as ops_release_cmd
 from gitconvoy import commit as commit_cmd
 from gitconvoy import feature as feature_cmd
@@ -230,6 +231,25 @@ def _ops(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
     if sub == "promote":
         data = ops_cmd.promote(workspace, state, args.name, use_gh=not args.no_gh)
         return data, _promote_text(data)
+    if sub == "cut":
+        repos = [item.strip() for item in args.repos.split(",") if item.strip()] if args.repos else None
+        data = ops_cycle_cmd.cut(
+            workspace,
+            state,
+            args.name,
+            bump=args.bump,
+            repo_ids=repos,
+            no_bump=args.no_bump,
+        )
+        return data, _ops_cut_text(data)
+    if sub == "tag-rc":
+        data = ops_cycle_cmd.tag_rc(
+            workspace,
+            state,
+            push=not args.no_push,
+            bom=args.bom,
+        )
+        return data, _ops_tag_rc_text(data)
     if sub == "release":
         data = ops_release_cmd.release(
             workspace,
@@ -669,6 +689,20 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep local ops/<name> branches",
     )
+    ocut = asub.add_parser(
+        "cut",
+        help="Cycle 2: cut release/<name> on every ops repo ahead of its last stable tag",
+    )
+    ocut.add_argument("name")
+    ocut.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
+    ocut.add_argument("--no-bump", action="store_true")
+    ocut.add_argument("--repos", help="Comma-separated ops repo ids (skip discovery)")
+    otag = asub.add_parser(
+        "tag-rc",
+        help="Tag every repo on the current ops release and push the tags",
+    )
+    otag.add_argument("--no-push", action="store_true")
+    otag.add_argument("--bom", help="BOM repo for the renglo-ops platform pin")
     acommit = asub.add_parser("commit", help="Commit dirty ops participant repos")
     acommit.add_argument("--plan", action="store_true", help="Print the commit plan; do not commit")
     acommit.add_argument("--from", dest="from_file", help="Apply a filled plan (JSON file, or - for stdin)")
@@ -1169,6 +1203,32 @@ def _sheet_name(data: dict) -> str:
         or data.get("train")
         or "?"
     )
+
+
+def _ops_cut_text(data: dict) -> str:
+    lines = [f"ops cut {data['train']}  {data['branch']}"]
+    for repo in data.get("repos") or []:
+        lines.append(f"  {repo['id']:20} {repo.get('from') or '?'} -> {repo.get('to') or '(no bump)'}")
+    for repo in data.get("skipped") or []:
+        lines.append(f"  {repo['id']:20} skipped ({repo.get('reason')})")
+    lines.append("Next: git convoy ops tag-rc")
+    return "\n".join(lines)
+
+
+def _ops_tag_rc_text(data: dict) -> str:
+    lines = [f"ops tag-rc  {data['train']}"]
+    for repo in data.get("repos") or []:
+        lines.append(f"  {repo['id']:20} {repo.get('version')}  {repo.get('tag')}")
+    pin = data.get("pin") or {}
+    if pin:
+        lines.append(
+            f"platform {pin.get('status')} {pin.get('version') or ''} "
+            f"{pin.get('file') or pin.get('reason') or ''}".rstrip()
+        )
+        note = pin.get("note")
+        if note:
+            lines.append(note)
+    return "\n".join(lines)
 
 
 def _ops_release_text(data: dict) -> str:

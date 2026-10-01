@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from gitconvoy.errors import GitConvoyError
 
@@ -13,11 +13,49 @@ class HelpCommand(TypedDict):
 class HelpSection(TypedDict):
     name: str
     commands: list[HelpCommand]
+    group: NotRequired[str]
 
+
+class HelpGroup(TypedDict):
+    key: str
+    title: str
+    note: str
+
+
+# Golden paths, in the order `git convoy help` prints them. Every section in
+# HELP_SECTIONS carries one of these keys.
+HELP_GROUPS: list[HelpGroup] = [
+    {
+        "key": "where",
+        "title": "WHERE AM I",
+        "note": "Start here when you do not know what runs next.",
+    },
+    {
+        "key": "product",
+        "title": "PRODUCT — features into a running environment",
+        "note": "Four cycles. Each one ends where the next begins.",
+    },
+    {
+        "key": "ops",
+        "title": "OPS — operator tooling into the registries",
+        "note": "",
+    },
+    {
+        "key": "hotfix",
+        "title": "HOTFIX — patch production now",
+        "note": "",
+    },
+    {
+        "key": "reference",
+        "title": "SETUP AND REFERENCE",
+        "note": "Needed once, or when a golden path does not fit.",
+    },
+]
 
 # Full reference (git convoy help / git convoy help all)
 HELP_SECTIONS: list[HelpSection] = [
     {
+        "group": "reference",
         "name": "One-time setup",
         "commands": [
             {
@@ -27,6 +65,7 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
+        "group": "where",
         "name": "Any time",
         "commands": [
             {
@@ -44,6 +83,7 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
+        "group": "where",
         "name": "Catch up",
         "commands": [
             {
@@ -53,6 +93,7 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
+        "group": "product",
         "name": "Cycle 1 — Feature",
         "commands": [
             {
@@ -86,31 +127,7 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
-        "name": "Cycle 1 — Feature (optional)",
-        "commands": [
-            {
-                "cmd": "git convoy feature push",
-                "summary": "Push feature/<name> to origin without opening PRs (backup only).",
-            },
-            {
-                "cmd": "git convoy feature prs --no-gh",
-                "summary": "Push and print compare URLs instead of opening PRs (Simple mode).",
-            },
-            {
-                "cmd": "git convoy feature refresh",
-                "summary": "Merge origin/develop into each feature/<name> participant.",
-            },
-            {
-                "cmd": "git convoy feature switch NAME",
-                "summary": "Switch the current feature sheet (refuses if any product repo is dirty).",
-            },
-            {
-                "cmd": "git convoy feature abandon --yes",
-                "summary": "Drop the feature sheet without deleting branches or uncommitted files.",
-            },
-        ],
-    },
-    {
+        "group": "product",
         "name": "Cycle 2 — Release train (local)",
         "commands": [
             {
@@ -136,6 +153,7 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
+        "group": "product",
         "name": "Cycle 3 — Staging adoption",
         "commands": [
             {
@@ -161,6 +179,7 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
+        "group": "product",
         "name": "Cycle 4 — Production release",
         "commands": [
             {
@@ -190,7 +209,50 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
-        "name": "Ops — Operator tooling",
+        "group": "product",
+        "name": "Product — optional",
+        "commands": [
+            {
+                "cmd": "git convoy feature push",
+                "summary": "Push feature/<name> to origin without opening PRs (backup only).",
+            },
+            {
+                "cmd": "git convoy feature prs --no-gh",
+                "summary": "Push and print compare URLs instead of opening PRs (Simple mode).",
+            },
+            {
+                "cmd": "git convoy feature refresh",
+                "summary": "Merge origin/develop into each feature/<name> participant.",
+            },
+            {
+                "cmd": "git convoy feature switch NAME",
+                "summary": "Switch the current feature sheet (refuses if any product repo is dirty).",
+            },
+            {
+                "cmd": "git convoy feature abandon --yes",
+                "summary": "Drop the feature sheet without deleting branches or uncommitted files.",
+            },
+            {
+                "cmd": "git convoy train tag-rc --no-push",
+                "summary": "Create rc tags locally without pushing (cycle 2 dry run).",
+            },
+            {
+                "cmd": "git convoy train publish --no-push",
+                "summary": "Tag stable locally without pushing (cycle 2 dry run).",
+            },
+            {
+                "cmd": "git convoy bom --require-verify --bom ops/<system>-bom",
+                "summary": "Write staging BOM but refuse when any publish workflow failed (strict).",
+            },
+            {
+                "cmd": "git convoy bom --no-verify --bom ops/<system>-bom",
+                "summary": "Write staging BOM using local workflow heuristic only (Simple mode).",
+            },
+        ],
+    },
+    {
+        "group": "ops",
+        "name": "Ops cycle 1 — land tooling on develop",
         "commands": [
             {
                 "cmd": "git convoy ops start NAME",
@@ -209,6 +271,10 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Merge origin/develop, push, open PRs into develop (Full: via gh).",
             },
             {
+                "cmd": "git convoy ops approve",
+                "summary": "Approve all sibling ops PRs when CI is green (Full mode; merge stays in GitHub).",
+            },
+            {
                 "cmd": "git convoy ops show",
                 "summary": "Print ops sheet status per participant.",
             },
@@ -219,7 +285,40 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
-        "name": "Ops — Operator tooling (optional)",
+        "group": "ops",
+        "name": "Ops cycle 2 — release the whole convoy",
+        "commands": [
+            {
+                "cmd": "git convoy ops cut NAME",
+                "summary": "Cut release/NAME on every ops repo ahead of its last stable tag. No repo list to type.",
+            },
+            {
+                "cmd": "git convoy ops tag-rc",
+                "summary": "Tag that whole sheet and push; the tag push publishes to the registries.",
+            },
+            {
+                "cmd": "cd ops/<system>-bom && git add renglo.yaml && git commit -m \"Pin platform\" && git push",
+                "summary": "ops tag-rc wrote platform when renglo-ops was on the sheet; this push deploys it.",
+            },
+        ],
+    },
+    {
+        "group": "ops",
+        "name": "Ops cycle 2 — or release one repo at a time",
+        "commands": [
+            {
+                "cmd": "git convoy ops release REPO",
+                "summary": "Same graduation for one named repo: bump, develop→main PR, or tag on main.",
+            },
+            {
+                "cmd": "git convoy ops release REPO --verify --wait --pin --bom ops/<system>-bom",
+                "summary": "Tag, confirm publish CI, and pin that repo in the tenant BOM.",
+            },
+        ],
+    },
+    {
+        "group": "ops",
+        "name": "Ops — optional",
         "commands": [
             {
                 "cmd": "git convoy ops adopt --repos bom-helper,git-convoy",
@@ -234,10 +333,6 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Push and print compare URLs (Simple mode).",
             },
             {
-                "cmd": "git convoy ops approve",
-                "summary": "Approve sibling ops PRs via gh (Full mode).",
-            },
-            {
                 "cmd": "git convoy ops refresh",
                 "summary": "Merge origin/develop into each ops/<name> participant.",
             },
@@ -246,16 +341,16 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Switch the current ops sheet.",
             },
             {
+                "cmd": "git convoy ops cut NAME --repos bom-helper,git-convoy",
+                "summary": "Cut only those ops repos instead of every repo that is ahead.",
+            },
+            {
+                "cmd": "git convoy ops tag-rc --no-push",
+                "summary": "Tag the ops release locally without publishing.",
+            },
+            {
                 "cmd": "git convoy ops promote",
                 "summary": "Sheet-scoped develop→main PRs when develop is ahead (no bump or tag).",
-            },
-            {
-                "cmd": "git convoy ops release bom-helper",
-                "summary": "Per-repo platform release: bump, develop→main PR, or tag on main.",
-            },
-            {
-                "cmd": "git convoy ops release bom-helper --verify --wait --pin --bom ops/<system>-bom",
-                "summary": "Tag, confirm publish CI, and pin helper.ref in the tenant BOM.",
             },
             {
                 "cmd": "git convoy ops abandon --yes",
@@ -264,7 +359,8 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
-        "name": "Hotfix — Production emergency",
+        "group": "hotfix",
+        "name": "Hotfix — PRs into main",
         "commands": [
             {
                 "cmd": "git convoy hotfix start NAME",
@@ -293,7 +389,26 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
-        "name": "Hotfix — Production emergency (optional)",
+        "group": "hotfix",
+        "name": "Hotfix — after publish",
+        "commands": [
+            {
+                "cmd": "git convoy bom --production --bom ops/<system>-bom",
+                "summary": "Enable production on that same BOM version once staging is acceptable.",
+            },
+            {
+                "cmd": "git convoy feature refresh",
+                "summary": "Merge the patched develop into every in-progress feature/* branch.",
+            },
+            {
+                "cmd": "git convoy hotfix close --yes",
+                "summary": "After the patch is in develop: checkout develop, delete the branch, drop the sheet.",
+            },
+        ],
+    },
+    {
+        "group": "hotfix",
+        "name": "Hotfix — optional",
         "commands": [
             {
                 "cmd": "git convoy hotfix push",
@@ -308,30 +423,15 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Print hotfix sheet: published or not, and whether the tag is in develop.",
             },
             {
-                "cmd": "git convoy hotfix close --yes",
-                "summary": "After the patch is in develop: checkout develop, delete the hotfix branch, drop the sheet.",
-            },
-            {
-                "cmd": "git convoy feature refresh",
-                "summary": "After hotfix publish: merge develop into in-progress feature/* branches.",
-            },
-            {
                 "cmd": "git convoy hotfix abandon --yes",
                 "summary": "Drop the hotfix sheet without deleting branches or files.",
             },
         ],
     },
     {
-        "name": "BOM — Manual primitives",
+        "group": "reference",
+        "name": "BOM — manual primitives",
         "commands": [
-            {
-                "cmd": "git convoy bom --require-verify --bom ops/<system>-bom",
-                "summary": "Write staging BOM but refuse when any publish workflow failed (strict).",
-            },
-            {
-                "cmd": "git convoy bom --no-verify --bom ops/<system>-bom",
-                "summary": "Write staging BOM using local workflow heuristic only (Simple mode).",
-            },
             {
                 "cmd": "git convoy bom draft --from 1.4.0 --to 1.4.1 --bom ops/<system>-bom",
                 "summary": "Copy a version object to a new draft BOM file.",
@@ -347,19 +447,7 @@ HELP_SECTIONS: list[HelpSection] = [
         ],
     },
     {
-        "name": "Train — Git-only (stay in cycle 2)",
-        "commands": [
-            {
-                "cmd": "git convoy train tag-rc --no-push",
-                "summary": "Create rc tags locally without pushing (cycle 2 dry run).",
-            },
-            {
-                "cmd": "git convoy train publish --no-push",
-                "summary": "Tag stable locally without pushing (cycle 2 dry run).",
-            },
-        ],
-    },
-    {
+        "group": "reference",
         "name": "Agents",
         "commands": [
             {
@@ -629,7 +717,7 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
     ],
     "ops": [
         {
-            "name": "Daily ops work (ops/<name> → develop)",
+            "name": "Ops cycle 1 — land tooling on develop (ops/<name> → develop)",
             "commands": [
                 {
                     "cmd": "git convoy ops start NAME",
@@ -662,15 +750,32 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
             ],
         },
         {
-            "name": "Platform release (no sheet)",
+            "name": "Ops cycle 2 — release the whole convoy",
             "commands": [
                 {
-                    "cmd": "git convoy ops release bom-helper",
-                    "summary": "Bump, open develop→main PR, or tag on main as repo state requires.",
+                    "cmd": "git convoy ops cut NAME",
+                    "summary": "Cut release/NAME on every ops repo ahead of its last stable tag.",
                 },
                 {
-                    "cmd": "git convoy ops release bom-helper --verify --wait --pin --bom ops/<system>-bom",
-                    "summary": "Tag, verify publish CI, pin helper.ref; then commit and push the BOM.",
+                    "cmd": "git convoy ops tag-rc",
+                    "summary": "Tag that whole sheet and push; the tag push publishes to the registries.",
+                },
+                {
+                    "cmd": "cd ops/<system>-bom && git add renglo.yaml && git commit -m \"Pin platform\" && git push",
+                    "summary": "tag-rc wrote platform when renglo-ops was on the sheet; this push deploys it.",
+                },
+            ],
+        },
+        {
+            "name": "Ops cycle 2 — or release one repo at a time",
+            "commands": [
+                {
+                    "cmd": "git convoy ops release REPO",
+                    "summary": "Bump, open develop→main PR, or tag on main as that repo requires.",
+                },
+                {
+                    "cmd": "git convoy ops release REPO --verify --wait --pin --bom ops/<system>-bom",
+                    "summary": "Tag, verify publish CI, pin that repo; then commit and push the BOM.",
                 },
             ],
         },
@@ -703,28 +808,20 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                     "summary": "Push and print compare URLs (Simple mode).",
                 },
                 {
-                    "cmd": "git convoy ops approve",
-                    "summary": "Approve sibling ops PRs via gh (Full mode).",
-                },
-                {
-                    "cmd": "git convoy ops refresh",
-                    "summary": "Merge origin/develop into each ops/<name> participant.",
-                },
-                {
                     "cmd": "git convoy ops switch NAME",
                     "summary": "Switch the current ops sheet.",
                 },
                 {
+                    "cmd": "git convoy ops cut NAME --repos bom-helper,git-convoy",
+                    "summary": "Cut only those ops repos instead of every repo that is ahead.",
+                },
+                {
+                    "cmd": "git convoy ops tag-rc --no-push",
+                    "summary": "Tag the ops release locally without publishing.",
+                },
+                {
                     "cmd": "git convoy ops promote",
                     "summary": "Sheet-scoped develop→main PRs when develop is ahead (no bump or tag).",
-                },
-                {
-                    "cmd": "git convoy ops release bom-helper",
-                    "summary": "Per-repo platform release: bump, develop→main PR, or tag on main.",
-                },
-                {
-                    "cmd": "git convoy ops release bom-helper --verify --wait --pin --bom ops/<system>-bom",
-                    "summary": "Tag, confirm publish CI, and pin helper.ref in the tenant BOM.",
                 },
                 {
                     "cmd": "git convoy ops abandon --yes",
@@ -960,9 +1057,28 @@ def resolve_help_topic(topic: str | None) -> str:
     raise GitConvoyError(f"unknown help topic {topic!r}; choose from: {valid}")
 
 
+def grouped_sections() -> list[HelpSection]:
+    """HELP_SECTIONS in golden-path order: every section, grouped, no duplicates."""
+    order = [group["key"] for group in HELP_GROUPS]
+    known = set(order)
+    for section in HELP_SECTIONS:
+        key = section.get("group")
+        if key not in known:
+            raise GitConvoyError(
+                f"help section {section['name']!r} has no known group "
+                f"(expected one of: {', '.join(order)})"
+            )
+    return [
+        section
+        for key in order
+        for section in HELP_SECTIONS
+        if section.get("group") == key
+    ]
+
+
 def sections_for_topic(topic: str) -> list[HelpSection]:
     if topic == "all":
-        return HELP_SECTIONS
+        return grouped_sections()
     return HELP_TOPICS[topic]
 
 
@@ -974,28 +1090,69 @@ def help_payload(*, topic: str | None = None, summaries: bool = False) -> dict:
         rows = []
         for item in section["commands"]:
             rows.append({"cmd": item["cmd"], "summary": item["summary"]})
-        payload_sections.append({"name": section["name"], "commands": rows})
-    return {
+        row: dict = {"name": section["name"], "commands": rows}
+        group = section.get("group")
+        if group:
+            row["group"] = group
+        payload_sections.append(row)
+    payload = {
         "ok": True,
         "topic": resolved,
         "summaries": summaries,
         "sections": payload_sections,
         "topics": list(HELP_TOPIC_NAMES),
     }
+    if resolved == "all":
+        payload["groups"] = [
+            {"key": group["key"], "title": group["title"], "note": group["note"]}
+            for group in HELP_GROUPS
+        ]
+    return payload
 
 
 def format_help_text(*, topic: str | None = None, summaries: bool = False) -> str:
     resolved = resolve_help_topic(topic)
-    sections = sections_for_topic(resolved)
-    if resolved == "all":
-        title = "git convoy — command sequences (all topics)"
-    else:
-        title = f"git convoy help {resolved} — command sequence"
-    lines = [title, ""]
     if resolved != "all":
-        lines.append("Run in order within each section. Related commands from other topics are included.")
+        return _format_topic_text(resolved, summaries=summaries)
+    lines = [
+        "git convoy — quick reference",
+        "",
+        "Three golden paths. Find the one you are on, then run the next command in it.",
+        "Process and detail: ops/git-convoy/README.md",
+    ]
+    titles = {group["key"]: group for group in HELP_GROUPS}
+    current = None
+    for section in grouped_sections():
+        key = section["group"]
+        if key != current:
+            current = key
+            group = titles[key]
+            lines.extend(["", group["title"], f"  {group['note']}"])
         lines.append("")
-    for section in sections:
+        lines.append(f"  {section['name']}")
+        for item in section["commands"]:
+            lines.append(f"    {item['cmd']}")
+            if summaries:
+                lines.append(f"      {item['summary']}")
+    lines.extend(
+        [
+            "",
+            f"Topics: {', '.join(HELP_TOPIC_NAMES)}",
+            "One path in order: git convoy help TOPIC",
+            "With summaries:   git convoy help [TOPIC] -s",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_topic_text(topic: str, *, summaries: bool) -> str:
+    lines = [
+        f"git convoy help {topic} — command sequence",
+        "",
+        "Run in order within each section. Related commands from other topics are included.",
+        "",
+    ]
+    for section in HELP_TOPICS[topic]:
         lines.append(section["name"])
         for item in section["commands"]:
             lines.append(f"  {item['cmd']}")

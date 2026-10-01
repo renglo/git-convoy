@@ -136,15 +136,17 @@ git convoy --json feature close --yes
 
 Use for operator tooling that must not ride product trains: launcher, bom-helper, git-convoy, publisher, bootstrap, etc. Repos declare `role = "ops"` in committed `gitconvoy.toml`; `git convoy init` refreshes local `.gitconvoy/ops.toml`. BOM repos use `role = "bom"`. A CodeArtifact host checkout uses `role = "registry"`. Default for unmarked repos is **product**.
 
-`ops *` is independent of the current feature/train/hotfix. It only touches ops repos. Branch prefix `ops/<name>`. PRs target **`develop`**. **`develop` is the neutral branch**. `ops close` checks out `develop` after PRs merge — no `main` → `develop` step.
+`ops *` is independent of the current feature/train/hotfix. It only touches ops repos. Branch prefix `ops/<name>`. PRs target **`develop`**. **`develop` is the neutral branch**. `ops close` checks out `develop` after PRs merge — no `main` → `develop` step. Closing the sheet does not tag or publish.
 
-Platform release does **not** use a sheet:
+Ops cycle 2 is the convoy release. One cut covers every ops repo ahead of its last stable tag; one tag-rc tags that whole sheet. `ops release` is the same graduation for a single named repo.
 
 ```bash
+git convoy --json ops cut 2026-W40
+git convoy --json ops tag-rc
 git convoy --json ops release bom-helper
-git convoy --json ops release bom-helper --bump minor
-git convoy --json ops release bom-helper --verify --wait --pin --bom ops/<system>-bom
 ```
+
+`ops tag-rc` sets `platform` in the tenant BOM when `renglo-ops` is on the sheet. Commit and push the BOM; git-convoy does not push `*-bom`.
 
 Flags: `--bump patch|minor|major`, `--pin` / `--pin sha`, `--bom`, `--verify`, `--wait`, `--no-gh`, `--no-push`. Merge any develop→main PR in GitHub, then run again to tag.
 

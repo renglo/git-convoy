@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 
 from gitconvoy.cli import main
-from gitconvoy.help_text import HELP_SECTIONS, format_help_text, resolve_help_topic
+from gitconvoy.help_text import (
+    HELP_GROUPS,
+    HELP_SECTIONS,
+    format_help_text,
+    resolve_help_topic,
+)
 
 
 def test_help_text_lists_all_cycles(capsys) -> None:
@@ -17,6 +22,23 @@ def test_help_text_lists_all_cycles(capsys) -> None:
     assert "Topics:" in out
 
 
+def test_help_text_groups_the_three_golden_paths(capsys) -> None:
+    assert main(["help"]) == 0
+    out = capsys.readouterr().out
+    for group in HELP_GROUPS:
+        assert group["title"] in out
+        assert group["note"] in out
+    product = out.index("PRODUCT — features into a running environment")
+    ops = out.index("OPS — operator tooling into the registries")
+    hotfix = out.index("HOTFIX — patch production now")
+    assert product < ops < hotfix
+    assert out.index("Cycle 1 — Feature") < out.index("Product — optional") < ops
+    assert ops < out.index("git convoy ops cut NAME") < hotfix
+    assert ops < out.index("git convoy ops tag-rc") < hotfix
+    assert ops < out.index("git convoy ops release REPO") < hotfix
+    assert "ops/git-convoy/README.md" in out
+
+
 def test_help_json(capsys) -> None:
     assert main(["--json", "help"]) == 0
     data = json.loads(capsys.readouterr().out)
@@ -24,16 +46,22 @@ def test_help_json(capsys) -> None:
     assert data["topic"] == "all"
     assert len(data["sections"]) == len(HELP_SECTIONS)
     names = [section["name"] for section in data["sections"]]
-    assert "Ops — Operator tooling" in names
+    assert "Ops cycle 1 — land tooling on develop" in names
+    assert "Ops cycle 2 — release the whole convoy" in names
     first_cmd = data["sections"][0]["commands"][0]
     assert "cmd" in first_cmd
     assert "summary" in first_cmd
+    keys = [group["key"] for group in data["groups"]]
+    assert keys == [group["key"] for group in HELP_GROUPS]
+    assert [section["group"] for section in data["sections"]] == sorted(
+        (section["group"] for section in data["sections"]), key=keys.index
+    )
 
 
 def test_format_help_text_ends_with_newline() -> None:
     text = format_help_text()
     assert text.endswith("\n")
-    assert text.startswith("git convoy — command sequences (all topics)")
+    assert text.startswith("git convoy — quick reference")
 
 
 def test_help_feature_topic(capsys) -> None:

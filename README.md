@@ -97,10 +97,10 @@ That creates `gitconvoy-venv`, installs the CLI in editable mode (plus dev deps 
 For command sequences by topic (reduced README, no concepts):
 
 ```bash
-git convoy help                    # everything
+git convoy help                    # quick reference, grouped by golden path
 git convoy help feature            # cycle 1 process (+ related sync, hotfix refresh)
 git convoy help train              # cycles 2–4 (+ bom)
-git convoy help ops                # operator tooling + platform release
+git convoy help ops                # ops cycles 1–2 (sheet, then release)
 git convoy help hotfix             # production emergency (+ bom, feature refresh)
 git convoy help staging -s              # one-line description per command
 git convoy --json help train
@@ -803,11 +803,26 @@ Checks out `develop`, deletes local `ops/<name>`, and removes the ops sheet. No 
 
 To drop the sheet without touching git: `git convoy ops abandon --yes`.
 
-When those PRs merge, the tooling change is on `develop`. Platform release (below) graduates `develop` to `main` when you are ready to ship a version.
+When those PRs merge, the tooling change is on `develop`. That is the end of daily ops work. It does not tag or publish. Cycle 2 does.
 
 ---
 
-### Platform release — `develop` → `main` (per repo, no sheet)
+### Cycle 2 — Ops release (the convoy)
+
+Daily ops sheets land on `develop` one at a time. Cycle 2 freezes every ops repo that is ahead of its last stable tag onto one `release/<name>` branch and tags that set together. This is the ops equivalent of `train cut` and `train tag-rc`. It is how an ops change becomes a package. `ops release` is the same graduation for a single named repo, not a substitute for this step.
+
+```bash
+git convoy ops cut 2026-W40
+git convoy ops tag-rc
+```
+
+`ops cut` discovers the repos. You do not pass one id per repo. Repos already at their last stable tag sit the release out. `ops tag-rc` tags every repo on that sheet and pushes the tags, which is what starts publish. When `renglo-ops` is on the sheet, `platform` in the tenant `renglo.yaml` is set to that package version. Commit and push the BOM yourself; git-convoy does not push `*-bom`.
+
+`--no-push` tags locally and does not publish. `--repos a,b` forces the cut to those ops repos.
+
+---
+
+### Platform release — one repo, no sheet
 
 Ship a versioned release of one ops repo — **without** an ops sheet. Only **that** repo’s `develop` must be clean; other ops repos may be dirty.
 

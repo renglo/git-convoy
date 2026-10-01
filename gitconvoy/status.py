@@ -75,6 +75,7 @@ def status(workspace: Path, state: State) -> dict:
         "current_train": state.current_train,
         "current_hotfix": state.current_hotfix,
         "current_ops": state.current_ops,
+        "current_ops_release": state.current_ops_release,
         "feature": feature,
         "hotfix": hotfix,
         "train": train,
