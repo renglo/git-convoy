@@ -37,8 +37,8 @@ HELP_GROUPS: list[HelpGroup] = [
     },
     {
         "key": "ops",
-        "title": "OPS — operator tooling into the registries",
-        "note": "",
+        "title": "OPS — a tooling change the environment must install",
+        "note": "Not a product train. After ops prs merge, ops publish tags main. It does not write renglo.yaml.",
     },
     {
         "key": "hotfix",
@@ -252,7 +252,7 @@ HELP_SECTIONS: list[HelpSection] = [
     },
     {
         "group": "ops",
-        "name": "Ops cycle 1 — land tooling on develop",
+        "name": "Ship — review on develop, then publish",
         "commands": [
             {
                 "cmd": "git convoy ops start NAME",
@@ -268,51 +268,19 @@ HELP_SECTIONS: list[HelpSection] = [
             },
             {
                 "cmd": "git convoy ops prs",
-                "summary": "Merge origin/develop, push, open PRs into develop (Full: via gh).",
+                "summary": "Open PRs into develop (the only GitHub PR). Merge in GitHub.",
             },
             {
                 "cmd": "git convoy ops approve",
-                "summary": "Approve all sibling ops PRs when CI is green (Full mode; merge stays in GitHub).",
+                "summary": "Approve sibling ops PRs when CI is green (Full mode; merge stays in GitHub).",
             },
             {
-                "cmd": "git convoy ops show",
-                "summary": "Print ops sheet status per participant.",
+                "cmd": "git convoy ops publish",
+                "summary": "After those PRs merge: merge develop→main and tag every publishing repo on the sheet. Does not write renglo.yaml.",
             },
             {
                 "cmd": "git convoy ops close --yes",
-                "summary": "After PRs merge to develop: checkout develop, pull origin/develop, delete local ops branches.",
-            },
-        ],
-    },
-    {
-        "group": "ops",
-        "name": "Ops cycle 2 — release the whole convoy",
-        "commands": [
-            {
-                "cmd": "git convoy ops cut NAME",
-                "summary": "Cut release/NAME on every ops repo ahead of its last stable tag. No repo list to type.",
-            },
-            {
-                "cmd": "git convoy ops tag-rc",
-                "summary": "Tag that whole sheet and push; the tag push publishes to the registries.",
-            },
-            {
-                "cmd": "cd ops/<system>-bom && git add renglo.yaml && git commit -m \"Pin platform\" && git push",
-                "summary": "ops tag-rc wrote platform when renglo-ops was on the sheet; this push deploys it.",
-            },
-        ],
-    },
-    {
-        "group": "ops",
-        "name": "Ops cycle 2 — or release one repo at a time",
-        "commands": [
-            {
-                "cmd": "git convoy ops release REPO",
-                "summary": "Same graduation for one named repo: bump, develop→main PR, or tag on main.",
-            },
-            {
-                "cmd": "git convoy ops release REPO --verify --wait --pin --bom ops/<system>-bom",
-                "summary": "Tag, confirm publish CI, and pin that repo in the tenant BOM.",
+                "summary": "After publish: checkout develop and delete local ops branches.",
             },
         ],
     },
@@ -320,6 +288,10 @@ HELP_SECTIONS: list[HelpSection] = [
         "group": "ops",
         "name": "Ops — optional",
         "commands": [
+            {
+                "cmd": "git convoy ops publish REPO --verify --wait",
+                "summary": "After the tag: wait until the publish workflow is green.",
+            },
             {
                 "cmd": "git convoy ops adopt --repos bom-helper,git-convoy",
                 "summary": "Force-include named ops repos on the sheet even when clean.",
@@ -341,16 +313,8 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Switch the current ops sheet.",
             },
             {
-                "cmd": "git convoy ops cut NAME --repos bom-helper,git-convoy",
-                "summary": "Cut only those ops repos instead of every repo that is ahead.",
-            },
-            {
-                "cmd": "git convoy ops tag-rc --no-push",
-                "summary": "Tag the ops release locally without publishing.",
-            },
-            {
-                "cmd": "git convoy ops promote",
-                "summary": "Sheet-scoped develop→main PRs when develop is ahead (no bump or tag).",
+                "cmd": "git convoy ops publish REPO",
+                "summary": "Publish one named ops repo (no sheet required) after its develop PR is merged.",
             },
             {
                 "cmd": "git convoy ops abandon --yes",
@@ -717,7 +681,7 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
     ],
     "ops": [
         {
-            "name": "Ops cycle 1 — land tooling on develop (ops/<name> → develop)",
+            "name": "Ship — review on develop, then publish",
             "commands": [
                 {
                     "cmd": "git convoy ops start NAME",
@@ -733,49 +697,15 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                 },
                 {
                     "cmd": "git convoy ops prs",
-                    "summary": "Push and open PRs into develop.",
+                    "summary": "Push and open PRs into develop (the only GitHub PR).",
                 },
                 {
-                    "cmd": "git convoy ops approve",
-                    "summary": "Approve sibling PRs (Full mode).",
-                },
-                {
-                    "cmd": "git convoy ops show",
-                    "summary": "Print ops sheet status.",
+                    "cmd": "git convoy ops publish",
+                    "summary": "After merge: merge develop→main and tag publishing repos on the sheet. Does not write renglo.yaml.",
                 },
                 {
                     "cmd": "git convoy ops close --yes",
-                    "summary": "After merge to develop: checkout develop, pull origin/develop, delete ops branches.",
-                },
-            ],
-        },
-        {
-            "name": "Ops cycle 2 — release the whole convoy",
-            "commands": [
-                {
-                    "cmd": "git convoy ops cut NAME",
-                    "summary": "Cut release/NAME on every ops repo ahead of its last stable tag.",
-                },
-                {
-                    "cmd": "git convoy ops tag-rc",
-                    "summary": "Tag that whole sheet and push; the tag push publishes to the registries.",
-                },
-                {
-                    "cmd": "cd ops/<system>-bom && git add renglo.yaml && git commit -m \"Pin platform\" && git push",
-                    "summary": "tag-rc wrote platform when renglo-ops was on the sheet; this push deploys it.",
-                },
-            ],
-        },
-        {
-            "name": "Ops cycle 2 — or release one repo at a time",
-            "commands": [
-                {
-                    "cmd": "git convoy ops release REPO",
-                    "summary": "Bump, open develop→main PR, or tag on main as that repo requires.",
-                },
-                {
-                    "cmd": "git convoy ops release REPO --verify --wait --pin --bom ops/<system>-bom",
-                    "summary": "Tag, verify publish CI, pin that repo; then commit and push the BOM.",
+                    "summary": "After publish: checkout develop and delete ops branches.",
                 },
             ],
         },
@@ -812,16 +742,8 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                     "summary": "Switch the current ops sheet.",
                 },
                 {
-                    "cmd": "git convoy ops cut NAME --repos bom-helper,git-convoy",
-                    "summary": "Cut only those ops repos instead of every repo that is ahead.",
-                },
-                {
-                    "cmd": "git convoy ops tag-rc --no-push",
-                    "summary": "Tag the ops release locally without publishing.",
-                },
-                {
-                    "cmd": "git convoy ops promote",
-                    "summary": "Sheet-scoped develop→main PRs when develop is ahead (no bump or tag).",
+                    "cmd": "git convoy ops publish REPO",
+                    "summary": "Publish one named ops repo after its develop PR is merged.",
                 },
                 {
                     "cmd": "git convoy ops abandon --yes",

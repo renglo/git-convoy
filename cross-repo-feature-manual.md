@@ -713,7 +713,7 @@ You can do this without git-convoy: checkout `develop`, branch `ops/<name>`, PR 
 5. Open PRs: `ops/<name>` → `develop`. Approve the set. Merge in GitHub (merge order if several).
 6. After every PR is merged: check out `develop`, delete local `ops/<name>`, remove the sheet. No `main` → `develop` step — the PR merge already updated `develop`.
 
-**Platform release (per repo, no sheet):** `git convoy ops release <id>`. Bumps semver, opens a develop→main PR, or tags `main` as needed. Flags: `--bump`, `--pin` / `--pin sha`, `--bom`, `--verify`, `--wait`, `--no-gh`, `--no-push`. Merge any PR in GitHub, then run the same command again to tag. Hotfixes that land directly on `main` are absorbed into local `develop` via stable tags during `git convoy sync` (not by merging raw `main`).
+**Platform release:** after `ops prs` merge into `develop`, `git convoy ops publish` (or `ops publish <id>`) merges `develop` → `main` and tags. No second GitHub PR. `ops *` does not write `renglo.yaml`. Hotfixes that land directly on `main` are absorbed into local `develop` via stable tags during `git convoy sync` (not by merging raw `main`).
 
 Do not use this path to change BOM pins. That is cycle 3–4 / `hotfix bom` on the BOM repo’s `main`.
 
@@ -819,7 +819,7 @@ Do not wait for the next train. A hotfix may change **more than one product repo
 - [ ] Only ops repos on the sheet; PRs into `develop`
 - [ ] After merge: checked out on `develop`; ops branches deleted
 - [ ] Each ops repo has `gitconvoy.toml` policy (`version`, `publish`, `pin`) and a version file
-- [ ] Platform release via `git convoy ops release <id>` (no sheet); tag `v*` after the develop→main PR merges
+- [ ] Platform release via `git convoy ops publish` after `ops prs` merge into develop; `ops *` does not write `renglo.yaml`
 
 **Adoption invariants**
 

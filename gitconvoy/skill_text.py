@@ -138,17 +138,13 @@ Use for operator tooling that must not ride product trains: launcher, bom-helper
 
 `ops *` is independent of the current feature/train/hotfix. It only touches ops repos. Branch prefix `ops/<name>`. PRs target **`develop`**. **`develop` is the neutral branch**. `ops close` checks out `develop` after PRs merge — no `main` → `develop` step. Closing the sheet does not tag or publish.
 
-Ops cycle 2 is the convoy release. One cut covers every ops repo ahead of its last stable tag; one tag-rc tags that whole sheet. `ops release` is the same graduation for a single named repo.
+After `ops prs` merge into develop, publish is the only ship command. It merges `develop` → `main` and tags. It does not open a second PR and it does not write `renglo.yaml`.
 
 ```bash
-git convoy --json ops cut 2026-W40
-git convoy --json ops tag-rc
-git convoy --json ops release bom-helper
+git convoy --json ops prs
+# merge those PRs in GitHub
+git convoy --json ops publish
 ```
-
-`ops tag-rc` sets `platform` in the tenant BOM when `renglo-ops` is on the sheet. Commit and push the BOM; git-convoy does not push `*-bom`.
-
-Flags: `--bump patch|minor|major`, `--pin` / `--pin sha`, `--bom`, `--verify`, `--wait`, `--no-gh`, `--no-push`. Merge any develop→main PR in GitHub, then run again to tag.
 
 ```bash
 git convoy --json ops start codeartifact-mosaic
@@ -177,6 +173,7 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 ## Cycles (see README)
 
 - **1–2:** features and local release branches — git only (Full optional).
+- **Ops ship:** `git convoy ops prs`, merge into develop, then `git convoy ops publish`. Does not write `renglo.yaml`.
 - **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging).
 - **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.

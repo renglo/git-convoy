@@ -138,15 +138,13 @@ Use for ops tooling that must not ride product trains: launcher, bom-helper, git
 
 `ops *` is independent of the current feature/train/hotfix. It only touches ops repos. Branch prefix `ops/<name>`. PRs target **`develop`**. **`develop` is the neutral branch**. `ops close` checks out `develop` after PRs merge — no `main` → `develop` step.
 
-Platform release does **not** use a sheet:
+After `ops prs` merge into develop, publish is the only ship command. It does not write `renglo.yaml`.
 
 ```bash
-git convoy --json ops release bom-helper
-git convoy --json ops release bom-helper --bump minor
-git convoy --json ops release bom-helper --verify --wait --pin --bom ops/<system>-bom
+git convoy --json ops prs
+# merge those PRs in GitHub
+git convoy --json ops publish
 ```
-
-Flags: `--bump patch|minor|major`, `--pin` / `--pin sha`, `--bom`, `--verify`, `--wait`, `--no-gh`, `--no-push`. Merge any develop→main PR in GitHub, then run again to tag.
 
 ```bash
 git convoy --json ops start codeartifact-mosaic
@@ -175,7 +173,7 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 ## Cycles (see README)
 
 - **1–2:** features and local release branches — git only (Full optional).
-- **Ops cycle 2:** after ops sheets merge to `develop`, `git convoy ops cut NAME` then `git convoy ops tag-rc` tags every ops repo that is ahead of its last stable tag. `ops release` is one named repo, not that convoy. `ops tag-rc` writes `platform` when `renglo-ops` is on the sheet; commit and push the BOM.
+- **Ops ship:** `git convoy ops prs`, merge into develop, then `git convoy ops publish`. Does not write `renglo.yaml`.
 - **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging).
 - **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from gitconvoy import adopt as adopt_cmd
 from gitconvoy import ops as ops_cmd
-from gitconvoy import ops_cycle as ops_cycle_cmd
 from gitconvoy import ops_release as ops_release_cmd
 from gitconvoy import commit as commit_cmd
 from gitconvoy import feature as feature_cmd
@@ -229,40 +228,22 @@ def _ops(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
         data = ops_cmd.approve(workspace, state, args.name, force=args.force)
         return data, _approve_text(data)
     if sub == "promote":
-        data = ops_cmd.promote(workspace, state, args.name, use_gh=not args.no_gh)
-        return data, _promote_text(data)
-    if sub == "cut":
-        repos = [item.strip() for item in args.repos.split(",") if item.strip()] if args.repos else None
-        data = ops_cycle_cmd.cut(
-            workspace,
-            state,
-            args.name,
-            bump=args.bump,
-            repo_ids=repos,
-            no_bump=args.no_bump,
-        )
-        return data, _ops_cut_text(data)
-    if sub == "tag-rc":
-        data = ops_cycle_cmd.tag_rc(
-            workspace,
-            state,
-            push=not args.no_push,
-            bom=args.bom,
-        )
-        return data, _ops_tag_rc_text(data)
-    if sub == "release":
-        data = ops_release_cmd.release(
+        ops_cmd.promote()
+    if sub == "propose":
+        ops_release_cmd.propose()
+    if sub == "publish":
+        data = ops_release_cmd.publish(
             workspace,
             list(args.repos or []),
+            state=state,
             bump=args.bump,
-            pin=args.pin,
-            bom=args.bom,
             verify=args.verify,
             wait=args.wait,
-            use_gh=not args.no_gh,
             push=not args.no_push,
         )
-        return data, _ops_release_text(data)
+        return data, _ops_phase_text(data)
+    if sub == "release":
+        ops_release_cmd.release()
     if sub == "show":
         data = ops_cmd.show(workspace, state, args.name)
         return data, _feature_show_text(data)
@@ -689,20 +670,6 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep local ops/<name> branches",
     )
-    ocut = asub.add_parser(
-        "cut",
-        help="Cycle 2: cut release/<name> on every ops repo ahead of its last stable tag",
-    )
-    ocut.add_argument("name")
-    ocut.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
-    ocut.add_argument("--no-bump", action="store_true")
-    ocut.add_argument("--repos", help="Comma-separated ops repo ids (skip discovery)")
-    otag = asub.add_parser(
-        "tag-rc",
-        help="Tag every repo on the current ops release and push the tags",
-    )
-    otag.add_argument("--no-push", action="store_true")
-    otag.add_argument("--bom", help="BOM repo for the renglo-ops platform pin")
     acommit = asub.add_parser("commit", help="Commit dirty ops participant repos")
     acommit.add_argument("--plan", action="store_true", help="Print the commit plan; do not commit")
     acommit.add_argument("--from", dest="from_file", help="Apply a filled plan (JSON file, or - for stdin)")
@@ -726,50 +693,47 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Approve even when CI checks are failing or pending",
     )
-    apromote = asub.add_parser(
+    asub.add_parser(
         "promote",
-        help="Sheet-scoped: open develop→main PRs when develop is ahead (no bump/tag)",
+        help="Removed: after ops prs merge, run ops publish",
     )
-    apromote.add_argument("name", nargs="?")
-    apromote.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
-    arelease = asub.add_parser(
-        "release",
-        help="Per-repo platform release: bump, PR develop→main, tag, optional verify/pin",
+    asub.add_parser(
+        "propose",
+        help="Removed: after ops prs merge, run ops publish",
     )
-    arelease.add_argument(
+    apublish = asub.add_parser(
+        "publish",
+        help="After ops prs merge: merge develop→main and tag (does not write renglo.yaml)",
+    )
+    apublish.add_argument(
         "repos",
-        nargs="+",
-        help="Ops repo ids (no sheet required)",
+        nargs="*",
+        help="Ops repo ids (default: publishing repos on the current ops sheet)",
     )
-    arelease.add_argument(
+    apublish.add_argument(
         "--bump",
         choices=("patch", "minor", "major"),
         default="patch",
         help="Semver part to bump when develop still matches the last v* tag",
     )
-    arelease.add_argument(
-        "--pin",
-        nargs="?",
-        const="tag",
-        choices=("tag", "sha"),
-        help="Update deploy_targets.yml helper.ref (tag first; omit value for tag, or --pin sha)",
-    )
-    arelease.add_argument("--bom", help="BOM repo path for --pin (default: workspace BOM)")
-    arelease.add_argument(
+    apublish.add_argument(
         "--verify",
         action="store_true",
         help="After tagging, check v* publish workflows (Full mode)",
     )
-    arelease.add_argument(
+    apublish.add_argument(
         "--wait",
         action="store_true",
         help="With --verify, poll until publish workflows finish",
     )
-    arelease.add_argument("--no-gh", action="store_true", help="Only print compare URLs")
-    arelease.add_argument(
+    apublish.add_argument(
         "--no-push",
         action="store_true",
         help="Do not push develop, main, or tags",
+    )
+    asub.add_parser(
+        "release",
+        help="Removed: after ops prs merge, run ops publish",
     )
     ashow = asub.add_parser("show", help="Print the ops sheet")
     ashow.add_argument("name", nargs="?")
@@ -1205,40 +1169,15 @@ def _sheet_name(data: dict) -> str:
     )
 
 
-def _ops_cut_text(data: dict) -> str:
-    lines = [f"ops cut {data['train']}  {data['branch']}"]
-    for repo in data.get("repos") or []:
-        lines.append(f"  {repo['id']:20} {repo.get('from') or '?'} -> {repo.get('to') or '(no bump)'}")
-    for repo in data.get("skipped") or []:
-        lines.append(f"  {repo['id']:20} skipped ({repo.get('reason')})")
-    lines.append("Next: git convoy ops tag-rc")
-    return "\n".join(lines)
-
-
-def _ops_tag_rc_text(data: dict) -> str:
-    lines = [f"ops tag-rc  {data['train']}"]
-    for repo in data.get("repos") or []:
-        lines.append(f"  {repo['id']:20} {repo.get('version')}  {repo.get('tag')}")
-    pin = data.get("pin") or {}
-    if pin:
-        lines.append(
-            f"platform {pin.get('status')} {pin.get('version') or ''} "
-            f"{pin.get('file') or pin.get('reason') or ''}".rstrip()
-        )
-        note = pin.get("note")
-        if note:
-            lines.append(note)
-    return "\n".join(lines)
-
-
-def _ops_release_text(data: dict) -> str:
-    lines = [f"ops release  {len(data.get('repos') or [])} repos"]
+def _ops_phase_text(data: dict) -> str:
+    phase = data.get("phase") or "ops"
+    lines = [f"ops {phase}  {len(data.get('repos') or [])} repos"]
     note = (data.get("note") or "").strip()
     if note:
         lines.append(note)
     for repo in data.get("repos") or []:
         status = repo.get("status") or "?"
-        extra = repo.get("error") or repo.get("pr") or repo.get("compare") or ""
+        extra = repo.get("error") or repo.get("reason") or ""
         tag = repo.get("tag") or ""
         ver = repo.get("to") or ""
         bits = [status]
@@ -1249,12 +1188,12 @@ def _ops_release_text(data: dict) -> str:
         if extra:
             bits.append(str(extra))
         lines.append(f"  {repo.get('id', '?'):20} " + "  ".join(bits))
-        pin = repo.get("pin")
-        if pin:
-            lines.append(
-                f"    pin {pin.get('status')} {pin.get('kind') or ''} "
-                f"{pin.get('ref') or pin.get('reason') or ''}"
-            )
+        url = repo.get("pr") or repo.get("compare")
+        if url:
+            lines.append(f"    PR    {url}")
+        nxt = repo.get("next")
+        if nxt:
+            lines.append(f"    Next  {nxt}")
         verify = repo.get("verify")
         if verify:
             lines.append(

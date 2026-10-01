@@ -1,44 +1,54 @@
-"""Sheet-free ops platform release: bump, PR, tag, verify, optional helper pin."""
+"""Ship ops packages: after ops prs merge to develop, ops publish tags main.
+
+Does not open a second PR and does not write renglo.yaml or any *-bom file.
+"""
 
 from __future__ import annotations
 
-import json
 import re
-import subprocess
 import time
 from pathlib import Path
 
-from gitconvoy import adopt as adopt_cmd
 from gitconvoy import ghutil
 from gitconvoy import gitutil
 from gitconvoy import membership
 from gitconvoy import versions
 from gitconvoy.errors import GitConvoyError
+from gitconvoy.state import Ops, State, load
 from gitconvoy.train import _verify_detail
 from gitconvoy.workflows import tag_push_workflows
 from gitconvoy.workspace import ops_repos, require_repo
 
 
-def release(
+_GONE = (
+    "After ops prs merge into develop: git convoy ops publish. "
+    "ops * does not write renglo.yaml."
+)
+
+
+def release(*_args, **_kwargs) -> dict:
+    raise GitConvoyError(f"ops release is gone. {_GONE}")
+
+
+def propose(*_args, **_kwargs) -> dict:
+    raise GitConvoyError(f"ops propose is gone. {_GONE}")
+
+
+def publish(
     workspace: Path,
-    repo_ids: list[str],
+    repo_ids: list[str] | None = None,
     *,
+    state: State | None = None,
     bump: str = "patch",
-    pin: str | None = None,
-    bom: str | None = None,
     verify: bool = False,
     wait: bool = False,
-    use_gh: bool = True,
     push: bool = True,
 ) -> dict:
-    ids = [item.strip() for item in repo_ids if item and item.strip()]
-    if not ids:
-        raise GitConvoyError(
-            "ops release needs at least one repo id; "
-            "example: git convoy ops release bom-helper"
-        )
-    if pin not in (None, "tag", "sha"):
-        raise GitConvoyError("ops release --pin must be tag or sha")
+    state = state or load(workspace)
+    ids, from_sheet = _resolve_ids(state, repo_ids)
+    sheet = None
+    if state.current_ops and state.current_ops in state.ops_sheets:
+        sheet = state.ops_sheets[state.current_ops]
     repos = ops_repos(workspace)
     rows: list[dict] = []
     failed: list[str] = []
@@ -56,15 +66,13 @@ def release(
             failed.append(repo_id)
             continue
         try:
-            row = _release_one(
-                workspace,
+            row = _publish_one(
                 repo,
+                sheet=sheet,
+                from_sheet=from_sheet,
                 bump=bump,
-                pin=pin,
-                bom=bom,
                 verify=verify,
                 wait=wait,
-                use_gh=use_gh,
                 push=push,
             )
         except GitConvoyError as exc:
@@ -74,32 +82,57 @@ def release(
                 "status": "failed",
                 "error": exc.message,
             }
-            failed.append(repo.id)
         rows.append(row)
-        if row.get("status") == "failed" and repo.id not in failed:
+        if row.get("status") in {"failed", "pr-needed"}:
             failed.append(repo.id)
-    note = _release_note(rows, pin=pin, verify=verify)
+    note = _publish_note(rows, verify=verify)
     return {
         "ok": not failed,
+        "phase": "publish",
+        "sheet": sheet.name if from_sheet and sheet else None,
         "repos": rows,
         "failed": failed,
         "note": note,
     }
 
 
-def _release_one(
-    workspace: Path,
+def _resolve_ids(state: State, repo_ids: list[str] | None) -> tuple[list[str], bool]:
+    ids = [item.strip() for item in (repo_ids or []) if item and item.strip()]
+    if ids:
+        return ids, False
+    if not state.current_ops:
+        raise GitConvoyError(
+            "ops publish needs a repo id or a current ops sheet; "
+            "example: git convoy ops publish renglo-ops"
+        )
+    sheet = state.require_ops()
+    if not sheet.repos:
+        raise GitConvoyError(
+            "ops sheet has no participants; run ops adopt or pass a repo id"
+        )
+    return list(sheet.repo_ids()), True
+
+
+def _publish_one(
     repo,
     *,
+    sheet: Ops | None,
+    from_sheet: bool,
     bump: str,
-    pin: str | None,
-    bom: str | None,
     verify: bool,
     wait: bool,
-    use_gh: bool,
     push: bool,
 ) -> dict:
     policy = membership.read_ops_policy(repo.path)
+    if from_sheet and policy.get("publish") == "none":
+        return {
+            "id": repo.id,
+            "path": repo.rel,
+            "status": "skipped",
+            "reason": "publish=none",
+            "policy": policy,
+            "next": None,
+        }
     gitutil.fetch(repo.path)
     if gitutil.is_dirty(repo.path):
         raise GitConvoyError(
@@ -119,6 +152,9 @@ def _release_one(
             raise GitConvoyError(
                 f"{repo.id}: cannot fast-forward develop; reconcile, then retry"
             )
+    blocked = _unmerged_ops_pr(repo, sheet)
+    if blocked:
+        return blocked
     develop_ref = (
         "origin/develop"
         if gitutil.has_remote_branch(repo.path, "develop")
@@ -137,7 +173,7 @@ def _release_one(
         repo.path, develop_ref, main_ref, current, tag_ver, has_release_work
     ):
         shipped = tag_ver or current
-        row = {
+        return {
             "id": repo.id,
             "path": repo.rel,
             "status": "already",
@@ -146,17 +182,8 @@ def _release_one(
             "bumped": False,
             "tag": f"v{shipped}" if shipped else None,
             "policy": policy,
+            "next": None,
         }
-        if pin:
-            row["pin"] = _pin_helper(
-                workspace,
-                repo,
-                style=pin,
-                tag=f"v{shipped}" if shipped else None,
-                sha=_pin_sha(repo.path, main_ref),
-                bom=bom,
-            )
-        return row
     target, bumped = _resolve_target(
         current, tag_ver, bump, has_release_work=has_release_work
     )
@@ -167,45 +194,21 @@ def _release_one(
         if push and gitutil.origin_url(repo.path):
             gitutil.push(repo.path, "origin", "develop")
         has_release_work = True
-    if gitutil.ahead_of(repo.path, main_ref, develop_ref) and not gitutil.same_tree(
-        repo.path, develop_ref, main_ref
+    if gitutil.ahead_of(repo.path, main_ref, "develop") and not gitutil.same_tree(
+        repo.path, "develop", main_ref
     ):
         raise GitConvoyError(
             f"{repo.id}: main is ahead of develop; "
             "absorb the hotfix tag into develop, then retry"
         )
-    if _needs_release_pr(repo.path, develop_ref, main_ref, target, has_release_work):
-        pr_info = _open_release_pr(
-            repo.path, repo.id, target, use_gh=use_gh
-        )
-        row = {
-            "id": repo.id,
-            "path": repo.rel,
-            "status": "pr-needed",
-            "from": current if bumped else (tag_ver or current),
-            "to": target,
-            "bumped": bumped,
-            "tag": None,
-            "policy": policy,
-            **pr_info,
-        }
-        if pin:
-            row["pin"] = _pin_helper(
-                workspace,
-                repo,
-                style=pin,
-                tag=None,
-                sha=_pin_sha(repo.path, develop_ref),
-                bom=bom,
-            )
-        return row
-    if not _same_commit(repo.path, develop_ref, main_ref) and not gitutil.is_ancestor(
-        repo.path, develop_ref, main_ref
+    if not _same_commit(repo.path, "develop", main_ref) and not gitutil.is_ancestor(
+        repo.path, "develop", main_ref
     ):
-        raise GitConvoyError(
-            f"{repo.id}: develop and main have diverged; reconcile, then retry"
-        )
-    tagged = _tag_main(repo.path, repo.id, target, push=push)
+        if not gitutil.is_ancestor(repo.path, main_ref, "develop"):
+            raise GitConvoyError(
+                f"{repo.id}: develop and main have diverged; reconcile, then retry"
+            )
+    tagged = _merge_and_tag(repo.path, repo.id, target, push=push)
     row = {
         "id": repo.id,
         "path": repo.rel,
@@ -215,6 +218,7 @@ def _release_one(
         "bumped": bumped,
         "tag": tagged["tag"],
         "policy": policy,
+        "next": None,
     }
     if verify:
         row["verify"] = _verify_release(
@@ -227,16 +231,27 @@ def _release_one(
         if row["verify"].get("status") not in {"success", "skip"}:
             row["status"] = "failed"
             row["error"] = row["verify"].get("detail") or "publish verify failed"
-    if pin:
-        row["pin"] = _pin_helper(
-            workspace,
-            repo,
-            style=pin,
-            tag=tagged["tag"],
-            sha=_pin_sha(repo.path, main_ref),
-            bom=bom,
-        )
     return row
+
+
+def _unmerged_ops_pr(repo, sheet: Ops | None) -> dict | None:
+    if sheet is None or repo.id not in sheet.repo_ids():
+        return None
+    row = next(item for item in sheet.repos if item.id == repo.id)
+    merge_status = gitutil.pr_merge_status(
+        repo.path, sheet.branch, row.pr, base="develop"
+    )
+    if merge_status == "merged":
+        return None
+    return {
+        "id": repo.id,
+        "path": repo.rel,
+        "status": "pr-needed",
+        "merge_status": merge_status,
+        "pr": row.pr,
+        "tag": None,
+        "next": f"Merge the ops PR into develop, then: git convoy ops publish {repo.id}",
+    }
 
 
 def _require_policy_version(repo: Path, repo_id: str, policy: dict) -> str:
@@ -257,7 +272,6 @@ def _require_policy_version(repo: Path, repo_id: str, policy: dict) -> str:
 
 
 def _has_release_work(repo: Path, develop_ref: str, main_ref: str) -> bool:
-    """True when develop has commits or content not yet on main."""
     if gitutil.ahead_of(repo, develop_ref, main_ref):
         return True
     return not gitutil.same_tree(repo, develop_ref, main_ref)
@@ -292,7 +306,6 @@ def _release_up_to_date(
     tag_ver: str | None,
     has_release_work: bool,
 ) -> bool:
-    """True when main already ships the current semver and develop has no new release."""
     if has_release_work or not tag_ver:
         return False
     if versions.cmp_stable(current, tag_ver) != 0:
@@ -310,103 +323,28 @@ def _release_up_to_date(
     return gitutil.same_tree(repo, develop_ref, main_ref)
 
 
-def _needs_release_pr(
-    repo: Path,
-    develop_ref: str,
-    main_ref: str,
-    target: str,
-    has_release_work: bool,
-) -> bool:
-    if has_release_work:
-        return True
-    main_version = _version_on_ref(repo, main_ref)
-    if not main_version:
-        return False
-    return versions.cmp_stable(target, versions.drop_rc(main_version)[0]) > 0
-
-
 def _same_commit(repo: Path, left: str, right: str) -> bool:
     a = gitutil.rev_parse(repo, left)
     b = gitutil.rev_parse(repo, right)
     return bool(a and b and a == b)
 
 
-def _open_release_pr(
-    repo: Path, repo_id: str, target: str, *, use_gh: bool
-) -> dict:
-    slug = gitutil.github_slug(repo)
-    compare = (
-        f"https://github.com/{slug}/compare/main...develop" if slug else None
-    )
-    pr_url = None
-    if use_gh and slug and gitutil.gh_bin():
-        pr_url = _gh_create_release_pr(repo, slug, repo_id, target)
-    return {"pr": pr_url, "compare": compare}
-
-
-def _gh_create_release_pr(
-    repo: Path, slug: str, repo_id: str, target: str
-) -> str | None:
-    gh = gitutil.gh_bin()
-    if not gh:
-        return None
-    existing = subprocess.run(
-        [
-            gh,
-            "pr",
-            "list",
-            "--repo",
-            slug,
-            "--head",
-            "develop",
-            "--base",
-            "main",
-            "--json",
-            "url",
-        ],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if existing.returncode == 0 and existing.stdout:
-        rows = json.loads(existing.stdout)
-        if rows:
-            return rows[0].get("url")
-    result = subprocess.run(
-        [
-            gh,
-            "pr",
-            "create",
-            "--repo",
-            slug,
-            "--base",
-            "main",
-            "--head",
-            "develop",
-            "--title",
-            f"Release {repo_id} {target} (develop → main)",
-            "--body",
-            f"Promote `{repo_id}` to `{target}` and tag `v{target}` after merge.",
-        ],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    return (result.stdout or "").strip() or None
-
-
-def _tag_main(repo: Path, repo_id: str, target: str, *, push: bool) -> dict:
+def _merge_and_tag(repo: Path, repo_id: str, target: str, *, push: bool) -> dict:
     gitutil.checkout_branch(repo, "main")
     if gitutil.rev_parse(repo, "origin/main"):
         pulled = gitutil.run(repo, "pull", "--ff-only", "origin", "main", check=False)
         if pulled.returncode != 0:
             gitutil.checkout_branch(repo, "develop")
             raise GitConvoyError(
-                f"{repo_id}: cannot fast-forward main; merge the release PR, then retry"
+                f"{repo_id}: cannot fast-forward main; reconcile, then retry"
+            )
+    if not gitutil.same_tree(repo, "develop", "main"):
+        merged = gitutil.merge(repo, "develop")
+        if merged.returncode != 0:
+            gitutil.run(repo, "merge", "--abort", check=False)
+            gitutil.checkout_branch(repo, "develop")
+            raise GitConvoyError(
+                f"{repo_id}: merge develop into main failed; reconcile, then retry"
             )
     on_main = _version_on_ref(repo, "main")
     if on_main:
@@ -508,166 +446,17 @@ def _verify_once(repo: Path, slug: str, tag: str, workflows: list[str]) -> dict:
     }
 
 
-def _pin_platform(path: Path, repo, *, style: str, tag: str | None, sha: str, workspace: Path) -> dict:
-    """``platform:`` in renglo.yaml is the renglo-ops package version."""
-    relative = str(path.relative_to(workspace))
-    if repo.id != "renglo-ops":
-        return {
-            "status": "skipped",
-            "reason": "renglo.yaml platform is the renglo-ops package version",
-            "file": relative,
-        }
-    if style == "tag" and tag:
-        info = versions.read_version(repo.path)
-        ref = info.get("python") or (tag[1:] if tag.startswith("v") else tag)
-        kind = "tag"
-    else:
-        if not sha:
-            raise GitConvoyError(f"{repo.id}: no SHA available to pin")
-        ref = sha
-        kind = "sha"
-    text = path.read_text(encoding="utf-8")
-    updated, count = re.subn(r"(?m)^platform:\s+\S+", f"platform: {ref}", text, count=1)
-    if count != 1:
-        raise GitConvoyError(f"{path}: no platform: field")
-    if updated != text:
-        path.write_text(updated, encoding="utf-8")
-    return {
-        "status": "updated",
-        "kind": kind,
-        "ref": ref,
-        "file": relative,
-        "note": "commit and push the BOM repo; git-convoy does not push *-bom",
-    }
-
-
-def _pin_sha(repo: Path, ref: str) -> str:
-    return gitutil.rev_parse(repo, ref) or ""
-
-
-def _pin_helper(
-    workspace: Path,
-    repo,
-    *,
-    style: str,
-    tag: str | None,
-    sha: str,
-    bom: str | None,
-) -> dict:
-    root = adopt_cmd.find_bom_repo(workspace, bom)
-    renglo = root / "renglo.yaml"
-    if renglo.is_file():
-        return _pin_platform(renglo, repo, style=style, tag=tag, sha=sha, workspace=workspace)
-    targets = root / "deploy_targets.yml"
-    if not targets.is_file():
-        raise GitConvoyError(f"missing {targets}")
-    helper = _read_helper(targets)
-    if helper is None:
-        raise GitConvoyError(f"{targets}: no helper: section")
-    slug = gitutil.github_slug(repo.path)
-    if not _helper_matches(helper.get("repository") or "", repo.id, slug):
-        return {
-            "status": "skipped",
-            "reason": "not deploy_targets.helper",
-            "file": str(targets.relative_to(workspace)),
-        }
-    if style == "tag" and tag:
-        ref = tag
-        kind = "tag"
-    else:
-        if not sha:
-            raise GitConvoyError(f"{repo.id}: no SHA available to pin")
-        ref = sha
-        kind = "sha"
-    text = targets.read_text()
-    updated = _set_helper_ref(text, ref)
-    if updated != text:
-        targets.write_text(updated)
-    return {
-        "status": "updated",
-        "kind": kind,
-        "ref": ref,
-        "file": str(targets.relative_to(workspace)),
-        "note": "commit and push the BOM repo; git-convoy does not push *-bom",
-    }
-
-
-def _read_helper(targets: Path) -> dict | None:
-    text = targets.read_text()
-    if not re.search(r"(?m)^helper:\s*$", text):
-        return None
-    repo_match = re.search(
-        r"(?m)^helper:\n(?:[ \t]+.+\n)*?[ \t]+repository:\s+(\S+)", text
-    )
-    ref_match = re.search(
-        r"(?m)^helper:\n(?:[ \t]+.+\n)*?[ \t]+ref:\s+(\S+)", text
-    )
-    return {
-        "repository": (repo_match.group(1) if repo_match else "").strip(),
-        "ref": (ref_match.group(1) if ref_match else "").strip(),
-    }
-
-
-def _helper_matches(helper_repo: str, repo_id: str, slug: str | None) -> bool:
-    name = helper_repo.strip()
-    if not name:
-        return False
-    if name == repo_id:
-        return True
-    if name.endswith("/" + repo_id):
-        return True
-    if slug and name == slug:
-        return True
-    return False
-
-
-def _set_helper_ref(text: str, ref: str) -> str:
-    newline = "\n" if text.endswith("\n") or "\n" in text else "\n"
-    lines = text.splitlines()
-    out: list[str] = []
-    in_helper = False
-    wrote_ref = False
-    saw_helper = False
-    for line in lines:
-        if re.match(r"^helper:\s*$", line):
-            in_helper = True
-            saw_helper = True
-            out.append(line)
-            continue
-        if in_helper:
-            if line.strip() and not line.startswith((" ", "\t")):
-                if not wrote_ref:
-                    out.append(f"  ref: {ref}")
-                    wrote_ref = True
-                in_helper = False
-                out.append(line)
-                continue
-            if re.match(r"^[ \t]+ref:\s*", line):
-                indent = re.match(r"^([ \t]+)", line)
-                prefix = indent.group(1) if indent else "  "
-                out.append(f"{prefix}ref: {ref}")
-                wrote_ref = True
-                continue
-        out.append(line)
-    if in_helper and not wrote_ref:
-        out.append(f"  ref: {ref}")
-        wrote_ref = True
-    if not saw_helper:
-        raise GitConvoyError("deploy_targets.yml has no helper: section")
-    return newline.join(out) + (newline if text.endswith("\n") else "")
-
-
-def _release_note(rows: list[dict], *, pin: str | None, verify: bool) -> str:
+def _publish_note(rows: list[dict], *, verify: bool) -> str:
     bits: list[str] = []
     needed = [row["id"] for row in rows if row.get("status") == "pr-needed"]
     tagged = [row["id"] for row in rows if row.get("status") == "tagged"]
     already = [row["id"] for row in rows if row.get("status") == "already"]
+    skipped = [row["id"] for row in rows if row.get("status") == "skipped"]
     failed = [row["id"] for row in rows if row.get("status") == "failed"]
     if needed:
         bits.append(
-            "Merge develop→main PRs, then re-run git convoy ops release "
-            + ",".join(needed)
-            + " to tag."
+            "Merge the ops PR into develop, then: git convoy ops publish "
+            + ", ".join(needed)
         )
     if tagged:
         wheel_ids = [
@@ -676,38 +465,24 @@ def _release_note(rows: list[dict], *, pin: str | None, verify: bool) -> str:
             if row.get("status") == "tagged"
             and (row.get("policy") or {}).get("publish") == "python-wheel"
         ]
-        tag_only_ids = [
-            row["id"]
-            for row in rows
-            if row.get("status") == "tagged"
-            and (row.get("policy") or {}).get("publish") == "none"
-        ]
-        other_ids = [
-            id_
-            for id_ in tagged
-            if id_ not in wheel_ids and id_ not in tag_only_ids
-        ]
+        other_ids = [id_ for id_ in tagged if id_ not in wheel_ids]
         if wheel_ids:
             bits.append(
-                "Tagged " + ", ".join(wheel_ids) + "; v* push publishes wheels."
-            )
-        if tag_only_ids:
-            bits.append(
-                "Tagged "
-                + ", ".join(tag_only_ids)
-                + " (publish=none; no registry workflow expected)."
+                "Tagged " + ", ".join(wheel_ids) + "; the tag push publishes wheels."
             )
         if other_ids:
             bits.append("Tagged " + ", ".join(other_ids) + ".")
     if already:
         bits.append("Already tagged: " + ", ".join(already) + ".")
+    if skipped:
+        bits.append(
+            "Skipped (publish=none): " + ", ".join(skipped) + "."
+        )
     if failed:
         bits.append("Failed: " + ", ".join(failed) + ".")
-    if pin:
-        bits.append("BOM helper pin is local until you commit *-bom.")
     if verify and any(
         (row.get("verify") or {}).get("status") in {"pending", "missing"}
         for row in rows
     ):
-        bits.append("Re-run with --verify --wait to poll publish workflows.")
-    return " ".join(bits) or "Ops release complete."
+        bits.append("Re-run git convoy ops publish --verify --wait to poll CI.")
+    return " ".join(bits) or "Ops publish complete."

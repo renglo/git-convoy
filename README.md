@@ -100,7 +100,7 @@ For command sequences by topic (reduced README, no concepts):
 git convoy help                    # quick reference, grouped by golden path
 git convoy help feature            # cycle 1 process (+ related sync, hotfix refresh)
 git convoy help train              # cycles 2–4 (+ bom)
-git convoy help ops                # ops cycles 1–2 (sheet, then release)
+git convoy help ops                # ship one ops repo, then optional develop review
 git convoy help hotfix             # production emergency (+ bom, feature refresh)
 git convoy help staging -s              # one-line description per command
 git convoy --json help train
@@ -803,67 +803,51 @@ Checks out `develop`, deletes local `ops/<name>`, and removes the ops sheet. No 
 
 To drop the sheet without touching git: `git convoy ops abandon --yes`.
 
-When those PRs merge, the tooling change is on `develop`. That is the end of daily ops work. It does not tag or publish. Cycle 2 does.
+When those PRs merge, the change is on `develop`. That is not a release. `ops publish` is the train-publish step: it merges `develop` → `main` and tags. It does not open a second PR and it does not write `renglo.yaml`.
 
 ---
 
-### Cycle 2 — Ops release (the convoy)
+### Publish an ops package
 
-Daily ops sheets land on `develop` one at a time. Cycle 2 freezes every ops repo that is ahead of its last stable tag onto one `release/<name>` branch and tags that set together. This is the ops equivalent of `train cut` and `train tag-rc`. It is how an ops change becomes a package. `ops release` is the same graduation for a single named repo, not a substitute for this step.
-
-```bash
-git convoy ops cut 2026-W40
-git convoy ops tag-rc
-```
-
-`ops cut` discovers the repos. You do not pass one id per repo. Repos already at their last stable tag sit the release out. `ops tag-rc` tags every repo on that sheet and pushes the tags, which is what starts publish. When `renglo-ops` is on the sheet, `platform` in the tenant `renglo.yaml` is set to that package version. Commit and push the BOM yourself; git-convoy does not push `*-bom`.
-
-`--no-push` tags locally and does not publish. `--repos a,b` forces the cut to those ops repos.
-
----
-
-### Platform release — one repo, no sheet
-
-Ship a versioned release of one ops repo — **without** an ops sheet. Only **that** repo’s `develop` must be clean; other ops repos may be dirty.
-
-Each ops repo must declare `version`, `publish`, and `pin` in `gitconvoy.toml`. Repos with `publish = "python-wheel"` publish to CodeArtifact on every `v*` tag push.
+`ops publish` is what you run after `ops prs` merges. No second GitHub PR. The person who ships `renglo-ops` is not the person who pins `platform` on a tenant BOM.
 
 ```bash
-git convoy ops release <repo-name>
+git convoy ops prs
+# approve and merge those PRs in GitHub (ops/NAME → develop)
+git convoy ops publish
 ```
 
-The command bumps semver (when needed), opens a **develop→main** PR, or tags `main` — whichever the repo needs at that moment. Merge the PR in GitHub when one is opened, then run the same command again to tag. git-convoy does not merge PRs or push `*-bom`.
+With a current ops sheet and no repo ids, publish walks the sheet and ships every participant whose policy is not `publish = "none"`. Name repos to ship just those: `git convoy ops publish renglo-ops`.
+
+It bumps on `develop` when the version still matches the last tag, merges `develop` into `main`, tags `vX.Y.Z`, and pushes. The tag push publishes wheels when `publish = "python-wheel"`. Repos with `publish = "none"` are skipped on a sheet run.
+
+`ops *` never writes `renglo.yaml` or any `*-bom` file.
+
+Each ops repo must declare `version`, `publish`, and `pin` in `gitconvoy.toml`.
 
 #### Flags
 
 | Flag | Default | Effect |
 | ---- | ------- | ------ |
-| `--bump patch\|minor\|major` | `patch` | Semver part to bump before opening the develop→main PR |
-| `--pin` | off | Set `deploy_targets.yml` `helper.ref` to the release tag |
-| `--pin sha` | — | Pin by commit SHA instead (e.g. while the PR is still open) |
-| `--bom PATH` | workspace BOM | BOM repo to update when using `--pin` |
+| `--bump patch\|minor\|major` | `patch` | Semver part to bump when develop still matches the last `v*` tag |
 | `--verify` | off | After tagging, check the `v*` publish workflow (Full mode) |
 | `--wait` | off | With `--verify`, poll until publish workflows finish |
-| `--no-gh` | off | Print a compare URL instead of opening the PR via `gh` |
 | `--no-push` | off | Do not push `develop`, `main`, or tags |
-
-Pass several repos in one run: `git convoy ops release bom-helper git-convoy`.
 
 #### Examples
 
 ```bash
-# Default patch bump + develop→main PR
-git convoy ops release bom-helper
+# After the sheet PRs merge: publish every publishing repo on the sheet
+git convoy ops publish
 
-# Minor bump before the PR
-git convoy ops release bom-helper --bump minor
+# One repo, no sheet required
+git convoy ops publish renglo-ops
 
-# After the PR is merged: tag, verify publish, pin helper in the BOM
-git convoy ops release bom-helper --verify --wait --pin --bom ops/arbitium-bom
-cd ops/arbitium-bom && git add deploy_targets.yml && git commit -m "Pin bom-helper" && git push
+# Minor bump, then merge to main and tag
+git convoy ops publish renglo-ops --bump minor
 
-# Pin by SHA while the develop→main PR is still open
-git convoy ops release bom-helper --pin sha --bom ops/arbitium-bom
+# Wait for the publish workflow after the tag
+git convoy ops publish renglo-ops --verify --wait
 ```
 
 ---
@@ -891,14 +875,6 @@ Merges `origin/develop` into each `ops/<name>` participant.
 ```bash
 git convoy ops switch other-name
 ```
-
-#### Sheet-scoped promote (legacy)
-
-```bash
-git convoy ops promote
-```
-
-Opens `develop` → `main` PRs for repos on the **current ops sheet** only — no bump or tag. Prefer `ops release <repo>` for platform release.
 
 #### Abandon (sheet only)
 
@@ -1072,8 +1048,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy ops refresh` | * | Merge `origin/develop` into ops participants |
 | `git convoy ops prs` | * | Merge `origin/develop`, push, open PRs into **develop** (Full); `--no-gh` for compare URLs |
 | `git convoy ops approve` | * | Approve sibling PRs (Full) |
-| `git convoy ops promote` | * | Sheet-scoped: open develop→main PRs when develop is ahead (no bump/tag) |
-| `git convoy ops release REPO…` | * | Per-repo release: bump, PR develop→main, tag, optional `--verify` / `--pin` |
+| `git convoy ops publish [REPO…]` | * | After `ops prs` merge: merge `develop`→`main` and tag (sheet default; does not write `renglo.yaml`) |
 | `git convoy ops show [NAME]` | * | Ops sheet + merge status |
 | `git convoy ops close` | * | After merge to develop: checkout develop; remove ops branches |
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |

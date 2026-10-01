@@ -209,7 +209,7 @@ git checkout -b ops/my-change
 
 **Direct commit to develop (legal, not ideal):** edit on `develop`, commit, `git push origin develop`.
 
-**Platform release (infrequent):** `git convoy ops release <repo>` — bump, develop→main PR, or tag as needed. See README for flags (`--bump`, `--pin`, `--verify`, …).
+**Platform release (infrequent):** after `ops prs` merge, `git convoy ops publish` (or `ops publish <repo>`). See README for flags (`--bump`, `--verify`). Does not write `renglo.yaml`.
 
 When you **are** on an ops sheet, prefer:
 
@@ -217,7 +217,7 @@ When you **are** on an ops sheet, prefer:
 git convoy ops refresh    # merge origin/develop into each ops/<name> participant
 git convoy ops prs        # PRs target develop
 git convoy ops close      # after merge to develop; checks out develop, deletes ops branches
-git convoy ops release bom-helper   # platform release: no sheet
+git convoy ops publish              # after ops prs merge; sheet default
 ```
 
 `git convoy sync develop` does **not** include ops repos. `git convoy sync` does: on `develop` it fast-forwards `origin/develop` and merges a hotfix tag only (not raw `main`); on `ops/*` it merges that same line into the current branch.

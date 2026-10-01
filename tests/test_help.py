@@ -29,13 +29,13 @@ def test_help_text_groups_the_three_golden_paths(capsys) -> None:
         assert group["title"] in out
         assert group["note"] in out
     product = out.index("PRODUCT — features into a running environment")
-    ops = out.index("OPS — operator tooling into the registries")
+    ops = out.index("OPS — a tooling change the environment must install")
     hotfix = out.index("HOTFIX — patch production now")
     assert product < ops < hotfix
     assert out.index("Cycle 1 — Feature") < out.index("Product — optional") < ops
-    assert ops < out.index("git convoy ops cut NAME") < hotfix
-    assert ops < out.index("git convoy ops tag-rc") < hotfix
-    assert ops < out.index("git convoy ops release REPO") < hotfix
+    assert ops < out.index("git convoy ops prs") < hotfix
+    assert ops < out.index("git convoy ops publish") < hotfix
+    assert ops < out.index("git convoy ops publish REPO") < hotfix
     assert "ops/git-convoy/README.md" in out
 
 
@@ -46,8 +46,8 @@ def test_help_json(capsys) -> None:
     assert data["topic"] == "all"
     assert len(data["sections"]) == len(HELP_SECTIONS)
     names = [section["name"] for section in data["sections"]]
-    assert "Ops cycle 1 — land tooling on develop" in names
-    assert "Ops cycle 2 — release the whole convoy" in names
+    assert "Ship — review on develop, then publish" in names
+    assert "Ops — optional" in names
     first_cmd = data["sections"][0]["commands"][0]
     assert "cmd" in first_cmd
     assert "summary" in first_cmd

@@ -592,8 +592,8 @@ def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     note = (
         "PRs target develop. Approve with: git convoy ops approve (Full mode). "
         "Merge only when all sibling PRs are approved, in merge_order. "
-        "git-convoy does not merge. After merge: git convoy ops close "
-        "(checks out develop and removes ops branches)."
+        "git-convoy does not merge. After merge: git convoy ops publish, "
+        "then git convoy ops close."
     )
     if use_gh and opened and opened_prs == 0:
         note += (
@@ -739,7 +739,7 @@ def approve(
         "note": (
             "Merge only when every sibling PR is approved, in merge_order. "
             "Merge into develop. git-convoy does not merge. "
-            "After merge: git convoy ops close."
+            "After merge: git convoy ops publish, then git convoy ops close."
         ),
     }
     if blocked:
@@ -783,7 +783,7 @@ def _show_next_steps(rows: list[dict]) -> str:
     if statuses <= {"merged"}:
         return (
             "All participants merged into develop. "
-            "Run: git convoy ops close"
+            "Run: git convoy ops publish"
         )
     if "uncommitted" in statuses:
         return (
@@ -985,7 +985,7 @@ def _gh_create_pr(repo: Path, feature: Ops, slug: str) -> str | None:
         f"Part of cross-repo ops change `{feature.name}`.\n\n"
         f"Participants: {', '.join(feature.repo_ids()) or '(this repo)'}\n\n"
         "Merge into **develop**. Do not merge until every sibling PR is approved. "
-        "After merge: `git convoy ops close`."
+        "After merge: `git convoy ops publish`, then `git convoy ops close`."
     )
     created = subprocess.run(
         [
@@ -1014,135 +1014,11 @@ def _gh_create_pr(repo: Path, feature: Ops, slug: str) -> str | None:
 
 
 
-def promote(
-    workspace: Path,
-    state: State,
-    name: str | None = None,
-    *,
-    use_gh: bool = True,
-) -> dict:
-    """Open or link develop→main PRs for ops participants ahead of main."""
-    feature = state.require_ops(name)
-    if not feature.repos:
-        raise GitConvoyError("ops sheet has no participant repos; run ops adopt")
-    opened: list[dict] = []
-    for repo_row in feature.repos:
-        repo_path = workspace / repo_row.path
-        gitutil.fetch(repo_path)
-        if not gitutil.has_local_branch(repo_path, "develop") and not gitutil.has_remote_branch(
-            repo_path, "develop"
-        ):
-            opened.append(
-                {
-                    "id": repo_row.id,
-                    "path": repo_row.path,
-                    "skipped": "no-develop",
-                }
-            )
-            continue
-        if not gitutil.has_local_branch(repo_path, "main") and not gitutil.has_remote_branch(
-            repo_path, "main"
-        ):
-            opened.append(
-                {
-                    "id": repo_row.id,
-                    "path": repo_row.path,
-                    "skipped": "no-main",
-                }
-            )
-            continue
-        develop_ref = (
-            "origin/develop"
-            if gitutil.has_remote_branch(repo_path, "develop")
-            else "develop"
-        )
-        main_ref = (
-            "origin/main" if gitutil.has_remote_branch(repo_path, "main") else "main"
-        )
-        if not gitutil.ahead_of(repo_path, develop_ref, main_ref):
-            opened.append(
-                {
-                    "id": repo_row.id,
-                    "path": repo_row.path,
-                    "skipped": "develop-not-ahead-of-main",
-                }
-            )
-            continue
-        slug = gitutil.github_slug(repo_path)
-        pr_url = None
-        compare = None
-        if slug:
-            compare = f"https://github.com/{slug}/compare/main...develop"
-            if use_gh and gitutil.gh_bin():
-                pr_url = _gh_create_promote_pr(repo_path, feature, slug)
-        opened.append(
-            {
-                "id": repo_row.id,
-                "path": repo_row.path,
-                "pr": pr_url,
-                "compare": compare,
-            }
-        )
-    note = (
-        "Platform release: opens develop→main PRs (or compare URLs) when develop "
-        "is ahead of main. Run after ops work has merged to develop. Tag main "
-        "after the release PR merges."
+def promote(*_args, **_kwargs) -> dict:
+    raise GitConvoyError(
+        "ops promote is gone. After ops prs merge into develop: "
+        "git convoy ops publish. ops * does not write renglo.yaml."
     )
-    return {
-        "ok": True,
-        "ops": feature.name,
-        "note": note,
-        "repos": opened,
-    }
-
-
-def _gh_create_promote_pr(repo: Path, feature: Ops, slug: str) -> str | None:
-    gh = gitutil.gh_bin()
-    if not gh:
-        return None
-    existing = subprocess.run(
-        [gh, "pr", "list", "--repo", slug, "--head", "develop", "--base", "main", "--json", "url"],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if existing.returncode == 0 and '"url"' in (existing.stdout or ""):
-        import json
-
-        rows = json.loads(existing.stdout)
-        if rows:
-            return rows[0].get("url")
-    title = f"Promote develop → main ({feature.name})"
-    body = (
-        f"Promote ops work from `{feature.name}` already on develop into main.\n\n"
-        f"Participants: {', '.join(feature.repo_ids()) or '(this repo)'}"
-    )
-    created = subprocess.run(
-        [
-            gh,
-            "pr",
-            "create",
-            "--repo",
-            slug,
-            "--base",
-            "main",
-            "--head",
-            "develop",
-            "--title",
-            title,
-            "--body",
-            body,
-        ],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if created.returncode != 0:
-        return None
-    return (created.stdout or "").strip() or None
-
 
 
 def _slug(name: str) -> str:
