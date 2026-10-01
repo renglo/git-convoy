@@ -923,8 +923,7 @@ def _version_on_ref(repo: Path, ref: str) -> str | None:
         return None
     found: dict[str, str] = {}
     for rel, kind in (
-        ("pyproject.toml", "python"),
-        ("package/pyproject.toml", "python"),
+        *[(rel, "python") for rel in versions.PYTHON_PYPROJECT_RELS],
         ("ui/package.json", "npm"),
         ("package.json", "npm"),
     ):

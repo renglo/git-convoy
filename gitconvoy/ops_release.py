@@ -137,7 +137,7 @@ def _release_one(
         repo.path, develop_ref, main_ref, current, tag_ver, has_release_work
     ):
         shipped = tag_ver or current
-        return {
+        row = {
             "id": repo.id,
             "path": repo.rel,
             "status": "already",
@@ -147,6 +147,16 @@ def _release_one(
             "tag": f"v{shipped}" if shipped else None,
             "policy": policy,
         }
+        if pin:
+            row["pin"] = _pin_helper(
+                workspace,
+                repo,
+                style=pin,
+                tag=f"v{shipped}" if shipped else None,
+                sha=_pin_sha(repo.path, main_ref),
+                bom=bom,
+            )
+        return row
     target, bumped = _resolve_target(
         current, tag_ver, bump, has_release_work=has_release_work
     )
@@ -423,7 +433,7 @@ def _tag_main(repo: Path, repo_id: str, target: str, *, push: bool) -> dict:
 
 
 def _version_on_ref(repo: Path, ref: str) -> str | None:
-    for rel in ("pyproject.toml", "package/pyproject.toml"):
+    for rel in versions.PYTHON_PYPROJECT_RELS:
         shown = gitutil.run(repo, "show", f"{ref}:{rel}", check=False)
         if shown.returncode != 0:
             continue
@@ -508,7 +518,8 @@ def _pin_platform(path: Path, repo, *, style: str, tag: str | None, sha: str, wo
             "file": relative,
         }
     if style == "tag" and tag:
-        ref = tag[1:] if tag.startswith("v") else tag
+        info = versions.read_version(repo.path)
+        ref = info.get("python") or (tag[1:] if tag.startswith("v") else tag)
         kind = "tag"
     else:
         if not sha:

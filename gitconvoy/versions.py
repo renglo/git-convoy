@@ -79,18 +79,52 @@ def _replace_quoted_version(text: str, new: str, key_pattern: str) -> tuple[str,
     return text[:start] + new + text[end:], True
 
 
+# First match is canonical (tag, pin, platform). lib/ is the CI wheel when a
+# repo ships a CLI and a library as siblings; package/ is the extension layout.
+PYTHON_PYPROJECT_RELS = (
+    "lib/pyproject.toml",
+    "package/pyproject.toml",
+    "cli/pyproject.toml",
+    "pyproject.toml",
+)
+
+_SETUP_RELS = ("package/setup.py", "setup.py")
+_PYPROJECT_VERSION = re.compile(r'(?m)^version\s*=\s*["\']([^"\']+)["\']')
+
+
+def _quoted_pyproject_version(text: str) -> str | None:
+    match = _PYPROJECT_VERSION.search(text)
+    return match.group(1) if match else None
+
+
+def python_pyproject_rels(repo: Path) -> list[str]:
+    """Relative pyproject.toml files that declare a version, canonical first."""
+    found: list[str] = []
+    for rel in PYTHON_PYPROJECT_RELS:
+        path = repo / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        if _quoted_pyproject_version(text):
+            found.append(rel)
+    return found
+
+
 def read_version_at_ref(repo: Path, ref: str) -> dict[str, str]:
     """Read package versions from ``ref`` without checking out (for stable carry-forward)."""
     from gitconvoy import gitutil
 
     found: dict[str, str] = {}
-    for rel in ("package/pyproject.toml", "pyproject.toml"):
+    for rel in PYTHON_PYPROJECT_RELS:
         text = gitutil.run(repo, "show", f"{ref}:{rel}", check=False).stdout or ""
         if not text.strip():
             continue
-        match = re.search(r'(?m)^version\s*=\s*["\']([^"\']+)["\']', text)
-        if match:
-            found["python"] = match.group(1)
+        version = _quoted_pyproject_version(text)
+        if version:
+            found["python"] = version
             break
     for rel in ("ui/package.json", "package.json"):
         text = gitutil.run(repo, "show", f"{ref}:{rel}", check=False).stdout or ""
@@ -108,24 +142,20 @@ def read_version_at_ref(repo: Path, ref: str) -> dict[str, str]:
 
 def read_version(repo: Path) -> dict[str, str]:
     found: dict[str, str] = {}
-    pyproject = repo / "pyproject.toml"
-    if not pyproject.exists():
-        pyproject = repo / "package" / "pyproject.toml"
-    if pyproject.exists():
-        match = re.search(
-            r'(?m)^version\s*=\s*["\']([^"\']+)["\']', pyproject.read_text()
-        )
-        if match:
-            found["python"] = match.group(1)
-            found["python_file"] = str(pyproject.relative_to(repo))
-    setup = repo / "setup.py"
-    if not setup.exists():
-        setup = repo / "package" / "setup.py"
-    if "python" not in found and setup.exists():
-        match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', setup.read_text())
-        if match:
-            found["python"] = match.group(1)
-            found["python_file"] = str(setup.relative_to(repo))
+    rels = python_pyproject_rels(repo)
+    if rels:
+        found["python"] = _quoted_pyproject_version((repo / rels[0]).read_text()) or ""
+        found["python_file"] = rels[0]
+    if "python" not in found:
+        for rel in _SETUP_RELS:
+            setup = repo / rel
+            if not setup.exists():
+                continue
+            match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', setup.read_text())
+            if match:
+                found["python"] = match.group(1)
+                found["python_file"] = rel
+                break
     for candidate in (repo / "ui" / "package.json", repo / "package.json"):
         if candidate.exists():
             data = json.loads(candidate.read_text())
@@ -153,8 +183,9 @@ def read_npm_package_name(repo: Path) -> str | None:
 
 
 def read_python_package_name(repo: Path) -> str | None:
-    """[project] name from pyproject.toml (root or package/). None if missing."""
-    for candidate in (repo / "pyproject.toml", repo / "package" / "pyproject.toml"):
+    """[project] name from the canonical pyproject.toml. None if missing."""
+    for rel in PYTHON_PYPROJECT_RELS:
+        candidate = repo / rel
         if not candidate.is_file():
             continue
         try:
@@ -163,7 +194,7 @@ def read_python_package_name(repo: Path) -> str | None:
             return None
         header = re.search(r"(?m)^\[project\]\s*$", text)
         if not header:
-            return None
+            continue
         rest = text[header.end() :]
         next_section = re.search(r"(?m)^\[", rest)
         section = rest[: next_section.start()] if next_section else rest
@@ -178,8 +209,11 @@ def read_python_package_name(repo: Path) -> str | None:
 def write_version(repo: Path, pep: str, npm: str) -> list[str]:
     changed: list[str] = []
     info = read_version(repo)
-    if "python_file" in info:
-        path = repo / info["python_file"]
+    rels = python_pyproject_rels(repo)
+    if not rels and "python_file" in info:
+        rels = [info["python_file"]]
+    for rel in rels:
+        path = repo / rel
         text = path.read_text()
         if path.name == "pyproject.toml":
             new, ok = _replace_quoted_version(
@@ -189,9 +223,11 @@ def write_version(repo: Path, pep: str, npm: str) -> list[str]:
             new, ok = _replace_quoted_version(
                 text, pep, r'version\s*=\s*["\']([^"\']+)["\']'
             )
-        if ok:
+        if not ok:
+            continue
+        if new != text:
             path.write_text(new)
-            changed.append(info["python_file"])
+        changed.append(rel)
     if "npm_file" in info:
         path = repo / info["npm_file"]
         text = path.read_text()

@@ -87,6 +87,27 @@ def test_read_python_package_name_under_package(tmp_path: Path) -> None:
     assert read_python_package_name(repo) == "arbitium-lab"
 
 
+def test_sibling_cli_and_lib_pyprojects(tmp_path: Path) -> None:
+    from gitconvoy.versions import read_version, write_version
+
+    repo = tmp_path / "renglo-ops"
+    (repo / "lib").mkdir(parents=True)
+    (repo / "cli").mkdir(parents=True)
+    (repo / "lib" / "pyproject.toml").write_text(
+        '[project]\nname = "renglo-ops"\nversion = "0.1.0"\n'
+    )
+    (repo / "cli" / "pyproject.toml").write_text(
+        '[project]\nname = "renglo"\nversion = "0.1.1"\n'
+    )
+    assert read_python_package_name(repo) == "renglo-ops"
+    info = read_version(repo)
+    assert info["python"] == "0.1.0"
+    assert info["python_file"] == "lib/pyproject.toml"
+    write_version(repo, "0.1.2", "0.1.2")
+    assert 'version = "0.1.2"' in (repo / "lib" / "pyproject.toml").read_text()
+    assert 'version = "0.1.2"' in (repo / "cli" / "pyproject.toml").read_text()
+
+
 def test_python_package_names_prefers_pyproject(tmp_path: Path) -> None:
     workspace = tmp_path
     root = workspace / "extensions" / "arbitiumlab"
