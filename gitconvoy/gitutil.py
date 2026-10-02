@@ -144,6 +144,24 @@ def push(repo: Path, *args: str) -> None:
     run(repo, "push", *args)
 
 
+def push_branch_and_tag(
+    repo: Path,
+    branch: str,
+    tag: str,
+    *,
+    set_upstream: bool = False,
+) -> None:
+    """Push a branch and version tag in one ``git push`` (one remote hook).
+
+    Two sequential pushes (branch, then tag) can make GitHub Actions start the
+    same tag-publish workflow twice for one release.
+    """
+    if set_upstream:
+        push(repo, "-u", "origin", branch, tag)
+    else:
+        push(repo, "origin", branch, tag)
+
+
 def reset_hard(repo: Path, ref: str) -> None:
     run(repo, "reset", "--hard", ref)
 

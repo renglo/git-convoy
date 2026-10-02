@@ -360,8 +360,7 @@ def _merge_and_tag(repo: Path, repo_id: str, target: str, *, push: bool) -> dict
         gitutil.run(repo, "tag", tag)
         created = True
     if push and gitutil.origin_url(repo):
-        gitutil.push(repo, "origin", "main")
-        gitutil.push(repo, "origin", tag)
+        gitutil.push_branch_and_tag(repo, "main", tag)
     gitutil.checkout_branch(repo, "develop")
     return {
         "tag": tag,

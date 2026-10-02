@@ -324,8 +324,9 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
         if not existing:
             gitutil.run(repo_path, "tag", tag)
         if push:
-            gitutil.push(repo_path, "-u", "origin", train.branch)
-            gitutil.push(repo_path, "origin", tag)
+            gitutil.push_branch_and_tag(
+                repo_path, train.branch, tag, set_upstream=True
+            )
         repo_row.to = pep
         repo_row.rc_tag = tag
         tagged.append({"id": repo_row.id, "tag": tag, "version": pep})
@@ -412,8 +413,7 @@ def publish(workspace: Path, state: State, push: bool = True) -> dict:
         if not gitutil.rev_parse(repo_path, f"refs/tags/{tag}"):
             gitutil.run(repo_path, "tag", tag)
         if push:
-            gitutil.push(repo_path, "origin", "main")
-            gitutil.push(repo_path, "origin", tag)
+            gitutil.push_branch_and_tag(repo_path, "main", tag)
         repo_row.to = pep
         repo_row.stable_tag = tag
         published.append({"id": repo_row.id, "tag": tag, "version": pep})

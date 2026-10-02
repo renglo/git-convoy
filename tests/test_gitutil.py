@@ -28,3 +28,20 @@ def test_github_slug_standard_forms(tmp_path: Path, monkeypatch) -> None:
     for url, expected in cases:
         monkeypatch.setattr(gitutil, "origin_url", lambda _r, u=url: u)
         assert gitutil.github_slug(repo) == expected, url
+
+
+def test_push_branch_and_tag_one_git_push(tmp_path: Path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls: list[tuple] = []
+
+    def record_push(path: Path, *args: str) -> None:
+        calls.append((path, args))
+
+    monkeypatch.setattr(gitutil, "push", record_push)
+    gitutil.push_branch_and_tag(repo, "release/2026-09-30", "v0.1.2-rc.1", set_upstream=True)
+    gitutil.push_branch_and_tag(repo, "main", "v0.1.2")
+    assert calls == [
+        (repo, ("-u", "origin", "release/2026-09-30", "v0.1.2-rc.1")),
+        (repo, ("origin", "main", "v0.1.2")),
+    ]

@@ -295,8 +295,7 @@ def publish(workspace: Path, state: State, push_remote: bool = True) -> dict:
         if not gitutil.rev_parse(repo_path, f"refs/tags/{tag}"):
             gitutil.run(repo_path, "tag", tag)
         if push_remote and gitutil.origin_url(repo_path):
-            gitutil.push(repo_path, "origin", "main")
-            gitutil.push(repo_path, "origin", tag)
+            gitutil.push_branch_and_tag(repo_path, "main", tag)
         repo_row.to = pep
         repo_row.stable_tag = tag
         develop = _merge_main_into_develop(repo_path, repo_row.id, push_remote)
