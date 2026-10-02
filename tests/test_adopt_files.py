@@ -868,3 +868,98 @@ def test_adopt_no_verify_skips_gh(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
     assert dest["python"]["renglo-lib"] == "1.2.4"
     assert "verify" not in data
+
+
+def test_take_renglo_yaml_keeps_console_host_and_wl_python(tmp_path: Path) -> None:
+    """Adopt must not rewrite packages.console or drop hub/console pins."""
+    bom_repo = tmp_path / "ops" / "apollo-bom"
+    (bom_repo / "bom").mkdir(parents=True)
+    (bom_repo / "console_bom").mkdir()
+    (bom_repo / "bom" / "v0.1.1.json").write_text(
+        json.dumps(
+            {
+                "version": "v0.1.1",
+                "train": "2026-W34",
+                "python": {
+                    "renglo-lib": "0.0.7rc1",
+                    "renglo-api": "0.0.9rc1",
+                    "apollo-wl": "0.0.2rc1",
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    (bom_repo / "console_bom" / "v0.1.1.json").write_text(
+        json.dumps(
+            {
+                "version": "v0.1.1",
+                "train": "2026-W34",
+                "npm": {
+                    "@renglo/console": "0.0.11-rc.1",
+                    "@apollo/wl": "0.0.2-rc.1",
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    (bom_repo / "renglo.yaml").write_text(
+        """
+name: apollo1
+accounts:
+  staging:
+    id: "1"
+    region: us-east-1
+    enabled: true
+  production:
+    id: "1"
+    region: us-east-1
+    enabled: false
+placement:
+  hub: []
+  peers: {}
+packages:
+  renglo-lib:
+    python: renglo-lib
+  renglo-api:
+    python: renglo-api
+  console:
+    npm: '@renglo/console'
+  apollo-wl:
+    python: apollo-wl
+    npm: '@apollo/wl'
+release:
+  bom: 0.1.1
+  console: 0.1.1
+""",
+        encoding="utf-8",
+    )
+    lib = tmp_path / "dev" / "renglo-lib"
+    lib.mkdir(parents=True)
+    (lib / "pyproject.toml").write_text(
+        '[project]\nname = "renglo-lib"\nversion = "0.0.8rc1"\n'
+    )
+    _write_tag_workflow(lib)
+    state = State(current_train="2026-W34")
+    train = Train(name="2026-W34", branch="release/2026-W34", status="stabilizing")
+    train.add_repo(
+        TrainRepo(
+            id="renglo-lib",
+            path="dev/renglo-lib",
+            from_version="0.0.7rc1",
+            to="0.0.8rc1",
+            stable_tag="v0.0.8-rc.1",
+        )
+    )
+    state.trains["2026-W34"] = train
+    adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    hub = json.loads((bom_repo / "bom" / "v0.1.1.json").read_text())
+    console = json.loads((bom_repo / "console_bom" / "v0.1.1.json").read_text())
+    yaml_text = (bom_repo / "renglo.yaml").read_text()
+    assert hub["python"]["apollo-wl"] == "0.0.2rc1"
+    assert hub["python"]["renglo-lib"] == "0.0.8rc1"
+    assert console["npm"]["@renglo/console"] == "0.0.11-rc.1"
+    assert console["npm"]["@apollo/wl"] == "0.0.2-rc.1"
+    assert "  console:\n    npm: '@renglo/console'" in yaml_text
+    assert "release:\n  bom: 0.1.1\n  console: 0.1.1" in yaml_text

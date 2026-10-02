@@ -139,10 +139,6 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Commit dirty train participants on release/NAME.",
             },
             {
-                "cmd": "git convoy train adopt",
-                "summary": "Add late dirty product repos to the current train without a version bump.",
-            },
-            {
                 "cmd": "git convoy train show",
                 "summary": "Print the train sheet, versions, and tags.",
             },
@@ -231,6 +227,10 @@ HELP_SECTIONS: list[HelpSection] = [
             {
                 "cmd": "git convoy feature abandon --yes",
                 "summary": "Drop the feature sheet without deleting branches or uncommitted files.",
+            },
+            {
+                "cmd": "git convoy train adopt",
+                "summary": "Add late dirty product repos to the current train without a version bump.",
             },
             {
                 "cmd": "git convoy train tag-rc --no-push",

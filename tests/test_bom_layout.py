@@ -79,7 +79,39 @@ hub:
         self.assertNotIn("npm", hub)
         self.assertNotIn("python", console)
         self.assertEqual(hub["python"]["renglo-gro"], "3.0.0")
+        self.assertEqual(console["npm"]["@renglo/console"], "9.0.0")
         self.assertEqual(console["npm"]["@renglo/gro"], "3.0.0")
+
+    def test_split_puts_wl_python_on_hub_and_keeps_console_host(self) -> None:
+        catalog = [
+            PackageSlot(id="console", npm="@renglo/console"),
+            PackageSlot(id="apollo-wl", python="apollo-wl", npm="@apollo/wl"),
+            PackageSlot(id="data", python="renglo-data", npm="@renglo/data"),
+        ]
+        placement = Placement(hub_python=("renglo-data",))
+        hub, console, _peers = split_master_bom(
+            {
+                "version": "v0.1.1",
+                "python": {
+                    "renglo-lib": "0.0.7rc1",
+                    "renglo-api": "0.0.9rc1",
+                    "apollo-wl": "0.0.2rc1",
+                    "renglo-data": "0.0.6rc1",
+                },
+                "npm": {
+                    "@renglo/console": "0.0.11-rc.1",
+                    "@apollo/wl": "0.0.2-rc.1",
+                    "@renglo/data": "0.0.6-rc.1",
+                },
+            },
+            placement=placement,
+            catalog=catalog,
+        )
+        self.assertEqual(hub["python"]["apollo-wl"], "0.0.2rc1")
+        self.assertEqual(console["npm"]["@renglo/console"], "0.0.11-rc.1")
+        self.assertEqual(console["npm"]["@apollo/wl"], "0.0.2-rc.1")
+        self.assertNotIn("python", console)
+        self.assertNotIn("npm", hub)
 
     def _tmp(self) -> str:
         import tempfile
