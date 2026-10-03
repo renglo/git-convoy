@@ -142,10 +142,6 @@ HELP_SECTIONS: list[HelpSection] = [
                 "cmd": "git convoy train show",
                 "summary": "Print the train sheet, versions, and tags.",
             },
-            {
-                "cmd": "git convoy train close --yes",
-                "summary": "Delete merged local release/NAME branches after publish (never drops uncommitted work).",
-            },
         ],
     },
     {
