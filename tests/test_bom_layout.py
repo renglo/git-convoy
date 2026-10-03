@@ -8,6 +8,7 @@ from pathlib import Path
 
 from gitconvoy.bom_layout import (
     Placement,
+    load_placement,
     split_master_bom,
     sync_deploy_target_versions,
     write_split_boms,
@@ -112,6 +113,68 @@ hub:
         self.assertEqual(console["npm"]["@apollo/wl"], "0.0.2-rc.1")
         self.assertNotIn("python", console)
         self.assertNotIn("npm", hub)
+
+    def test_console_keeps_npm_when_python_moves_to_a_renamed_peer(self) -> None:
+        root = Path(self._tmp()) / "bom"
+        root.mkdir()
+        (root / "renglo.yaml").write_text(
+            """
+name: apollo
+placement:
+  hub:
+  - renglo-data
+  peers:
+    tourbot:
+      compute: lambda_only
+      extensions:
+      - tourbotlink
+      peers_bom: 0.1.1
+packages:
+  console:
+    npm: '@renglo/console'
+  data:
+    python: renglo-data
+    npm: '@renglo/data'
+  tourbotlink:
+    python: apollo-tourbotlink
+    npm: '@apollo/tourbotlink'
+release:
+  bom: 0.1.1
+  console: 0.1.1
+""",
+            encoding="utf-8",
+        )
+        placement = load_placement(root)
+        self.assertEqual(placement.peers["tourbot"], ("apollo-tourbotlink",))
+        master = {
+            "version": "v0.1.1",
+            "python": {
+                "renglo-lib": "0.0.7rc3",
+                "renglo-api": "0.0.9rc3",
+                "renglo-data": "0.0.6rc1",
+                "apollo-tourbotlink": "0.1.3rc1",
+            },
+            "npm": {
+                "@renglo/console": "0.0.11-rc.3",
+                "@renglo/data": "0.0.6-rc.1",
+                "@apollo/tourbotlink": "0.1.3-rc.1",
+            },
+        }
+        write_split_boms(root, "0.1.1", master)
+        hub = json.loads((root / "bom/v0.1.1.json").read_text(encoding="utf-8"))
+        console = json.loads((root / "console_bom/v0.1.1.json").read_text(encoding="utf-8"))
+        peer = json.loads((root / "peers_bom/tourbot/v0.1.1.json").read_text(encoding="utf-8"))
+        self.assertNotIn("apollo-tourbotlink", hub["python"])
+        self.assertEqual(console["npm"]["@apollo/tourbotlink"], "0.1.3-rc.1")
+        self.assertEqual(console["npm"]["@renglo/data"], "0.0.6-rc.1")
+        self.assertEqual(peer["python"]["apollo-tourbotlink"], "0.1.3rc1")
+        self.assertEqual(peer["python"]["renglo-lib"], "0.0.7rc3")
+        self.assertFalse((root / "peers_bom/tourbotlink").exists())
+
+        sync_deploy_target_versions(root, "0.1.2")
+        text = (root / "renglo.yaml").read_text(encoding="utf-8")
+        self.assertIn("peers_bom: 0.1.2", text)
+        self.assertIn("bom: 0.1.2", text)
 
     def _tmp(self) -> str:
         import tempfile

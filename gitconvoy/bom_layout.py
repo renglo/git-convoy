@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from gitconvoy.catalog import PackageSlot, load_package_catalog, tenant_config_path
+from gitconvoy.catalog import (
+    PackageSlot,
+    load_package_catalog,
+    parse_package_catalog,
+    tenant_config_path,
+)
 
 HUB_PYTHON_CORE = ("renglo-lib", "renglo-api")
 PEER_PYTHON_CORE = ("renglo-lib",)
@@ -112,26 +117,86 @@ def load_placement(root: Path) -> Placement:
         return Placement()
     text = path.read_text(encoding="utf-8")
     if path.name == "renglo.yaml":
-        return _placement_from_renglo(text)
+        return _resolve_peer_python(_placement_from_renglo(text), parse_package_catalog(text))
     return parse_placement_text(text)
 
 
 def _placement_from_renglo(text: str) -> Placement:
-    """``placement.hub`` is a list of dists. Peer python lists stay under ``placement.peers``."""
+    """Hub list is python dists. Each peer's ``extensions:`` list is catalog handles."""
     hub: list[str] = []
+    peers: dict[str, tuple[str, ...]] = {}
+    in_placement = False
     in_hub = False
+    in_peers = False
+    current_peer = ""
+    collecting: list[str] = []
+    in_list = False
+
+    def flush_peer() -> None:
+        nonlocal current_peer, collecting, in_list
+        if current_peer:
+            peers[current_peer] = tuple(collecting)
+        current_peer = ""
+        collecting = []
+        in_list = False
+
     for line in text.splitlines():
-        if re.match(r"^  hub:\s*$", line):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0:
+            flush_peer()
+            in_placement = stripped.startswith("placement:")
+            in_hub = False
+            in_peers = False
+            continue
+        if not in_placement:
+            continue
+        if indent == 2 and stripped == "hub:":
+            flush_peer()
             in_hub = True
+            in_peers = False
             continue
-        if not in_hub:
+        if indent == 2 and stripped == "peers:":
+            flush_peer()
+            in_hub = False
+            in_peers = True
             continue
-        item = re.match(r"^  - (.+?)\s*$", line)
-        if item:
-            hub.append(item.group(1).strip().strip("'\""))
+        if in_hub and stripped.startswith("- "):
+            hub.append(stripped[2:].strip().strip("'\""))
             continue
-        in_hub = False
-    return Placement(hub_python=tuple(hub))
+        if not in_peers:
+            continue
+        peer_match = re.match(r"^([a-z][a-z0-9-]{0,31}):\s*$", stripped)
+        if peer_match and indent == 4:
+            flush_peer()
+            current_peer = peer_match.group(1)
+            continue
+        if not current_peer:
+            continue
+        if re.match(r"^(extensions|python):\s*$", stripped):
+            in_list = True
+            collecting = []
+            continue
+        if in_list and stripped.startswith("- "):
+            collecting.append(stripped[2:].strip().strip("'\""))
+    flush_peer()
+    return Placement(hub_python=tuple(hub), peers=peers)
+
+
+def _resolve_peer_python(
+    placement: Placement,
+    catalog: list[PackageSlot] | None,
+) -> Placement:
+    """Map a peer's extension handles onto the python dists the peer BOM pins."""
+    if not catalog or not placement.peers:
+        return placement
+    by_id = {slot.id: slot.python for slot in catalog if slot.python}
+    resolved: dict[str, tuple[str, ...]] = {}
+    for peer_id, names in placement.peers.items():
+        resolved[peer_id] = tuple(by_id.get(name) or name for name in names)
+    return Placement(hub_python=placement.hub_python, peers=resolved)
 
 
 def tenant_wl_dist(catalog: list[PackageSlot] | None) -> str:
@@ -206,14 +271,8 @@ def required_master_pins(
     required_npm: set[str] = set()
     if catalog:
         for slot in catalog:
-            if slot.npm and slot.python and slot.python in placed_python:
+            if slot.npm:
                 required_npm.add(slot.npm)
-        for slot in catalog:
-            if slot.id == "console" and slot.npm:
-                required_npm.add(slot.npm)
-    wl_npm = tenant_wl_npm(catalog)
-    if wl_npm and wl_dist and wl_dist in placed_python:
-        required_npm.add(wl_npm)
     return placed_python, required_npm
 
 
@@ -223,10 +282,8 @@ def console_npm_for_placement(
     placement: Placement,
     catalog: list[PackageSlot] | None,
 ) -> dict[str, str]:
-    placed_python: set[str] = set(placement.hub_python)
-    for dists in placement.peers.values():
-        placed_python.update(dists)
-
+    """Every extension npm pin. Placement decides the python wheel, not the console package."""
+    del placement
     out: dict[str, str] = {}
     host = master_npm.get(CONSOLE_NPM_HOST, "").strip()
     if host:
@@ -237,9 +294,7 @@ def console_npm_for_placement(
 
     if catalog:
         for slot in catalog:
-            if not slot.npm or not slot.python:
-                continue
-            if slot.python in placed_python and slot.npm in master_npm:
+            if slot.npm and slot.npm in master_npm:
                 out[slot.npm] = master_npm[slot.npm]
     else:
         for name, version in master_npm.items():
@@ -453,6 +508,9 @@ def sync_deploy_target_versions(root: Path, version: str) -> None:
         text = _replace_renglo_release_field(text, "bom", number)
         if _renglo_release_has_field(text, "console"):
             text = _replace_renglo_release_field(text, "console", number)
+        for peer_id in _placement_from_renglo(text).peers:
+            pattern = rf"(?m)^(\s+{re.escape(peer_id)}:\n(?:\s+.+\n)*?\s+)peers_bom:\s+\S+"
+            text, _count = re.subn(pattern, rf"\1peers_bom: {number}", text, count=1)
         renglo.write_text(text, encoding="utf-8")
         return
     targets = root / "deploy_targets.yml"
