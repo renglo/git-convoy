@@ -343,7 +343,6 @@ def split_master_bom(
     console = {**meta, "npm": console_npm, "repos": _filter_repos(all_repos, console_repo_keys)}
 
     peer_boms: dict[str, dict[str, Any]] = {}
-    deploy_stage = str(master.get("deploy_stage", "")).strip() or "staging"
     target_peers = {peer_id: placement.peers[peer_id]} if peer_id else placement.peers
     for pid, dists in target_peers.items():
         peer_names = set(PEER_PYTHON_CORE)
@@ -357,7 +356,6 @@ def split_master_bom(
             if repo:
                 peer_repo_keys.add(repo)
         peer_meta = dict(meta)
-        peer_meta["deploy_stage"] = deploy_stage
         peer_meta["description"] = peer_meta.get("description") or f"Peer {pid}."
         peer_boms[pid] = {
             **peer_meta,
@@ -416,11 +414,271 @@ def merge_union_bom(root: Path, version: str) -> dict[str, Any]:
         "created_at": meta.get("created_at", ""),
         "description": meta.get("description", ""),
         "train": meta.get("train", ""),
-        "deploy_stage": meta.get("deploy_stage", ""),
         "python": python,
         "npm": npm,
         "repos": repos,
     }
+
+
+_BOM_META = ("version", "created_at", "description", "train")
+
+
+def _normalize_platform(version: str) -> str:
+    text = (version or "").strip()
+    if text.startswith("v") and len(text) > 1 and text[1].isdigit():
+        return text[1:]
+    return text
+
+
+def load_platform(root: Path) -> str:
+    """Package version of renglo-ops from the top-level ``platform`` pin in renglo.yaml."""
+    path = root / "renglo.yaml"
+    if not path.is_file():
+        return ""
+    match = re.search(
+        r"(?m)^platform:\s*['\"]?([^'\"#\s]+)['\"]?\s*(?:#.*)?$",
+        path.read_text(encoding="utf-8"),
+    )
+    if not match:
+        return ""
+    return _normalize_platform(match.group(1))
+
+
+def released_platform(repos: Any) -> str:
+    """Version of renglo-ops on a release train, or empty when it is not a participant."""
+    for repo in repos:
+        ident = str(getattr(repo, "id", "") or "").strip()
+        path = str(getattr(repo, "path", "") or "").strip().rstrip("/")
+        name = Path(path).name if path else ""
+        if ident != "renglo-ops" and name != "renglo-ops":
+            continue
+        return _normalize_platform(str(getattr(repo, "to", "") or ""))
+    return ""
+
+
+def set_platform(root: Path, version: str) -> None:
+    """Write the top-level ``platform`` pin in renglo.yaml."""
+    path = root / "renglo.yaml"
+    if not path.is_file():
+        raise ValueError(f"missing {path}")
+    version = _normalize_platform(version)
+    if not version:
+        raise ValueError("platform version is empty")
+    text = path.read_text(encoding="utf-8")
+    updated, count = re.subn(
+        r"(?m)^platform:\s*\S+",
+        f"platform: {version}",
+        text,
+        count=1,
+    )
+    if count != 1:
+        line = f"platform: {version}\n"
+        match = re.search(r"(?m)^accounts:", text)
+        if match:
+            updated = text[: match.start()] + line + text[match.start() :]
+        else:
+            if text and not text.endswith("\n"):
+                text += "\n"
+            updated = text + line
+    path.write_text(updated, encoding="utf-8")
+
+
+def apply_released_platform(root: Path, repos: Any) -> str:
+    """Point renglo.yaml at the renglo-ops version on this train.
+
+    Returns that version, or empty when renglo-ops is not being released.
+    Later BOM writes then stamp the same pin.
+    """
+    version = released_platform(repos)
+    if not version:
+        return ""
+    set_staging_platform(root, version)
+    return version
+
+
+def _staging_section(text: str) -> re.Match[str] | None:
+    return re.search(r"(?ms)^staging:\n(?:^[ \t].*\n)*", text)
+
+
+def parse_staging_pins(text: str) -> dict[str, Any]:
+    """Return platform, bom, console, and peer versions from a ``staging:`` block."""
+    match = _staging_section(text)
+    if not match:
+        return {}
+    body = match.group(0).split("\n", 1)[1]
+    pins: dict[str, Any] = {"peers": {}}
+    for key in ("platform", "bom", "console"):
+        found = re.search(rf"(?m)^  {key}:\s*['\"]?([^'\"#\s]+)", body)
+        if found:
+            pins[key] = found.group(1).strip()
+    peer_block = re.search(r"(?ms)^  peers:\n(.*?)(?=^  \S|\Z)", body)
+    peers: dict[str, str] = {}
+    if peer_block:
+        for line in peer_block.group(1).splitlines():
+            row = re.match(r"^    ([A-Za-z0-9_-]+):\s*['\"]?([^'\"#\s]+)", line)
+            if row:
+                peers[row.group(1)] = row.group(2).strip()
+    pins["peers"] = peers
+    if not pins.get("platform") and not pins.get("bom") and not pins.get("console") and not peers:
+        return {}
+    return pins
+
+
+def load_staging_platform(root: Path) -> str:
+    path = root / "renglo.yaml"
+    if not path.is_file():
+        return ""
+    return _normalize_platform(str(parse_staging_pins(path.read_text(encoding="utf-8")).get("platform") or ""))
+
+
+def staging_release_pin(root: Path) -> str:
+    """BOM version under ``staging:``, or empty when that block is absent."""
+    path = root / "renglo.yaml"
+    if not path.is_file():
+        return ""
+    return str(parse_staging_pins(path.read_text(encoding="utf-8")).get("bom") or "").strip()
+
+
+def _render_staging_block(pins: dict[str, Any]) -> str:
+    lines = ["staging:"]
+    for key in ("platform", "bom", "console"):
+        value = str(pins.get(key) or "").strip()
+        if value:
+            lines.append(f"  {key}: {value}")
+    peers = pins.get("peers") or {}
+    if isinstance(peers, dict) and peers:
+        lines.append("  peers:")
+        for peer_id in peers:
+            lines.append(f"    {peer_id}: {peers[peer_id]}")
+    return "\n".join(lines) + "\n"
+
+
+def _write_staging_block(text: str, pins: dict[str, Any]) -> str:
+    block = _render_staging_block(pins)
+    existing = _staging_section(text)
+    if existing:
+        return text[: existing.start()] + block + text[existing.end() :]
+    release = re.search(r"(?ms)^release:\n(?:^[ \t].*\n)*", text)
+    if release:
+        return text[: release.end()] + block + text[release.end() :]
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + block
+
+
+def set_staging_platform(root: Path, version: str) -> None:
+    """Record a candidate platform without moving the production pin."""
+    path = root / "renglo.yaml"
+    if not path.is_file():
+        raise ValueError(f"missing {path}")
+    version = _normalize_platform(version)
+    if not version:
+        raise ValueError("platform version is empty")
+    text = path.read_text(encoding="utf-8")
+    pins = parse_staging_pins(text)
+    pins["platform"] = version
+    pins.setdefault("peers", {})
+    path.write_text(_write_staging_block(text, pins), encoding="utf-8")
+
+
+def sync_staging_pins(root: Path, version: str, *, platform: str = "") -> None:
+    """Point the staging block at this release. Production pins stay where they are."""
+    path = root / "renglo.yaml"
+    if not path.is_file():
+        raise ValueError(f"missing {path}")
+    number = _strip_v(_v(version))
+    text = path.read_text(encoding="utf-8")
+    current = parse_staging_pins(text)
+    chosen = _normalize_platform(platform) or str(current.get("platform") or "") or load_platform(root)
+    peers = {
+        peer_id: number
+        for peer_id in _placement_from_renglo(text).peers
+    }
+    pins = {
+        "platform": chosen,
+        "bom": number,
+        "console": number,
+        "peers": peers,
+    }
+    path.write_text(_write_staging_block(text, pins), encoding="utf-8")
+
+
+def promote_staging_pins(root: Path) -> bool:
+    """Copy the staging block onto the production pins and remove the block.
+
+    Returns false when there is no staging block.
+    """
+    path = root / "renglo.yaml"
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8")
+    pins = parse_staging_pins(text)
+    if not pins:
+        return False
+    if pins.get("bom"):
+        text = _replace_renglo_release_field(text, "bom", str(pins["bom"]))
+    if pins.get("console") and _renglo_release_has_field(text, "console"):
+        text = _replace_renglo_release_field(text, "console", str(pins["console"]))
+    platform = _normalize_platform(str(pins.get("platform") or ""))
+    if platform:
+        text, count = re.subn(
+            r"(?m)^platform:\s*\S+",
+            f"platform: {platform}",
+            text,
+            count=1,
+        )
+        if count != 1:
+            text = f"platform: {platform}\n" + text
+    peers = pins.get("peers") if isinstance(pins.get("peers"), dict) else {}
+    placement_peers = list(_placement_from_renglo(text).peers)
+    for peer_id in placement_peers:
+        version = str(peers.get(peer_id) or pins.get("bom") or "").strip()
+        if not version:
+            continue
+        pattern = rf"(?m)^(\s+{re.escape(peer_id)}:\n(?:\s+.+\n)*?\s+)peers_bom:\s+\S+"
+        text, _count = re.subn(pattern, rf"\1peers_bom: {version}", text, count=1)
+    section = _staging_section(text)
+    if section:
+        text = text[: section.start()] + text[section.end() :]
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
+def stamp_platform(payload: dict[str, Any], platform: str) -> dict[str, Any]:
+    """Record the renglo-ops pin on a BOM document, after the release metadata.
+
+    An empty pin drops a stale ``platform`` copied forward from an older file.
+    The field is otherwise left untouched so a write with no pin keeps key order.
+    """
+    if not platform:
+        if "platform" not in payload:
+            return payload
+        return {key: value for key, value in payload.items() if key != "platform"}
+    rest = {
+        key: value
+        for key, value in payload.items()
+        if key not in _BOM_META and key != "platform"
+    }
+    ordered: dict[str, Any] = {}
+    for key in _BOM_META:
+        if key in payload:
+            ordered[key] = payload[key]
+    ordered["platform"] = platform
+    ordered.update(rest)
+    return ordered
+
+
+def write_bom_file(root: Path, path: Path, data: dict[str, Any]) -> None:
+    """Write one BOM document.
+
+    A staging block wins, so the candidate files record the platform they are
+    stabilizing. Production files keep the top-level pin once that block is gone.
+    """
+    platform = load_staging_platform(root) or load_platform(root)
+    path.write_text(
+        json.dumps(stamp_platform(data, platform), indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _v(version: str) -> str:
@@ -455,17 +713,17 @@ def write_split_boms(
     (root / "console_bom").mkdir(parents=True, exist_ok=True)
 
     hub_path = root / "bom" / file_name
-    hub_path.write_text(json.dumps(hub, indent=2) + "\n", encoding="utf-8")
+    write_bom_file(root, hub_path, hub)
 
     console_path = root / "console_bom" / file_name
-    console_path.write_text(json.dumps(console, indent=2) + "\n", encoding="utf-8")
+    write_bom_file(root, console_path, console)
 
     peer_paths: dict[str, str] = {}
     for peer_id, payload in peer_boms.items():
         peer_dir = root / "peers_bom" / peer_id
         peer_dir.mkdir(parents=True, exist_ok=True)
         peer_path = peer_dir / file_name
-        peer_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        write_bom_file(root, peer_path, payload)
         peer_paths[peer_id] = str(peer_path)
 
     return {

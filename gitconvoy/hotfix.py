@@ -419,7 +419,7 @@ def bom(
     if catalog is not None:
         bom_data = json.loads(dest_path.read_text())
         pins.extend(adopt_cmd._prune_bom_to_catalog(root, dest, bom_data, catalog))
-    pointed_out = adopt_cmd.point(workspace, dest, bom=bom, production=False)
+    pointed_out = adopt_cmd.point(workspace, dest, bom=bom, production=False, hotfix=True)
     return {
         "ok": True,
         "hotfix": hotfix.name,

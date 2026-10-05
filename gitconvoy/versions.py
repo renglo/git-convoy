@@ -206,7 +206,20 @@ def read_python_package_name(repo: Path) -> str | None:
     return None
 
 
-def write_version(repo: Path, pep: str, npm: str) -> list[str]:
+def write_version(
+    repo: Path,
+    pep: str,
+    npm: str,
+    *,
+    platform: str | None = None,
+) -> list[str]:
+    """Write package versions.
+
+    ``platform`` is the stable renglo-ops version this package version targets.
+    An rc suffix is dropped, so a train on ``0.1.5rc1`` declares ``0.1.5``.
+    The previous file stays in git.
+    """
+    declared = _stable_platform(platform) if platform else ""
     changed: list[str] = []
     info = read_version(repo)
     rels = python_pyproject_rels(repo)
@@ -225,6 +238,8 @@ def write_version(repo: Path, pep: str, npm: str) -> list[str]:
             )
         if not ok:
             continue
+        if declared and path.name == "pyproject.toml":
+            new = set_pyproject_platform(new, declared)
         if new != text:
             path.write_text(new)
         changed.append(rel)
@@ -235,8 +250,56 @@ def write_version(repo: Path, pep: str, npm: str) -> list[str]:
             text, npm, r'"version"\s*:\s*"([^"]+)"'
         )
         if ok:
+            if declared:
+                new = set_package_json_platform(new, declared)
             path.write_text(new)
             changed.append(info["npm_file"])
     if not changed:
         raise GitConvoyError(f"no version file found in {repo}")
     return changed
+
+
+def set_pyproject_platform(text: str, platform: str) -> str:
+    """Set ``[tool.renglo] platform`` without touching the package version."""
+    section = re.search(r"(?ms)^\[tool\.renglo\][^\n]*\n(.*?)(?=^\[|\Z)", text)
+    assignment = f'platform = "{platform}"'
+    if section:
+        body = section.group(1)
+        new_body, count = re.subn(
+            r"""(?m)^platform\s*=\s*(['"])[^'"]+\1""",
+            assignment,
+            body,
+            count=1,
+        )
+        if count:
+            return text[: section.start(1)] + new_body + text[section.end(1) :]
+        return text[: section.start(1)] + assignment + "\n" + body + text[section.end(1) :]
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + f"\n[tool.renglo]\n{assignment}\n"
+
+
+def set_package_json_platform(text: str, platform: str) -> str:
+    """Set ``renglo.platform`` without rewriting the rest of the file."""
+    block = re.search(r'("renglo"\s*:\s*\{)(.*?)(\})', text, re.S)
+    if block:
+        body = block.group(2)
+        if re.search(r'"platform"\s*:', body):
+            new_body = re.sub(
+                r'("platform"\s*:\s*")[^"]*"',
+                lambda match: f'{match.group(1)}{platform}"',
+                body,
+                count=1,
+            )
+        else:
+            new_body = body + f'\n    "platform": "{platform}"'
+        return text[: block.start(2)] + new_body + text[block.end(2) :]
+    version_line = re.search(r'^[ \t]*"version"\s*:\s*"[^"]*",\n', text, re.M)
+    if not version_line:
+        return text
+    inserted = f'  "renglo": {{\n    "platform": "{platform}"\n  }},\n'
+    return text[: version_line.end()] + inserted + text[version_line.end() :]
+
+
+def _stable_platform(version: str) -> str:
+    return drop_rc(version)[0]

@@ -22,11 +22,18 @@ from gitconvoy import ghutil
 from gitconvoy import membership
 from gitconvoy.bom_layout import (
     CONSOLE_NPM_HOST,
+    apply_released_platform,
     copy_split_bom_draft,
     load_placement,
+    load_platform,
+    load_staging_platform,
     merge_union_bom,
+    promote_staging_pins,
     required_master_pins,
+    staging_release_pin,
     sync_deploy_target_versions,
+    sync_staging_pins,
+    write_bom_file,
     write_split_boms,
 )
 from gitconvoy.workflows import repo_registry_ready
@@ -186,7 +193,7 @@ def draft(
     if _uses_three_bom_layout(root):
         write_split_boms(root, to_version, master, catalog=load_package_catalog(root))
     else:
-        dest.write_text(json.dumps(master, indent=2) + "\n")
+        write_bom_file(root, dest, master)
     data = master
     return {
         "ok": True,
@@ -223,7 +230,7 @@ def pin(
     if not isinstance(master[section], dict):
         master[section] = {}
     master[section][package] = pin_value
-    path.write_text(json.dumps(master, indent=2) + "\n")
+    write_bom_file(root, path, master)
     if split and _uses_three_bom_layout(root):
         write_split_boms(root, version, master, catalog=load_package_catalog(root))
     return {"ok": True, "file": str(path), "section": section, "package": package, "pin": pin_value}
@@ -234,26 +241,54 @@ def point(
     version: str,
     bom: str | None = None,
     production: bool = False,
+    *,
+    hotfix: bool = False,
 ) -> dict:
     root = find_bom_repo(workspace, bom)
     targets = tenant_config_path(root)
     if not targets.exists():
         raise GitConvoyError(f"missing {targets}")
     number = version.lstrip("v")
+    if targets.name == "renglo.yaml" and hotfix:
+        sync_deploy_target_versions(root, version)
+        return {
+            "ok": True,
+            "file": str(targets),
+            "bom": number,
+            "production_enabled": _production_enabled(root),
+            "note": "updated production pins. staging block, if any, was left in place.",
+        }
+    if targets.name == "renglo.yaml" and not production:
+        sync_staging_pins(
+            root,
+            version,
+            platform=load_staging_platform(root) or load_platform(root),
+        )
+        return {
+            "ok": True,
+            "file": str(targets),
+            "bom": number,
+            "production_enabled": _production_enabled(root),
+            "note": "staging pins updated. production pins were left in place.",
+        }
+    if targets.name == "renglo.yaml" and production:
+        if not promote_staging_pins(root):
+            sync_deploy_target_versions(root, version)
     enabled = "true" if production else "false"
     text = targets.read_text()
-    if _uses_three_bom_layout(root):
-        sync_deploy_target_versions(root, version)
-        text = targets.read_text()
-    else:
-        text, n = re.subn(
-            r"(?m)^bom:\s+\S+",
-            f"bom: {number}",
-            text,
-            count=1,
-        )
-        if n != 1:
-            raise GitConvoyError("could not update bom: in deploy_targets.yml")
+    if targets.name != "renglo.yaml":
+        if _uses_three_bom_layout(root):
+            sync_deploy_target_versions(root, version)
+            text = targets.read_text()
+        else:
+            text, n = re.subn(
+                r"(?m)^bom:\s+\S+",
+                f"bom: {number}",
+                text,
+                count=1,
+            )
+            if n != 1:
+                raise GitConvoyError("could not update bom: in deploy_targets.yml")
     text, n = re.subn(
         r"(?m)^(\s+production:\n(?:[ \t].*\n)*?[ \t]+enabled:\s+)\S+",
         rf"\g<1>{enabled}",
@@ -300,6 +335,15 @@ def take(
             "run train tag-rc or train publish first"
         )
     root = find_bom_repo(workspace, bom)
+    from gitconvoy.platform_check import report_for_take
+
+    platform_report = report_for_take(
+        workspace,
+        train_obj,
+        root,
+        from_version=from_version,
+    )
+    released_platform = apply_released_platform(root, train_obj.repos)
     src, dest, refresh = _resolve_take_target(
         root,
         train_obj,
@@ -338,7 +382,7 @@ def take(
     bom_data = json.loads(_bom_file(root, dest).read_text())
     if _uses_three_bom_layout(root):
         bom_data = merge_union_bom(root, dest)
-        _bom_file(root, dest).write_text(json.dumps(bom_data, indent=2) + "\n")
+        write_bom_file(root, _bom_file(root, dest), bom_data)
     catalog = load_package_catalog(root)
     pinned: list[dict] = []
     for repo in train_obj.repos:
@@ -408,12 +452,16 @@ def take(
         master = json.loads(_bom_file(root, dest).read_text())
         master = _merge_master_from_bom_data(master, bom_data)
         write_split_boms(root, dest, master, catalog=catalog)
-    staging_only = not refresh
+    # A new release, and any refresh while a staging block exists, stays off
+    # the production pins. Refreshing a train that is already in production
+    # (no staging block) updates those pins in place.
+    staging_open = bool(staging_release_pin(root))
+    promote_now = refresh and not staging_open and _production_enabled(root)
     pointed = point(
         workspace,
         dest,
         bom=bom,
-        production=False if staging_only else _production_enabled(root),
+        production=promote_now,
     )
     note = pointed["note"]
     if mode == "refresh":
@@ -431,6 +479,9 @@ def take(
         "pins": pinned,
         "files": _written_bom_summaries(root, dest),
         "point": pointed,
+        "platform": load_platform(root),
+        "platform_source": "renglo-ops" if released_platform else "renglo.yaml",
+        "platform_warnings": platform_report["platform_warnings"],
         "note": note,
     }
     if verify_summary is not None:
@@ -476,6 +527,7 @@ def promote(
         "files": _written_bom_summaries(root, version),
         "take": {"from": taken["from"], "to": taken["to"]},
         "point": pointed,
+        "platform_warnings": taken.get("platform_warnings") or [],
         "note": (
             pointed["note"]
             + " CI deploys staging, verifies it, then production; "
@@ -497,7 +549,7 @@ def _merge_master_from_bom_data(master: dict, bom_data: dict) -> dict:
     repos = bom_data.get("repos")
     if isinstance(repos, dict):
         merged["repos"] = {**merged.get("repos", {}), **repos}
-    for key in ("version", "created_at", "description", "train", "deploy_stage"):
+    for key in ("version", "created_at", "description", "train"):
         if bom_data.get(key):
             merged[key] = bom_data[key]
     return merged
@@ -554,13 +606,19 @@ def _pin_is_rc(pin: str) -> bool:
         return bool(re.search(r"(?:rc\d|-rc\.)", pin, re.I))
 
 
-def _pointed_version(root: Path) -> str:
+def _pointed_version(root: Path, *, prefer_staging: bool = False) -> str:
     targets = tenant_config_path(root)
     if not targets.exists():
         raise GitConvoyError(f"missing {targets}")
     text = targets.read_text()
     if targets.name == "renglo.yaml":
-        match = re.search(r"(?m)^[ \t]+bom:\s+(\S+)", text)
+        if prefer_staging:
+            staged = staging_release_pin(root)
+            if staged:
+                return staged
+        match = re.search(r"(?ms)^release:\n(.*?)(?=^\S|\Z)", text)
+        body = match.group(1) if match else text
+        match = re.search(r"(?m)^[ \t]+bom:\s+(\S+)", body)
     else:
         match = re.search(r"(?m)^bom:\s+(\S+)", text)
     if not match:
@@ -575,7 +633,7 @@ def _resolve_take_target(
     from_version: str | None,
     to_version: str | None,
 ) -> tuple[str, str, bool]:
-    pointed = _pointed_version(root)
+    pointed = _pointed_version(root, prefer_staging=True)
     if to_version:
         src = from_version or pointed
         return src, _strip_v(to_version), False
@@ -613,7 +671,7 @@ def _set_bom_description(root: Path, version: str, description: str) -> None:
     path = _bom_file(root, version)
     data = json.loads(path.read_text())
     data["description"] = description
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    write_bom_file(root, path, data)
 
 
 def _update_draft_metadata(
@@ -635,7 +693,7 @@ def _update_draft_metadata(
         refresh=refresh,
         production_enabled=_production_enabled(root),
     )
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    write_bom_file(root, path, data)
 
 
 def _description_for_take(
@@ -976,7 +1034,7 @@ def _prune_bom_to_catalog(
         if not block:
             data.pop(section, None)
     if dropped:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        write_bom_file(root, path, data)
     return dropped
 
 
@@ -1007,7 +1065,7 @@ def _restore_adopt_pins(
         bom_data.setdefault(section, {})[package] = value
         changed = True
     if changed:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        write_bom_file(root, path, data)
 
 
 def _clear_package_pins(
@@ -1046,7 +1104,7 @@ def _clear_package_pins(
             }
         )
     if cleared:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        write_bom_file(root, path, data)
     return cleared
 
 
@@ -1178,7 +1236,7 @@ def _clear_repo_shas(
         if isinstance(bom_data.get("repos"), dict) and not bom_data["repos"]:
             bom_data.pop("repos", None)
     if cleared:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        write_bom_file(root, path, data)
     return cleared
 
 
@@ -1258,7 +1316,7 @@ def _pin_repo_shas(
                 "pin": commit,
             }
         )
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    write_bom_file(root, path, data)
     return pinned
 
 

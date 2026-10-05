@@ -161,8 +161,12 @@ HELP_SECTIONS: list[HelpSection] = [
                 "summary": "Poll until rc publish workflows finish or timeout.",
             },
             {
+                "cmd": "git convoy bom check --bom ops/<system>-bom",
+                "summary": "Compare the platform pin with package declarations. Writes nothing.",
+            },
+            {
                 "cmd": "git convoy bom --bom ops/<system>-bom",
-                "summary": "Write staging BOM pins from the current train; self-heals failed publishes to git SHAs.",
+                "summary": "Write staging BOM pins from the current train; self-heals failed publishes to git SHAs. Warns on platform mismatches before writing.",
             },
             {
                 "cmd": "cd ops/<system>-bom && git add bom/ deploy_targets.yml && git commit -m \"Adopt release train (staging)\" && git push",
@@ -557,8 +561,12 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                     "summary": "Wait for rc publish workflows to finish (Full mode).",
                 },
                 {
+                    "cmd": "git convoy bom check --bom ops/<system>-bom",
+                    "summary": "Compare the platform pin with package declarations. Writes nothing.",
+                },
+                {
                     "cmd": "git convoy bom --bom ops/<system>-bom",
-                    "summary": "Write staging BOM from the current train.",
+                    "summary": "Write staging BOM from the current train. Warns on platform mismatches before writing.",
                 },
                 {
                     "cmd": "cd ops/<system>-bom && git add bom/ deploy_targets.yml && git commit -m \"Adopt release train (staging)\" && git push",
@@ -634,8 +642,12 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                     "summary": "Poll until rc publish workflows finish or timeout.",
                 },
                 {
+                    "cmd": "git convoy bom check --bom ops/<system>-bom",
+                    "summary": "Compare the platform pin with package declarations. Writes nothing.",
+                },
+                {
                     "cmd": "git convoy bom --bom ops/<system>-bom",
-                    "summary": "Write staging BOM pins from the current train; self-heals failed publishes to git SHAs.",
+                    "summary": "Write staging BOM pins from the current train; self-heals failed publishes to git SHAs. Warns on platform mismatches before writing.",
                 },
                 {
                     "cmd": "cd ops/<system>-bom && git add bom/ deploy_targets.yml && git commit -m \"Adopt release train (staging)\" && git push",
@@ -830,8 +842,12 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                     "summary": "Confirm publish workflows before writing the BOM.",
                 },
                 {
+                    "cmd": "git convoy bom check --bom ops/<system>-bom",
+                    "summary": "Compare the platform pin with package declarations. Writes nothing.",
+                },
+                {
                     "cmd": "git convoy bom --bom ops/<system>-bom",
-                    "summary": "Write staging BOM from the current train.",
+                    "summary": "Write staging BOM from the current train. Warns on platform mismatches before writing.",
                 },
                 {
                     "cmd": "cd ops/<system>-bom && git add bom/ deploy_targets.yml && git commit -m \"Adopt release train (staging)\" && git push",
@@ -963,6 +979,114 @@ HELP_TOPIC_NAMES: tuple[str, ...] = (
 )
 
 
+# Second column on a shortcut that reprints the block above it.
+_ONLY = "Only the commands in this section."
+
+# (parent, section name) → (shortcut, blurb). Parent is a group key or a topic name.
+_SECTION_LINKS: dict[tuple[str, str], tuple[str, str]] = {
+    ("reference", "One-time setup"): ("init", _ONLY),
+    ("where", "Any time"): ("anytime", _ONLY),
+    ("where", "Catch up"): ("catchup", _ONLY),
+    ("product", "Cycle 1 — Feature"): (
+        "feature",
+        "Feature sheet, plus sync and hotfix refresh.",
+    ),
+    ("product", "Cycle 2 — Release train (local)"): ("cycle-2", _ONLY),
+    ("product", "Cycle 3 — Staging adoption"): ("staging", _ONLY),
+    ("product", "Cycle 4 — Production release"): ("production", _ONLY),
+    ("product", "Product — optional"): ("product-optional", _ONLY),
+    ("ops", "Ship — review on develop, then publish"): ("ship", _ONLY),
+    ("ops", "Ops — optional"): ("ops-optional", _ONLY),
+    ("hotfix", "Hotfix — PRs into main"): ("hotfix-steps", _ONLY),
+    ("hotfix", "Hotfix — after publish"): ("hotfix-after", _ONLY),
+    ("hotfix", "Hotfix — optional"): ("hotfix-optional", _ONLY),
+    ("reference", "BOM — manual primitives"): ("bom-manual", _ONLY),
+    ("reference", "Agents"): ("agents", _ONLY),
+    ("feature", "Catch up"): ("catchup", _ONLY),
+    ("feature", "Feature workflow (cycle 1)"): ("feature-workflow", _ONLY),
+    ("feature", "While a feature is open"): ("feature-open", _ONLY),
+    ("feature", "After a hotfix lands (parallel path)"): ("feature-hotfix", _ONLY),
+    ("feature", "Optional"): ("feature-extra", _ONLY),
+    ("train", "Cycle 2 — Cut and stabilize locally"): ("train-cut", _ONLY),
+    ("train", "Cycle 3 — Staging (rc tags + BOM)"): ("train-staging", _ONLY),
+    ("train", "Cycle 4 — Production"): ("train-production", _ONLY),
+    ("train", "Optional / strict BOM"): ("train-optional", _ONLY),
+    ("ops", "While an ops sheet is open"): ("ops-open", _ONLY),
+    ("ops", "Optional"): ("ops-extra", _ONLY),
+    ("hotfix", "Hotfix emergency (PRs into main)"): ("hotfix-prs", _ONLY),
+    ("hotfix", "After hotfix publish"): ("hotfix-landed", _ONLY),
+    ("hotfix", "Optional"): ("hotfix-extra", _ONLY),
+    ("bom", "Typical train adoption (cycles 3–4)"): ("bom-adopt", _ONLY),
+    ("bom", "Hotfix BOM"): ("bom-hotfix", _ONLY),
+    ("bom", "Manual BOM editing"): ("bom-edit", _ONLY),
+    ("sync", "Workspace sync"): ("sync-now", _ONLY),
+    ("sync", "While work is in progress"): ("sync-open", _ONLY),
+    ("init", "One-time setup"): ("init", _ONLY),
+    ("status", "Inspect workspace"): ("status", _ONLY),
+    ("staging", "Cycle 3 — Staging adoption"): ("staging", _ONLY),
+    ("production", "Cycle 4 — Production release"): ("production", _ONLY),
+}
+
+_TOPIC_TITLES: dict[str, str] = {
+    "feature": "Ship a feature",
+    "train": "Cut a train and adopt it",
+    "staging": "Cycle 3 — Staging adoption",
+    "production": "Cycle 4 — Production release",
+    "ops": "Ship an ops change",
+    "hotfix": "Patch production now",
+    "bom": "Write the BOM",
+    "sync": "Catch up",
+    "init": "One-time setup",
+    "status": "See where you are",
+}
+
+
+def _section_link(parent: str, name: str) -> tuple[str, str]:
+    try:
+        return _SECTION_LINKS[(parent, name)]
+    except KeyError as exc:
+        raise GitConvoyError(f"help section {name!r} under {parent!r} has no shortcut") from exc
+
+
+def _group_sections() -> dict[str, list[HelpSection]]:
+    grouped: dict[str, list[HelpSection]] = {group["key"]: [] for group in HELP_GROUPS}
+    for section in grouped_sections():
+        grouped[section["group"]].append(section)
+    return grouped
+
+
+def _exact_sections() -> dict[str, list[HelpSection]]:
+    """Shortcuts that reprint one section. Named topics (feature, ops, …) stay sequences."""
+    found: dict[str, list[HelpSection]] = {}
+
+    def add(slug: str, section: HelpSection) -> None:
+        if slug in HELP_TOPICS or slug in TOPIC_ALIASES:
+            return
+        found.setdefault(slug, [section])
+
+    for section in grouped_sections():
+        slug, _blurb = _section_link(section["group"], section["name"])
+        add(slug, section)
+    for topic, sections in HELP_TOPICS.items():
+        for section in sections:
+            slug, _blurb = _section_link(topic, section["name"])
+            add(slug, section)
+    for key, sections in _group_sections().items():
+        if key not in HELP_TOPICS and key not in TOPIC_ALIASES:
+            found.setdefault(key, sections)
+    return found
+
+
+def _known_topic_names() -> list[str]:
+    names = list(HELP_TOPIC_NAMES)
+    seen = set(names) | set(TOPIC_ALIASES)
+    for slug in _exact_sections():
+        if slug not in seen:
+            names.append(slug)
+            seen.add(slug)
+    return names
+
+
 def resolve_help_topic(topic: str | None) -> str:
     if not topic:
         return "all"
@@ -971,7 +1095,9 @@ def resolve_help_topic(topic: str | None) -> str:
         return key
     if key in TOPIC_ALIASES:
         return TOPIC_ALIASES[key]
-    valid = ", ".join(HELP_TOPIC_NAMES)
+    if key in _exact_sections():
+        return key
+    valid = ", ".join(_known_topic_names())
     raise GitConvoyError(f"unknown help topic {topic!r}; choose from: {valid}")
 
 
@@ -997,7 +1123,12 @@ def grouped_sections() -> list[HelpSection]:
 def sections_for_topic(topic: str) -> list[HelpSection]:
     if topic == "all":
         return grouped_sections()
-    return HELP_TOPICS[topic]
+    if topic in HELP_TOPICS:
+        return HELP_TOPICS[topic]
+    exact = _exact_sections()
+    if topic in exact:
+        return exact[topic]
+    raise GitConvoyError(f"unknown help topic {topic!r}")
 
 
 def help_payload(*, topic: str | None = None, summaries: bool = False) -> dict:
@@ -1029,54 +1160,131 @@ def help_payload(*, topic: str | None = None, summaries: bool = False) -> dict:
 
 
 def format_help_text(*, topic: str | None = None, summaries: bool = False) -> str:
+    """Text help. Summaries are always shown; ``summaries`` is accepted and ignored."""
+    del summaries
     resolved = resolve_help_topic(topic)
-    if resolved != "all":
-        return _format_topic_text(resolved, summaries=summaries)
+    if resolved == "all":
+        return _format_all()
+    if resolved in _TOPIC_TITLES:
+        return _format_named_topic(resolved)
+    return _format_exact(resolved)
+
+
+def _row(command: str, blurb: str, width: int) -> str:
+    return f"  {command:<{width}}  {blurb}"
+
+
+def _width(commands: list[str]) -> int:
+    convoy = [command for command in commands if command.startswith("git convoy")]
+    pool = convoy or commands
+    return max(len(command) for command in pool)
+
+
+def _render_commands(commands: list[HelpCommand], width: int) -> list[str]:
+    return [_row(item["cmd"], item["summary"], width) for item in commands]
+
+
+def _format_all() -> str:
+    names = ["git convoy help"]
+    grouped = _group_sections()
+    for group in HELP_GROUPS:
+        names.append(f"git convoy help {group['key']}")
+        for section in grouped[group["key"]]:
+            slug, _blurb = _section_link(group["key"], section["name"])
+            names.append(f"git convoy help {slug}")
+            names.extend(item["cmd"] for item in section["commands"])
+    width = _width(names)
     lines = [
         "git convoy — quick reference",
         "",
-        "Three golden paths. Find the one you are on, then run the next command in it.",
+        _row("git convoy help", "Every command, grouped by the job you are doing.", width),
+        "",
         "Process and detail: ops/git-convoy/README.md",
+        "",
     ]
-    titles = {group["key"]: group for group in HELP_GROUPS}
-    current = None
-    for section in grouped_sections():
-        key = section["group"]
-        if key != current:
-            current = key
-            group = titles[key]
-            lines.extend(["", group["title"], f"  {group['note']}"])
-        lines.append("")
-        lines.append(f"  {section['name']}")
-        for item in section["commands"]:
-            lines.append(f"    {item['cmd']}")
-            if summaries:
-                lines.append(f"      {item['summary']}")
-    lines.extend(
-        [
-            "",
-            f"Topics: {', '.join(HELP_TOPIC_NAMES)}",
-            "One path in order: git convoy help TOPIC",
-            "With summaries:   git convoy help [TOPIC] -s",
-        ]
-    )
+    for index, group in enumerate(HELP_GROUPS):
+        if index:
+            lines.append("")
+        lines.extend(_render_group(group, grouped[group["key"]], width))
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _format_topic_text(topic: str, *, summaries: bool) -> str:
+def _render_group(group: HelpGroup, sections: list[HelpSection], width: int) -> list[str]:
+    note = group["note"].strip() or _ONLY
     lines = [
-        f"git convoy help {topic} — command sequence",
-        "",
-        "Run in order within each section. Related commands from other topics are included.",
-        "",
+        group["title"],
+        _row(f"git convoy help {group['key']}", note, width),
     ]
-    for section in HELP_TOPICS[topic]:
-        lines.append(section["name"])
-        for item in section["commands"]:
-            lines.append(f"  {item['cmd']}")
-            if summaries:
-                lines.append(f"    {item['summary']}")
+    for section in sections:
         lines.append("")
-    lines.append(f"Topics: {', '.join(HELP_TOPIC_NAMES)}")
-    lines.append("Summaries: git convoy help [TOPIC] -s")
+        lines.extend(_render_section(section, group["key"], width, nested=True))
+    return lines
+
+
+def _render_section(
+    section: HelpSection,
+    parent: str,
+    width: int,
+    *,
+    nested: bool,
+    shortcut: str | None = None,
+    blurb: str | None = None,
+) -> list[str]:
+    slug, section_blurb = _section_link(parent, section["name"])
+    title = f"  {section['name']}" if nested else section["name"]
+    lines = [
+        title,
+        _row(f"git convoy help {shortcut or slug}", blurb or section_blurb, width),
+    ]
+    lines.extend(_render_commands(section["commands"], width))
+    return lines
+
+
+def _format_named_topic(topic: str) -> str:
+    sections = HELP_TOPICS[topic]
+    names = [f"git convoy help {topic}"]
+    for section in sections:
+        slug, _blurb = _section_link(topic, section["name"])
+        names.append(f"git convoy help {slug}")
+        names.extend(item["cmd"] for item in section["commands"])
+    width = _width(names)
+    if len(sections) == 1:
+        return "\n".join(_render_section(sections[0], topic, width, nested=False)) + "\n"
+    lines = [
+        _TOPIC_TITLES[topic],
+        _row(f"git convoy help {topic}", _ONLY, width),
+    ]
+    for section in sections:
+        lines.append("")
+        lines.extend(_render_section(section, topic, width, nested=True))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_exact(topic: str) -> str:
+    sections = _exact_sections()[topic]
+    if topic in {group["key"] for group in HELP_GROUPS}:
+        group = next(item for item in HELP_GROUPS if item["key"] == topic)
+        names = [f"git convoy help {topic}"]
+        for section in sections:
+            slug, _blurb = _section_link(group["key"], section["name"])
+            names.append(f"git convoy help {slug}")
+            names.extend(item["cmd"] for item in section["commands"])
+        return "\n".join(_render_group(group, sections, _width(names))).rstrip() + "\n"
+    section = sections[0]
+    parent = section.get("group") or ""
+    if not parent:
+        for owner, owned in HELP_TOPICS.items():
+            if section in owned:
+                parent = owner
+                break
+    names = [f"git convoy help {topic}"]
+    names.extend(item["cmd"] for item in section["commands"])
+    lines = _render_section(
+        section,
+        parent,
+        _width(names),
+        nested=False,
+        shortcut=topic,
+        blurb=_ONLY,
+    )
     return "\n".join(lines).rstrip() + "\n"

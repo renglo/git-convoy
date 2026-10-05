@@ -25,6 +25,56 @@ def _has_version(repo: Path) -> bool:
     return bool(info.get("python") or info.get("npm"))
 
 
+def _platform_for_repo(repo_id: str, rel: str, platform: str) -> str | None:
+    """renglo-ops is the platform. Other packages declare the platform they target."""
+    if repo_id == "renglo-ops" or Path(str(rel)).name == "renglo-ops":
+        return None
+    return platform or None
+
+
+def _packages_platform(
+    workspace: Path,
+    repos: list,
+    *,
+    bump: str = "patch",
+    choose_rc: bool = False,
+) -> str:
+    """Stable platform version the packages on this train should declare."""
+    for repo in repos:
+        ident = str(getattr(repo, "id", ""))
+        rel = str(getattr(repo, "rel", "") or getattr(repo, "path", ""))
+        if ident != "renglo-ops" and Path(rel).name != "renglo-ops":
+            continue
+        path = getattr(repo, "path")
+        directory = path if isinstance(path, Path) and path.is_absolute() else workspace / str(path)
+        info = versions.read_version(directory)
+        current = info.get("python") or info.get("npm")
+        if not current:
+            return ""
+        if choose_rc:
+            pep, _npm, _tag = _choose_rc(directory, current)
+            return versions.drop_rc(pep)[0]
+        return versions.drop_rc(versions.bump(current, bump))[0]
+    return _bom_declared_platform(workspace)
+
+
+def _bom_declared_platform(workspace: Path) -> str:
+    from gitconvoy.adopt import find_bom_repo
+    from gitconvoy.bom_layout import load_platform, load_staging_platform
+
+    try:
+        root = find_bom_repo(workspace)
+    except GitConvoyError:
+        return ""
+    pin = load_staging_platform(root) or load_platform(root)
+    if not pin:
+        return ""
+    try:
+        return versions.drop_rc(pin)[0]
+    except GitConvoyError:
+        return ""
+
+
 def cut(
     workspace: Path,
     state: State,
@@ -71,6 +121,7 @@ def cut(
         )
     train = state.trains.get(slug) or Train(name=slug, branch=branch)
     train.status = "cut"
+    platform = "" if no_bump else _packages_platform(workspace, chosen, bump=bump)
     added: list[dict] = []
     for repo in chosen:
         gitutil.fetch(repo.path)
@@ -85,7 +136,12 @@ def cut(
         if current and not no_bump:
             to = versions.bump(current, bump)
             pep, npm = versions.with_rc(to, 1)
-            changed = versions.write_version(repo.path, pep, npm)
+            changed = versions.write_version(
+                repo.path,
+                pep,
+                npm,
+                platform=_platform_for_repo(repo.id, repo.rel, platform),
+            )
             gitutil.run(repo.path, "add", "-A")
             gitutil.run(
                 repo.path,
@@ -296,6 +352,7 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
         retry_hint="git convoy train tag-rc",
     )
     tagged: list[dict] = []
+    platform = _packages_platform(workspace, list(train.repos), choose_rc=True)
     for repo_row in _ordered(train):
         repo_path = workspace / repo_row.path
         gitutil.checkout_branch(repo_path, train.branch)
@@ -305,7 +362,12 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
             raise GitConvoyError(f"{repo_row.id}: no version file")
         pep, npm, tag = _choose_rc(repo_path, current)
         if pep != current or info.get("npm") not in {None, npm}:
-            versions.write_version(repo_path, pep, npm)
+            versions.write_version(
+                repo_path,
+                pep,
+                npm,
+                platform=_platform_for_repo(repo_row.id, repo_row.path, platform),
+            )
             gitutil.run(repo_path, "add", "-A")
             gitutil.run(
                 repo_path,

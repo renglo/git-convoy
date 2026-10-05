@@ -87,6 +87,29 @@ def test_read_python_package_name_under_package(tmp_path: Path) -> None:
     assert read_python_package_name(repo) == "arbitium-lab"
 
 
+def test_write_version_aligns_platform(tmp_path: Path) -> None:
+    from gitconvoy.versions import read_version, write_version
+
+    repo = tmp_path / "renglo-api"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "renglo-api"\nversion = "0.0.9"\n\n'
+        '[tool.renglo]\nplatform = "0.1.4"\n'
+    )
+    (repo / "package.json").write_text(
+        '{\n  "name": "@renglo/console",\n  "version": "0.0.11",\n'
+        '  "renglo": {\n    "platform": "0.1.4"\n  }\n}\n'
+    )
+    write_version(repo, "0.0.10rc1", "0.0.10-rc.1", platform="0.1.5rc1")
+    text = (repo / "pyproject.toml").read_text()
+    assert 'version = "0.0.10rc1"' in text
+    assert 'platform = "0.1.5"' in text
+    npm = (repo / "package.json").read_text()
+    assert '"version": "0.0.10-rc.1"' in npm
+    assert '"platform": "0.1.5"' in npm
+    assert read_version(repo)["python"] == "0.0.10rc1"
+
+
 def test_sibling_cli_and_lib_pyprojects(tmp_path: Path) -> None:
     from gitconvoy.versions import read_version, write_version
 

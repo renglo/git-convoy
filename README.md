@@ -102,7 +102,7 @@ git convoy help feature            # cycle 1 process (+ related sync, hotfix ref
 git convoy help train              # cycles 2–4 (+ bom)
 git convoy help ops                # ship one ops repo, then optional develop review
 git convoy help hotfix             # production emergency (+ bom, feature refresh)
-git convoy help staging -s              # one-line description per command
+git convoy help staging             # cycle 3 only; command and summary
 git convoy --json help train
 ```
 
@@ -809,7 +809,7 @@ When those PRs merge, the change is on `develop`. That is not a release. `ops pu
 
 ### Publish an ops package
 
-`ops publish` is what you run after `ops prs` merges. No second GitHub PR. The person who ships `renglo-ops` is not the person who pins `platform` on a tenant BOM.
+`ops publish` is what you run after `ops prs` merges. No second GitHub PR. `renglo-ops` is not an ops repo: it rides the product feature and release train with the extensions it changed. `git convoy bom` then pins `platform` to that train's `renglo-ops` version. Other ops packages stay on `ops publish`, and that command does not write a tenant BOM.
 
 ```bash
 git convoy ops prs
@@ -817,7 +817,7 @@ git convoy ops prs
 git convoy ops publish
 ```
 
-With a current ops sheet and no repo ids, publish walks the sheet and ships every participant whose policy is not `publish = "none"`. Name repos to ship just those: `git convoy ops publish renglo-ops`.
+With a current ops sheet and no repo ids, publish walks the sheet and ships every participant whose policy is not `publish = "none"`. Name repos to ship just those: `git convoy ops publish git-convoy`.
 
 It bumps on `develop` when the version still matches the last tag, merges `develop` into `main`, tags `vX.Y.Z`, and pushes. The tag push publishes wheels when `publish = "python-wheel"`. Repos with `publish = "none"` are skipped on a sheet run.
 
@@ -841,13 +841,13 @@ Each ops repo must declare `version`, `publish`, and `pin` in `gitconvoy.toml`.
 git convoy ops publish
 
 # One repo, no sheet required
-git convoy ops publish renglo-ops
+git convoy ops publish git-convoy
 
 # Minor bump, then merge to main and tag
-git convoy ops publish renglo-ops --bump minor
+git convoy ops publish git-convoy --bump minor
 
 # Wait for the publish workflow after the tag
-git convoy ops publish renglo-ops --verify --wait
+git convoy ops publish git-convoy --verify --wait
 ```
 
 ---
@@ -1058,7 +1058,8 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy train close` | 2, 4 | Delete merged `release/<train>` branches only; refuse dirty or unique commits |
 | `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
-| `git convoy bom` | 3 | Staging BOM from `.gitconvoy/ops.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)` |
+| `git convoy bom check` | 3 | Compare the platform pin with package declarations; write nothing |
+| `git convoy bom` | 3 | Staging BOM from `.gitconvoy/ops.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)`. Warns on platform mismatches before writing |
 | `git convoy bom --require-verify` | 3–4 | Strict: refuse writing the BOM when any publish workflow failed |
 | `git convoy bom --no-verify` | 3–4 | Skip verify; local workflow heuristic only (Simple mode) |
 | `git convoy train publish` | 4 | Stable tags → registry; then mergeback into `develop` |

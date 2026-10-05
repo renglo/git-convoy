@@ -423,7 +423,19 @@ def _sync(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
 
 
 def _bom(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
+    from gitconvoy.platform_check import check as platform_check
+    from gitconvoy.platform_check import format_check_text
+
     sub = args.bom_cmd
+    if sub == "check":
+        data = platform_check(
+            workspace,
+            state,
+            bom=args.bom,
+            train=getattr(args, "train", None),
+            from_version=getattr(args, "from_version", None),
+        )
+        return data, format_check_text(data)
     production = getattr(args, "production", False)
     if production and sub == "take":
         raise GitConvoyError(
@@ -542,7 +554,7 @@ def _parser() -> argparse.ArgumentParser:
         "-s",
         "--summaries",
         action="store_true",
-        help="Print one-line description after each command",
+        help="Accepted for compatibility. Summaries are always shown.",
     )
     sub.add_parser("status", help="Current feature, ops, train, hotfix, and dirty repos")
 
@@ -846,6 +858,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Promote the current BOM to production",
     )
     bsub = bom.add_subparsers(dest="bom_cmd", required=False)
+    check = bsub.add_parser(
+        "check",
+        help="Print each package against the platform pin, with a status; write nothing",
+    )
+    check.add_argument("--bom", help="BOM repo path (override ops.toml)")
+    check.add_argument("--train", help="Train to check (default: current)")
+    check.add_argument(
+        "--from",
+        dest="from_version",
+        help="System version whose pins are carried forward (default: same as bom)",
+    )
     take = bsub.add_parser(
         "take",
         help="Write a release BOM from the current train (staging)",
@@ -1354,6 +1377,8 @@ def _approve_text(data: dict) -> str:
 
 
 def _adopt_text(data: dict, *, production: bool = False) -> str:
+    from gitconvoy.platform_check import format_warning_lines
+
     mode = data.get("mode") or "draft"
     if production:
         lines = [
@@ -1363,6 +1388,11 @@ def _adopt_text(data: dict, *, production: bool = False) -> str:
         lines = [
             f"adopted {data['version']} from train {data['train']} ({mode})",
         ]
+        if data.get("platform_source") == "renglo-ops" and data.get("platform"):
+            lines.append(
+                f"  platform {data['platform']} from renglo-ops on this train"
+            )
+    lines.extend(format_warning_lines(data.get("platform_warnings") or []))
     publish_ci = _format_publish_ci(data.get("verify"))
     if publish_ci:
         lines.append(publish_ci)
