@@ -10,7 +10,16 @@ from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import Feature, State, save
 from gitconvoy.sync import DevelopSyncEntry, sync_repos_develop
 from gitconvoy import membership
-from gitconvoy.workspace import Repo, feature_repos, is_bom_repo_id, merge_sort
+from gitconvoy.workspace import (
+    Repo,
+    bom_repos,
+    feature_repos,
+    is_bom_repo_id,
+    merge_sort,
+    ops_repos,
+    product_repos,
+    require_repo,
+)
 
 
 def start(workspace: Path, state: State, name: str) -> dict:
@@ -101,13 +110,17 @@ def start(workspace: Path, state: State, name: str) -> dict:
     }
 
 
-def adopt(workspace: Path, state: State) -> dict:
+def adopt(workspace: Path, state: State, repo_ids: list[str] | None = None) -> dict:
     feature = state.require_feature()
     adopted: list[dict] = []
     skipped: list[dict] = []
     dropped: list[dict] = []
     dropped.extend(_drop_non_feature_sheet_repos(workspace, feature))
-    for repo in feature_repos(workspace):
+    if repo_ids:
+        chosen = [_require_product(workspace, repo_id) for repo_id in repo_ids]
+    else:
+        chosen = feature_repos(workspace)
+    for repo in chosen:
         result = _adopt_one(repo, feature)
         if result.get("adopted"):
             feature.add_repo(repo.id, repo.rel)
@@ -132,6 +145,21 @@ def adopt(workspace: Path, state: State) -> dict:
         "dropped": dropped,
         "repo_count": len(feature.repos),
     }
+
+
+def _require_product(workspace: Path, repo_id: str) -> Repo:
+    try:
+        return require_repo(product_repos(workspace), repo_id)
+    except GitConvoyError:
+        if any(row.id == repo_id or row.rel == repo_id for row in ops_repos(workspace)):
+            raise GitConvoyError(
+                f"{repo_id} is an ops repo; feature adopt --repos only takes product ids"
+            ) from None
+        if any(row.id == repo_id or row.rel == repo_id for row in bom_repos(workspace)):
+            raise GitConvoyError(
+                f"{repo_id} is a BOM repo; do not put *-bom on a feature sheet"
+            ) from None
+        raise
 
 
 def _drop_non_feature_sheet_repos(workspace: Path, feature: Feature) -> list[dict]:

@@ -340,19 +340,8 @@ def _targets(
         label = "feature sheet"
         dirty_label = "product"
     products = {repo.id: repo for repo in scan}
-    participant_ids = set(sheet.repo_ids())
-    unadopted: list[str] = []
-    for repo in products.values():
-        if repo.id in participant_ids:
-            continue
-        if gitutil.is_dirty(repo.path):
-            unadopted.append(repo.id)
-    if unadopted:
-        raise GitConvoyError(
-            f"dirty {dirty_label} repos are not on the {label}: "
-            + ", ".join(unadopted)
-            + f". {hint}"
-        )
+    # Dirty repos not on the sheet are allowed (e.g. after feature adopt --repos).
+    # Commit only touches dirty participants on the feature/train/ops branch.
 
     dirty: list[DirtyRepo] = []
     wrong_branch: list[str] = []

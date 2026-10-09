@@ -90,7 +90,12 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
             )
         return data, f"feature {data['feature']} started ({data['branch']})"
     if sub == "adopt":
-        data = feature_cmd.adopt(workspace, state)
+        repos = (
+            [item.strip() for item in args.repos.split(",") if item.strip()]
+            if args.repos
+            else None
+        )
+        data = feature_cmd.adopt(workspace, state, repo_ids=repos)
         names = ", ".join(item["id"] for item in data["adopted"]) or "(none)"
         dropped = ", ".join(item["id"] for item in data.get("dropped") or [])
         text = f"adopted {data['repo_count']} repos: {names}"
@@ -565,7 +570,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Create the feature sheet; pick up existing feature/<name>; otherwise checkout develop",
     )
     start.add_argument("name")
-    fsub.add_parser("adopt", help="Move local changes onto feature/<name>")
+    fadopt = fsub.add_parser(
+        "adopt",
+        help=(
+            "Move local changes onto feature/<name>. "
+            "Default: every dirty product repo; --repos limits which repos move"
+        ),
+    )
+    fadopt.add_argument(
+        "--repos",
+        help="Comma-separated product repo ids (other dirty repos stay on develop)",
+    )
     abandon = fsub.add_parser(
         "abandon",
         help="Drop the feature sheet (does not delete branches or files)",

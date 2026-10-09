@@ -74,9 +74,10 @@ Agents start on `develop`. After you change files:
 
 ```bash
 git convoy --json feature adopt
+git convoy --json feature adopt --repos renglo-lib,renglo-api
 ```
 
-That creates `feature/<name>` only in repos that changed and resets local `develop` if you committed there. Do not commit feature work onto `develop`.
+That creates `feature/<name>` only in repos that changed and resets local `develop` if you committed there. Use `--repos` when several product repos are dirty but this feature should only take some of them; the rest stay on `develop` for another feature. Do not commit feature work onto `develop`.
 
 If `feature/<name>` already exists (you created it, another checkout, or a previous start/adopt), `git convoy --json feature start NAME` checks those branches out and puts them on the sheet **only when they have work** (dirty files on the branch, or commits not in `develop`). Empty leftover branches stay off the sheet. Dirty work already on `feature/<name>` is kept. It still does not create the branch in untouched repos — that is `adopt`. `feature adopt` also drops empty `feature/<name>` participants already on the sheet. Do **not** put `*-bom` on a feature sheet — BOM pins land via `git convoy bom` / `hotfix bom` on `main` (that push deploys).
 

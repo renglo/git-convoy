@@ -228,9 +228,12 @@ Edit code (or let an agent edit). Work happens on `develop`. That is expected.
 
 ```bash
 git convoy feature adopt
+git convoy feature adopt --repos renglo-lib,renglo-api
 ```
 
-For each feature repo that is dirty, has local commits on its integration branch that are not on `origin/<integration>`, or already has `feature/<name>` with unique commits:
+Without `--repos`, every dirty product repo is adopted. With `--repos`, only the listed ids move onto `feature/<name>`; other dirty product repos stay on `develop` so you can start another feature and adopt them there. `feature commit`, `feature prs`, and `feature push` only touch repos on the sheet; other dirty clones do not block them.
+
+For each adopted feature repo that is dirty, has local commits on its integration branch that are not on `origin/<integration>`, or already has `feature/<name>` with unique commits:
 
 - Creates or checks out `feature/<name>`
 - If you committed on `develop` (and did not push it), resets local `develop` to `origin/develop`
@@ -1029,7 +1032,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy sync` | * | Update every clean clone in place; report repos that still need a commit or conflict fix |
 | `git convoy sync develop` | * | Merge stable/`main` into `develop` for **product** repos only (no idle check) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
-| `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
+| `git convoy feature adopt [--repos …]` | 1 | Branch changed product repos onto `feature/NAME`; `--repos` limits which repos move |
 | `git convoy feature abandon` | 1 | Drop the feature sheet (no branch or file deletes) |
 | `git convoy feature commit` | 1 | Commit dirty participants |
 | `git convoy feature push` | 1 | Push `feature/<name>` (no PRs) |

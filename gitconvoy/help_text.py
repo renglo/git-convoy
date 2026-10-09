@@ -102,7 +102,15 @@ HELP_SECTIONS: list[HelpSection] = [
             },
             {
                 "cmd": "git convoy feature adopt",
-                "summary": "Branch dirty product repos onto feature/NAME; reset local develop if you committed there.",
+                "summary": (
+                    "Branch dirty product repos onto feature/NAME; reset local develop if you committed there."
+                ),
+            },
+            {
+                "cmd": "git convoy feature adopt --repos renglo-lib,renglo-api",
+                "summary": (
+                    "Adopt only listed product repos so other dirty clones stay on develop for another feature."
+                ),
             },
             {
                 "cmd": "git convoy feature commit --header \"feat: …\" --header-only",
@@ -451,7 +459,15 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                 },
                 {
                     "cmd": "git convoy feature adopt",
-                    "summary": "Branch dirty product repos onto feature/NAME; reset local develop if you committed there.",
+                    "summary": (
+                        "Branch dirty product repos onto feature/NAME; reset local develop if you committed there."
+                    ),
+                },
+                {
+                    "cmd": "git convoy feature adopt --repos renglo-lib,renglo-api",
+                    "summary": (
+                        "Adopt only listed repos; leave other dirty product repos on develop."
+                    ),
                 },
                 {
                     "cmd": "git convoy feature commit --header \"feat: …\" --header-only",

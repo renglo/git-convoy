@@ -691,7 +691,7 @@ def test_train_commit_ignores_dirty_bom_when_ops_toml_stale(
     assert gitutil.is_dirty(bom)
 
 
-def test_train_commit_refuses_unadopted_dirty(
+def test_train_commit_ignores_dirty_repos_not_on_sheet(
     workspace: Path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(workspace)
@@ -702,11 +702,11 @@ def test_train_commit_refuses_unadopted_dirty(
     (schd / "fix.py").write_text("on train\n")
     (lib / "extra.py").write_text("not on train\n")
     capsys.readouterr()
-    assert main(["--json", "train", "commit"]) == 1
-    err = json.loads(capsys.readouterr().out)
-    assert "not on the train sheet" in err["error"]
-    assert "renglo-lib" in err["error"]
-    assert gitutil.is_dirty(schd)
+    assert main(["--json", "train", "commit", "--header", "fix: schd", "--header-only"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert [row["id"] for row in result["repos"]] == ["schd"]
+    assert not gitutil.is_dirty(schd)
+    assert gitutil.is_dirty(lib)
 
 
 def test_adopt_cli_dirty(workspace: Path, monkeypatch, capsys) -> None:
