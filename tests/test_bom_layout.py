@@ -307,6 +307,7 @@ release:
         )
         placement = load_placement(root)
         self.assertEqual(placement.peers["tourbot"], ("apollo-tourbotlink",))
+        self.assertEqual(placement.hub_python, ("renglo-data",))
         master = {
             "version": "v0.1.1",
             "python": {
@@ -337,6 +338,31 @@ release:
         text = (root / "renglo.yaml").read_text(encoding="utf-8")
         self.assertIn("peers_bom: 0.1.2", text)
         self.assertIn("bom: 0.1.2", text)
+
+    def test_load_placement_resolves_hub_catalog_handles(self) -> None:
+        root = Path(self._tmp()) / "bom"
+        root.mkdir()
+        (root / "renglo.yaml").write_text(
+            """
+name: stanley
+placement:
+  hub:
+  - data
+  - breakdown
+  peers: {}
+packages:
+  data:
+    python: renglo-data
+  breakdown:
+    python: skbrk-breakdown
+release:
+  bom: 0.1.0
+  console: 0.1.0
+""",
+            encoding="utf-8",
+        )
+        placement = load_placement(root)
+        self.assertEqual(placement.hub_python, ("renglo-data", "skbrk-breakdown"))
 
     def _tmp(self) -> str:
         import tempfile

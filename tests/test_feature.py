@@ -10,9 +10,35 @@ from gitconvoy import gitutil
 from gitconvoy.cli import main
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, load, save
-from gitconvoy.workspace import find_workspace
+from gitconvoy import membership
+from gitconvoy.workspace import discover_repos, find_workspace
 
-from conftest import git
+from conftest import git, init_repo
+
+
+def test_adopt_repos_only_moves_listed_dirty_repos(workspace: Path) -> None:
+    feature_cmd.start(workspace, State(), "api-only")
+    schd = workspace / "extensions" / "schd"
+    lib = workspace / "dev" / "renglo-lib"
+    (schd / "handler.py").write_text("print('schd')\n")
+    (lib / "README.md").write_text("lib change\n")
+    data = feature_cmd.adopt(workspace, load(workspace), repo_ids=["renglo-lib"])
+    assert [row["id"] for row in data["adopted"]] == ["renglo-lib"]
+    assert gitutil.current_branch(lib) == "feature/api-only"
+    assert gitutil.current_branch(schd) == "develop"
+    assert gitutil.is_dirty(schd)
+    assert load(workspace).features["api-only"].repo_ids() == ["renglo-lib"]
+
+
+def test_adopt_repos_rejects_ops_id(workspace: Path) -> None:
+    launcher = init_repo(workspace / "ops" / "launcher")
+    (launcher / "gitconvoy.toml").write_text('role = "ops"\n')
+    git(launcher, "add", "gitconvoy.toml")
+    git(launcher, "commit", "-m", "marker")
+    membership.refresh_membership(workspace, discover_repos(workspace))
+    feature_cmd.start(workspace, State(), "x")
+    with pytest.raises(GitConvoyError, match="ops repo"):
+        feature_cmd.adopt(workspace, load(workspace), repo_ids=["launcher"])
 
 
 def test_start_and_adopt_uncommitted(workspace: Path, monkeypatch) -> None:

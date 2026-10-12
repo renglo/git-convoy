@@ -117,12 +117,12 @@ def load_placement(root: Path) -> Placement:
         return Placement()
     text = path.read_text(encoding="utf-8")
     if path.name == "renglo.yaml":
-        return _resolve_peer_python(_placement_from_renglo(text), parse_package_catalog(text))
+        return _resolve_placed_python(_placement_from_renglo(text), parse_package_catalog(text))
     return parse_placement_text(text)
 
 
 def _placement_from_renglo(text: str) -> Placement:
-    """Hub list is python dists. Each peer's ``extensions:`` list is catalog handles."""
+    """Hub and peer ``extensions:`` may use catalog handles or python dist names."""
     hub: list[str] = []
     peers: dict[str, tuple[str, ...]] = {}
     in_placement = False
@@ -185,18 +185,24 @@ def _placement_from_renglo(text: str) -> Placement:
     return Placement(hub_python=tuple(hub), peers=peers)
 
 
-def _resolve_peer_python(
+def _python_dist_for_catalog_name(name: str, by_id: dict[str, str]) -> str:
+    """Catalog slot id or existing python dist -> python dist for BOM pins."""
+    return by_id.get(name) or name
+
+
+def _resolve_placed_python(
     placement: Placement,
     catalog: list[PackageSlot] | None,
 ) -> Placement:
-    """Map a peer's extension handles onto the python dists the peer BOM pins."""
-    if not catalog or not placement.peers:
+    """Map hub and peer names onto python dists the BOM pins."""
+    if not catalog:
         return placement
     by_id = {slot.id: slot.python for slot in catalog if slot.python}
+    hub = tuple(_python_dist_for_catalog_name(name, by_id) for name in placement.hub_python)
     resolved: dict[str, tuple[str, ...]] = {}
     for peer_id, names in placement.peers.items():
-        resolved[peer_id] = tuple(by_id.get(name) or name for name in names)
-    return Placement(hub_python=placement.hub_python, peers=resolved)
+        resolved[peer_id] = tuple(_python_dist_for_catalog_name(name, by_id) for name in names)
+    return Placement(hub_python=hub, peers=resolved)
 
 
 def tenant_wl_dist(catalog: list[PackageSlot] | None) -> str:
