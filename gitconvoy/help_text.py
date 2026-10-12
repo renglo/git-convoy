@@ -140,7 +140,11 @@ HELP_SECTIONS: list[HelpSection] = [
             },
             {
                 "cmd": "git convoy train show",
-                "summary": "Print the train sheet, versions, and tags.",
+                "summary": "Print the train sheet and whether it can still be published.",
+            },
+            {
+                "cmd": "git convoy train unfold",
+                "summary": "Turn a train that can no longer be published into feature/<train>. Then feature refresh and feature prs.",
             },
         ],
     },
@@ -540,12 +544,20 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
                     "summary": "Add late dirty repos to the train without bumping versions.",
                 },
                 {
+                    "cmd": "git convoy train unadopt --repos REPO",
+                    "summary": "Remove a repo from the train. Merge its release-branch work into develop. Removing renglo-ops restores the other packages' platform declarations.",
+                },
+                {
                     "cmd": "git convoy train commit --header \"fix: …\" --header-only",
                     "summary": "Commit dirty train participants.",
                 },
                 {
                     "cmd": "git convoy train show",
-                    "summary": "Inspect train participants and version targets.",
+                    "summary": "Inspect participants, version targets, and whether the train can still be published.",
+                },
+                {
+                    "cmd": "git convoy train unfold",
+                    "summary": "Retire a non-viable train as feature/<train>. Refresh from develop, resolve conflicts, then open PRs.",
                 },
             ],
         },

@@ -259,6 +259,17 @@ def write_version(
     return changed
 
 
+def apply_platform_declaration(text: str, rel: str, platform: str) -> str:
+    """Set the platform in a version file. An empty ``platform`` removes it."""
+    if rel.endswith(".json"):
+        if platform:
+            return set_package_json_platform(text, platform)
+        return clear_package_json_platform(text)
+    if platform:
+        return set_pyproject_platform(text, platform)
+    return clear_pyproject_platform(text)
+
+
 def set_pyproject_platform(text: str, platform: str) -> str:
     """Set ``[tool.renglo] platform`` without touching the package version."""
     section = re.search(r"(?ms)^\[tool\.renglo\][^\n]*\n(.*?)(?=^\[|\Z)", text)
@@ -277,6 +288,29 @@ def set_pyproject_platform(text: str, platform: str) -> str:
     if text and not text.endswith("\n"):
         text += "\n"
     return text + f"\n[tool.renglo]\n{assignment}\n"
+
+
+def clear_pyproject_platform(text: str) -> str:
+    """Remove ``[tool.renglo] platform``. Drop the section when it becomes empty."""
+    section = re.search(r"(?ms)^\[tool\.renglo\][^\n]*\n(.*?)(?=^\[|\Z)", text)
+    if not section:
+        return text
+    body = section.group(1)
+    new_body, count = re.subn(
+        r"""(?m)^platform\s*=\s*(['"])[^'"]+\1[ \t]*\n?""",
+        "",
+        body,
+        count=1,
+    )
+    if not count:
+        return text
+    if new_body.strip():
+        return text[: section.start(1)] + new_body + text[section.end(1) :]
+    start = section.start()
+    end = section.end()
+    if text[:start].endswith("\n\n"):
+        start -= 1
+    return text[:start] + text[end:]
 
 
 def set_package_json_platform(text: str, platform: str) -> str:
@@ -299,6 +333,37 @@ def set_package_json_platform(text: str, platform: str) -> str:
         return text
     inserted = f'  "renglo": {{\n    "platform": "{platform}"\n  }},\n'
     return text[: version_line.end()] + inserted + text[version_line.end() :]
+
+
+def clear_package_json_platform(text: str) -> str:
+    """Remove ``renglo.platform``. Drop ``renglo`` when platform was its only key."""
+    block = re.search(r'"renglo"\s*:\s*\{(.*?)\}', text, re.S)
+    if not block:
+        return text
+    body = block.group(1)
+    if not re.search(r'"platform"\s*:', body):
+        return text
+    without = re.sub(
+        r'\s*"platform"\s*:\s*"[^"]*"\s*,?',
+        "",
+        body,
+        count=1,
+    )
+    if without.strip():
+        without = re.sub(r",(\s*)$", r"\1", without, count=1)
+        return text[: block.start(1)] + without + text[block.end(1) :]
+    start, end = block.span()
+    tail = re.match(r"\s*,", text[end:])
+    if tail:
+        end += tail.end()
+    prefix = re.search(r"\n[ \t]*$", text[:start])
+    if prefix is not None and tail:
+        start = prefix.start()
+    elif prefix is not None:
+        comma = re.search(r",\s*$", text[: prefix.start()])
+        if comma:
+            start = comma.start()
+    return text[:start] + text[end:]
 
 
 def _stable_platform(version: str) -> str:

@@ -197,11 +197,6 @@ def test_take_updates_bom_repo_shas(tmp_path: Path) -> None:
     (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
     (tmp_path / "extensions").mkdir(exist_ok=True)
     pes = init_repo(tmp_path / "extensions" / "pes")
-    subprocess.run(
-        ["git", "-C", str(pes), "remote", "add", "origin", "git@github.com:renglo/pes.git"],
-        check=True,
-        capture_output=True,
-    )
     git(pes, "checkout", "-b", "release/2026-W34")
     git(pes, "commit", "--allow-empty", "-m", "train cut")
     tagged = git(pes, "rev-parse", "HEAD").stdout.strip()

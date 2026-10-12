@@ -38,7 +38,8 @@ git convoy --json hotfix show
 git convoy --json feature commit
 ```
 
-- "What's on the current train?" → `git convoy --json train show`
+- "What's on the current train?" → `git convoy --json train show` (`viable`, and `viability` when the aspirational tag, `main`, or the rc series belongs to another line)
+- "This train cannot be published" → `train tag-rc` and `bom` refuse the same check. `git convoy train unfold`, then `feature refresh`, resolve, `feature refresh`, `feature prs`
 - "Catch up after time away / put me on develop?" → `git convoy --json sync`
 - "How many repos is this feature touching?" → `git convoy --json feature show` (`repo_count`)
 - "Which feature am I on?" → `git convoy --json status`

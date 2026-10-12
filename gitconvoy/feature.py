@@ -452,6 +452,7 @@ def push(workspace: Path, state: State) -> dict:
 
 def prs(workspace: Path, state: State, use_gh: bool = True) -> dict:
     feature = state.require_feature()
+    _refuse_unfolded_without_develop(workspace, feature)
     branch = feature.branch
     entries = [
         DevelopSyncEntry(id=repo_row.id, rel=repo_row.path)
@@ -912,6 +913,28 @@ def _gh_create_pr(repo: Path, feature: Feature, slug: str) -> str | None:
     if created.returncode != 0:
         return None
     return (created.stdout or "").strip() or None
+
+
+def _refuse_unfolded_without_develop(workspace: Path, feature) -> None:
+    """An unfolded train still has to absorb develop before anyone opens PRs."""
+    if not feature.unfolded_from:
+        return
+    missing: list[str] = []
+    for row in feature.repos:
+        repo = workspace / row.path
+        integration = gitutil.integration_branch(repo)
+        remote = f"origin/{integration}"
+        ref = remote if gitutil.rev_parse(repo, remote) else integration
+        if not gitutil.rev_parse(repo, ref) or not gitutil.is_ancestor(
+            repo, ref, feature.branch
+        ):
+            missing.append(row.id)
+    if missing:
+        raise GitConvoyError(
+            f"feature {feature.name} does not contain the integration branch in: "
+            + ", ".join(missing)
+            + ". run: git convoy feature refresh"
+        )
 
 
 def _slug(name: str) -> str:

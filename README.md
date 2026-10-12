@@ -399,6 +399,37 @@ git convoy train adopt --repos console,lab
 
 Creates or checks out `release/<name>` from the current integration branch and adds the repo to the train sheet. Refuses dirty work on `feature/*` (or any other branch). Ignores ops and BOM.
 
+To take a repo back off the train before `tag-rc`, without discarding work that landed on the release branch:
+
+```bash
+git convoy train unadopt --repos renglo-ops
+```
+
+Commits on `release/<train>` other than the automatic version bump are merged into `develop`. The version bump is left behind, the local release branch is deleted, and the repo drops off the sheet. Uncommitted files must be committed or stashed first. A copy of the release branch that was already pushed stays on `origin` until you delete it.
+
+### When the train is no longer viable
+
+`git convoy train show` tells you. A release manager does not need to know which other project moved. For each participant, the check looks at three things:
+
+1. **The stable tag this train would publish is already taken**, and that tag does not point at this release branch. The sheet names the commit, its subject, and the branches that contain it (`origin/main`, `origin/release/<other>`), including the other train name when the subject or the branch says so.
+2. **`main` has commits this release does not contain.** Publishing would merge this branch into that `main`.
+3. **An rc tag for the same version points at someone else’s commit.** You are sharing the rc series with another line.
+
+Any one of those means the train cannot continue. `train tag-rc`, `git convoy bom`, and `train publish` run this check first and refuse.
+
+Keep the patches by turning the train into a feature. This does not merge `develop` into the release branch.
+
+```bash
+git convoy train unfold
+git convoy feature refresh
+# resolve conflicts, then feature refresh again
+git convoy feature prs
+```
+
+`unfold` creates `feature/<train>` at the release tip, puts the version numbers back to `develop`, and retires the train sheet so publish cannot run. The release branches and existing rc tags stay. `feature prs` refuses until `feature refresh` has brought the integration branch into that feature. After the PRs merge, cut a new train. `tag-rc` starts at the next free patch when `vX.Y.Z` already exists.
+
+Removing `renglo-ops` also puts the other packages back to the platform they declared before the cut. Cut stamps renglo-ops's next version into `[tool.renglo] platform` and `package.json` `renglo.platform`. Once renglo-ops leaves, those files on the repos that stay are committed back to the integration-branch value. A repo removed in the same command gets the same restore on `develop` when its release-branch work is merged.
+
 Commit stabilize work through convoy — do not leave the tool to guess which repos are dirty:
 
 ```bash
@@ -1053,8 +1084,10 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy ops close` | * | After merge to develop: checkout develop; remove ops branches |
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
 | `git convoy train adopt [--repos …]` | 2 | Late-join dirty (or named) product repos; no version bump |
+| `git convoy train unadopt --repos …` | 2 | Remove repos from the train; merge their release-branch work into develop |
 | `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/ops commit) |
-| `git convoy train show [NAME]` | 2 | Read train sheet |
+| `git convoy train show [NAME]` | 2 | Train sheet, plus whether the aspirational tags, `main`, or the rc series still belong to this release |
+| `git convoy train unfold` | 2 | Turn a train that can no longer be published into `feature/<train>`; then `feature refresh` and `feature prs` |
 | `git convoy train close` | 2, 4 | Delete merged `release/<train>` branches only; refuse dirty or unique commits |
 | `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |

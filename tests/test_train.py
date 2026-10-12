@@ -388,7 +388,9 @@ def test_mergeback_heals_non_participant_repo(
     assert gitutil.is_ancestor(data_repo, "v2.0.0", "develop")
 
 
-def test_tag_rc_syncs_develop_before_tagging(workspace: Path, monkeypatch) -> None:
+def test_tag_rc_refuses_before_tagging_when_main_diverged(
+    workspace: Path, monkeypatch
+) -> None:
     monkeypatch.chdir(workspace)
     state = State()
     train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
@@ -402,11 +404,10 @@ def test_tag_rc_syncs_develop_before_tagging(workspace: Path, monkeypatch) -> No
     git(schd, "tag", "v2.0.0")
     before = gitutil.rev_parse(schd, "develop")
     assert not gitutil.is_ancestor(schd, "v2.0.0", "develop")
-    data = train_cmd.tag_rc(workspace, state, push=False)
-    assert data["develop_sync"]["ok"] is True
-    assert gitutil.is_ancestor(schd, "v2.0.0", "develop")
-    assert gitutil.current_branch(schd) == "release/2026-08-31"
-    assert gitutil.rev_parse(schd, "develop") != before
+    with pytest.raises(GitConvoyError, match="not viable"):
+        train_cmd.tag_rc(workspace, state, push=False)
+    assert gitutil.rev_parse(schd, "develop") == before
+    assert not gitutil.is_ancestor(schd, "v2.0.0", "develop")
 
 
 def test_tag_rc_again_bumps_rc_suffix(workspace: Path, monkeypatch) -> None:
@@ -721,3 +722,342 @@ def test_adopt_cli_dirty(workspace: Path, monkeypatch, capsys) -> None:
     assert payload["ok"] is True
     assert {row["id"] for row in payload["adopted"]} == {"renglo-lib"}
     assert gitutil.current_branch(lib) == "release/2026-09-03"
+
+
+def test_unadopt_drops_a_version_bump_without_touching_develop(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["renglo-lib"])
+    lib = workspace / "dev" / "renglo-lib"
+    data = train_cmd.unadopt(workspace, state, ["renglo-lib"])
+    assert data["repo_count"] == 0
+    assert "renglo-lib" not in state.require_train().repo_ids()
+    assert gitutil.current_branch(lib) == "develop"
+    assert not gitutil.has_local_branch(lib, "release/2026-10-06")
+    assert 'version = "1.0.0"' in (lib / "pyproject.toml").read_text()
+    log = git(lib, "log", "--format=%s", "develop").stdout
+    assert "Set 1.0.1rc1 for train 2026-10-06" not in log
+    assert data["removed"][0]["merged_commits"] == 0
+
+
+def test_unadopt_merges_release_work_and_restores_version(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["renglo-lib"])
+    lib = workspace / "dev" / "renglo-lib"
+    (lib / "fix.py").write_text("kept\n")
+    git(lib, "add", "-A")
+    git(lib, "commit", "-m", "fix on the train")
+    data = train_cmd.unadopt(workspace, state, ["renglo-lib"])
+    assert gitutil.current_branch(lib) == "develop"
+    assert (lib / "fix.py").read_text() == "kept\n"
+    assert 'version = "1.0.0"' in (lib / "pyproject.toml").read_text()
+    log = git(lib, "log", "--format=%s", "develop").stdout
+    assert "fix on the train" in log
+    assert "Restore version after leaving train 2026-10-06" in log
+    assert data["removed"][0]["merged_commits"] == 1
+    assert not gitutil.has_local_branch(lib, "release/2026-10-06")
+
+
+def test_unadopt_refuses_dirty_and_keeps_the_repo(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["renglo-lib"])
+    lib = workspace / "dev" / "renglo-lib"
+    (lib / "wip.py").write_text("x\n")
+    with pytest.raises(GitConvoyError, match="dirty"):
+        train_cmd.unadopt(workspace, state, ["renglo-lib"])
+    assert "renglo-lib" in state.require_train().repo_ids()
+    assert gitutil.has_local_branch(lib, "release/2026-10-06")
+
+
+def test_unadopt_leaves_the_other_participants(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06")
+    train_cmd.unadopt(workspace, state, ["renglo-lib"])
+    assert state.require_train().repo_ids() == ["schd"]
+    schd = workspace / "extensions" / "schd"
+    assert gitutil.current_branch(schd) == "release/2026-10-06"
+
+
+def test_unadopt_cli(workspace: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["renglo-lib"])
+    capsys.readouterr()
+    assert main(["train", "unadopt", "--repos", "renglo-lib"]) == 0
+    out = capsys.readouterr().out
+    assert "unadopted 1 repos from train 2026-10-06" in out
+    assert "renglo-lib" in out
+    assert "no code beyond the version bump" in out
+
+
+def _declare_platform(repo: Path, platform: str | None) -> None:
+    text = (repo / "pyproject.toml").read_text()
+    if platform:
+        if not text.endswith("\n"):
+            text += "\n"
+        text += f'\n[tool.renglo]\nplatform = "{platform}"\n'
+        (repo / "pyproject.toml").write_text(text)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "declare platform")
+
+
+def _renglo_ops(workspace: Path) -> Path:
+    ops = init_repo(workspace / "ops" / "renglo-ops")
+    text = (ops / "pyproject.toml").read_text().replace(
+        'version = "1.0.0"', 'version = "0.1.5"'
+    )
+    (ops / "pyproject.toml").write_text(text)
+    git(ops, "add", "-A")
+    git(ops, "commit", "-m", "ops version")
+    return ops
+
+
+def test_unadopt_renglo_ops_restores_package_platforms(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    lib = workspace / "dev" / "renglo-lib"
+    schd = workspace / "extensions" / "schd"
+    _declare_platform(lib, "0.1.5")
+    (schd / "package.json").write_text(
+        '{\n  "name": "@renglo/schd",\n  "version": "1.0.0",\n'
+        '  "renglo": {\n    "platform": "0.1.5"\n  }\n}\n'
+    )
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "declare npm platform")
+    _renglo_ops(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06")
+    assert 'platform = "0.1.6"' in (lib / "pyproject.toml").read_text()
+    assert 'version = "1.0.1rc1"' in (lib / "pyproject.toml").read_text()
+    assert '"platform": "0.1.6"' in (schd / "package.json").read_text()
+    assert "[tool.renglo]" not in git(schd, "show", "develop:pyproject.toml").stdout
+
+    data = train_cmd.unadopt(workspace, state, ["renglo-ops"])
+    assert "renglo-ops" not in state.require_train().repo_ids()
+    assert sorted(state.require_train().repo_ids()) == ["renglo-lib", "schd"]
+    lib_text = (lib / "pyproject.toml").read_text()
+    assert 'platform = "0.1.5"' in lib_text
+    assert 'version = "1.0.1rc1"' in lib_text
+    assert gitutil.current_branch(lib) == "release/2026-10-06"
+    schd_py = (schd / "pyproject.toml").read_text()
+    assert "[tool.renglo]" not in schd_py
+    assert 'version = "1.0.1rc1"' in schd_py
+    schd_npm = (schd / "package.json").read_text()
+    assert '"platform": "0.1.5"' in schd_npm
+    assert '"version": "1.0.1-rc.1"' in schd_npm
+    restored = {row["id"]: row["platform"] for row in data["platform_restored"]}
+    assert restored["renglo-lib"] == "0.1.5"
+    assert restored["schd"] == "0.1.5"
+    lib_log = git(lib, "log", "--format=%s").stdout
+    assert "Restore platform after renglo-ops left train 2026-10-06" in lib_log
+    develop_log = git(lib, "log", "--format=%s", "develop").stdout
+    assert "Restore platform after renglo-ops left train 2026-10-06" not in develop_log
+
+
+def test_unadopt_renglo_ops_refuses_dirty_sibling(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    lib = workspace / "dev" / "renglo-lib"
+    _declare_platform(lib, "0.1.5")
+    _renglo_ops(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["renglo-lib", "renglo-ops"])
+    (lib / "wip.py").write_text("x\n")
+    with pytest.raises(GitConvoyError, match="dirty"):
+        train_cmd.unadopt(workspace, state, ["renglo-ops"])
+    assert "renglo-ops" in state.require_train().repo_ids()
+    assert 'platform = "0.1.6"' in (lib / "pyproject.toml").read_text()
+
+
+def test_unadopt_other_repo_keeps_platform_while_renglo_ops_stays(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    lib = workspace / "dev" / "renglo-lib"
+    schd = workspace / "extensions" / "schd"
+    _declare_platform(lib, "0.1.5")
+    _declare_platform(schd, "0.1.5")
+    _renglo_ops(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["renglo-lib", "schd", "renglo-ops"])
+    train_cmd.unadopt(workspace, state, ["renglo-lib"])
+    assert "renglo-ops" in state.require_train().repo_ids()
+    assert 'platform = "0.1.6"' in (schd / "pyproject.toml").read_text()
+    assert 'platform = "0.1.5"' in git(lib, "show", "develop:pyproject.toml").stdout
+
+
+def test_unadopt_renglo_ops_restores_platform_on_merged_leaver(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    lib = workspace / "dev" / "renglo-lib"
+    schd = workspace / "extensions" / "schd"
+    _declare_platform(lib, "0.1.5")
+    _declare_platform(schd, "0.1.5")
+    _renglo_ops(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["renglo-lib", "schd", "renglo-ops"])
+    (lib / "fix.py").write_text("kept\n")
+    git(lib, "add", "-A")
+    git(lib, "commit", "-m", "fix on the train")
+    data = train_cmd.unadopt(workspace, state, ["renglo-ops", "renglo-lib"])
+    assert gitutil.current_branch(lib) == "develop"
+    assert (lib / "fix.py").read_text() == "kept\n"
+    lib_text = (lib / "pyproject.toml").read_text()
+    assert 'version = "1.0.0"' in lib_text
+    assert 'platform = "0.1.5"' in lib_text
+    removed = {row["id"]: row for row in data["removed"]}
+    assert removed["renglo-lib"]["platform_restore"] == "0.1.5"
+    assert 'platform = "0.1.5"' in (schd / "pyproject.toml").read_text()
+    assert 'version = "1.0.1rc1"' in (schd / "pyproject.toml").read_text()
+    assert gitutil.current_branch(schd) == "release/2026-10-06"
+
+
+def test_unadopt_after_platform_restore_does_not_merge_version_bump(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    lib = workspace / "dev" / "renglo-lib"
+    _declare_platform(lib, "0.1.5")
+    _renglo_ops(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["renglo-lib", "renglo-ops"])
+    train_cmd.unadopt(workspace, state, ["renglo-ops"])
+    train_cmd.unadopt(workspace, state, ["renglo-lib"])
+    assert gitutil.current_branch(lib) == "develop"
+    text = (lib / "pyproject.toml").read_text()
+    assert 'version = "1.0.0"' in text
+    assert 'platform = "0.1.5"' in text
+    log = git(lib, "log", "--format=%s", "develop").stdout
+    assert "Set 1.0.1rc1 for train 2026-10-06" not in log
+    assert "Restore platform after renglo-ops left train 2026-10-06" not in log
+
+
+def test_show_marks_a_fresh_cut_viable(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["schd"])
+    data = train_cmd.show(workspace, load(workspace))
+    assert data["viable"] is True
+    assert data["viability"]["repos"] == []
+
+
+def test_show_names_a_stable_tag_taken_by_another_line(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["schd"])
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "main")
+    git(schd, "commit", "--allow-empty", "-m", "Release 1.0.1")
+    git(schd, "tag", "v1.0.1")
+    git(schd, "checkout", "-b", "release/2026-10-09")
+    data = train_cmd.show(workspace, load(workspace))
+    assert data["viable"] is False
+    findings = data["viability"]["repos"][0]["findings"]
+    taken = next(row for row in findings if row["kind"] == "stable-taken")
+    assert taken["tag"] == "v1.0.1"
+    assert taken["subject"] == "Release 1.0.1"
+    assert "main" in taken["on"]
+    assert "release/2026-10-09" in taken["on"]
+    with pytest.raises(GitConvoyError, match="not viable"):
+        train_cmd.publish(workspace, load(workspace), push=False)
+    with pytest.raises(GitConvoyError, match="not viable"):
+        train_cmd.tag_rc(workspace, load(workspace), push=False)
+
+
+def test_rc_tag_on_another_train_blocks_tag_rc(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["schd"])
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "main")
+    git(schd, "checkout", "-b", "release/2026-10-09")
+    git(schd, "commit", "--allow-empty", "-m", "Set 1.0.1rc5 for train 2026-10-09")
+    git(schd, "tag", "v1.0.1-rc.5")
+    data = train_cmd.viability(workspace, load(workspace))
+    findings = data["repos"][0]["findings"]
+    contest = next(row for row in findings if row["kind"] == "rc-contest")
+    assert contest["tag"] == "v1.0.1-rc.5"
+    assert contest["train"] == "2026-10-09"
+    with pytest.raises(GitConvoyError, match="rc tag"):
+        train_cmd.tag_rc(workspace, load(workspace), push=False)
+
+
+def test_own_rc_tags_are_not_a_contest(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["schd"])
+    train_cmd.tag_rc(workspace, state, push=False)
+    data = train_cmd.viability(workspace, load(workspace))
+    assert data["viable"] is True
+
+
+def test_main_divergence_blocks_tag_rc_and_publish(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["schd"])
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "main")
+    git(schd, "commit", "--allow-empty", "-m", "hotfix on main")
+    data = train_cmd.show(workspace, load(workspace))
+    assert data["viable"] is False
+    kinds = {row["kind"] for row in data["viability"]["repos"][0]["findings"]}
+    assert kinds == {"main-diverged"}
+    with pytest.raises(GitConvoyError, match="not viable"):
+        train_cmd.publish(workspace, load(workspace), push=False)
+    with pytest.raises(GitConvoyError, match="not viable"):
+        train_cmd.tag_rc(workspace, load(workspace), push=False)
+    from gitconvoy import adopt as adopt_cmd
+
+    with pytest.raises(GitConvoyError, match="not viable"):
+        adopt_cmd.take(workspace, load(workspace))
+
+
+def test_unfold_becomes_a_feature_and_prs_wait_for_refresh(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    from gitconvoy import feature as feature_cmd
+
+    state = State()
+    train_cmd.cut(workspace, state, "2026-10-06", repo_ids=["schd"])
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "release/2026-10-06")
+    (schd / "fix.py").write_text("print('keep')\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "Add async ingress")
+    data = train_cmd.unfold(workspace, load(workspace))
+    assert data["branch"] == "feature/2026-10-06"
+    assert gitutil.current_branch(schd) == "feature/2026-10-06"
+    assert "print('keep')" in (schd / "fix.py").read_text()
+    assert 'version = "1.0.0"' in (schd / "pyproject.toml").read_text()
+    assert gitutil.has_local_branch(schd, "release/2026-10-06")
+    saved = load(workspace)
+    assert saved.current_train is None
+    assert saved.current_feature == "2026-10-06"
+    assert saved.features["2026-10-06"].unfolded_from == "2026-10-06"
+    assert saved.trains["2026-10-06"].status == "unfolded"
+    git(schd, "checkout", "develop")
+    git(schd, "commit", "--allow-empty", "-m", "later on develop")
+    with pytest.raises(GitConvoyError, match="feature refresh"):
+        feature_cmd.prs(workspace, load(workspace), use_gh=False)
+    git(schd, "checkout", "feature/2026-10-06")
+    git(schd, "merge", "--no-edit", "develop")
+    monkeypatch.setattr(feature_cmd, "_push_feature_branches", lambda _w, _f: [])
+    opened = feature_cmd.prs(workspace, load(workspace), use_gh=False)
+    assert opened["ok"] is True

@@ -319,6 +319,9 @@ def take(
     no_verify: bool = False,
 ) -> dict:
     train_obj = state.require_train(train)
+    from gitconvoy.train import _refuse_unviable
+
+    _refuse_unviable(workspace, state, train_obj)
     verify_by_repo, verify_summary = _adopt_verify_context(
         workspace,
         state,
