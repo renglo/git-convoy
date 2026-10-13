@@ -224,9 +224,9 @@ accounts:
         self.assertEqual(_pointed_version(root, prefer_staging=True), "0.1.2")
         self.assertEqual(_pointed_version(root), "0.1.1")
         staged = point(root, "0.1.2", bom=str(root))
-        self.assertTrue(staged["production_enabled"])
+        self.assertFalse(staged["production_enabled"])
         self.assertIn("production pins were left in place", staged["note"])
-        self.assertIn("enabled: true", (root / "renglo.yaml").read_text(encoding="utf-8"))
+        self.assertIn("enabled: false", (root / "renglo.yaml").read_text(encoding="utf-8"))
 
         sync_deploy_target_versions(root, "v0.1.3")
         text = (root / "renglo.yaml").read_text(encoding="utf-8")

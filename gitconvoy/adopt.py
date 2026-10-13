@@ -251,12 +251,16 @@ def point(
     number = version.lstrip("v")
     if targets.name == "renglo.yaml" and hotfix:
         sync_deploy_target_versions(root, version)
+        _set_production_enabled(root, False)
         return {
             "ok": True,
             "file": str(targets),
             "bom": number,
-            "production_enabled": _production_enabled(root),
-            "note": "updated production pins. staging block, if any, was left in place.",
+            "production_enabled": False,
+            "note": (
+                "updated production pins. staging block, if any, was left in place. "
+                "production.enabled stays false until bom --production."
+            ),
         }
     if targets.name == "renglo.yaml" and not production:
         sync_staging_pins(
@@ -264,40 +268,34 @@ def point(
             version,
             platform=load_staging_platform(root) or load_platform(root),
         )
+        _set_production_enabled(root, False)
         return {
             "ok": True,
             "file": str(targets),
             "bom": number,
-            "production_enabled": _production_enabled(root),
-            "note": "staging pins updated. production pins were left in place.",
+            "production_enabled": False,
+            "note": (
+                "staging pins updated. production pins were left in place. "
+                "production.enabled stays false until bom --production."
+            ),
         }
     if targets.name == "renglo.yaml" and production:
         if not promote_staging_pins(root):
             sync_deploy_target_versions(root, version)
-    enabled = "true" if production else "false"
-    text = targets.read_text()
-    if targets.name != "renglo.yaml":
+    elif targets.name != "renglo.yaml":
         if _uses_three_bom_layout(root):
             sync_deploy_target_versions(root, version)
-            text = targets.read_text()
         else:
             text, n = re.subn(
                 r"(?m)^bom:\s+\S+",
                 f"bom: {number}",
-                text,
+                targets.read_text(),
                 count=1,
             )
             if n != 1:
                 raise GitConvoyError("could not update bom: in deploy_targets.yml")
-    text, n = re.subn(
-        r"(?m)^(\s+production:\n(?:[ \t].*\n)*?[ \t]+enabled:\s+)\S+",
-        rf"\g<1>{enabled}",
-        text,
-        count=1,
-    )
-    if n != 1:
-        raise GitConvoyError(f"could not update production.enabled in {targets.name}")
-    targets.write_text(text)
+            targets.write_text(text)
+    _set_production_enabled(root, production)
     return {
         "ok": True,
         "file": str(targets),
@@ -659,6 +657,21 @@ def _production_enabled(root: Path) -> bool:
         targets.read_text(),
     )
     return bool(match and match.group(1).lower() == "true")
+
+
+def _set_production_enabled(root: Path, enabled: bool) -> None:
+    """Turn production deploys on only for a final-tag promotion."""
+    targets = tenant_config_path(root)
+    flag = "true" if enabled else "false"
+    text, n = re.subn(
+        r"(?m)^(\s+production:\n(?:[ \t].*\n)*?[ \t]+enabled:\s+)\S+",
+        rf"\g<1>{flag}",
+        targets.read_text(),
+        count=1,
+    )
+    if n != 1:
+        raise GitConvoyError(f"could not update production.enabled in {targets.name}")
+    targets.write_text(text)
 
 
 def _production_description(train: str) -> str:
