@@ -10,6 +10,8 @@ from gitconvoy import membership
 from gitconvoy.state import STATE_DIRNAME, state_path
 
 SCAN_ROOTS = ("console", "dev", "extensions", "ops")
+# Workspace-root siblings that are containers, not single-repo clones.
+ROOT_CONTAINER_NAMES = frozenset(SCAN_ROOTS)
 SKIP_DIR_NAMES = {
     ".git",
     ".gitconvoy",
@@ -116,6 +118,28 @@ def discover_repos(workspace: Path) -> list[Repo]:
                     kind=kind,
                 )
             )
+    for child in sorted(workspace.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name in ROOT_CONTAINER_NAMES or child.name in SKIP_DIR_NAMES:
+            continue
+        if not is_git_repo(child):
+            continue
+        resolved = child.resolve()
+        if resolved in seen:
+            continue
+        role = membership.repo_role_if_valid(child)
+        if role != "ops":
+            continue
+        seen.add(resolved)
+        found.append(
+            Repo(
+                id=child.name,
+                path=resolved,
+                rel=str(child.relative_to(workspace)),
+                kind="ops",
+            )
+        )
     return found
 
 
