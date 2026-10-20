@@ -904,7 +904,28 @@ def _repo_path_by_id(workspace: Path, repo_id: str) -> Path | None:
     return None
 
 
-def _stable_pep_npm(workspace: Path, repo_id: str) -> tuple[str, str] | None:
+def _train_owned_packages(
+    workspace: Path,
+    train: Train,
+    bom_data: dict,
+    catalog: list[PackageSlot] | None,
+) -> set[tuple[str, str]]:
+    """Packages whose pin this train already chose."""
+    owned: set[tuple[str, str]] = set()
+    for repo in train.repos:
+        for section, package in _package_targets(repo, bom_data, workspace, catalog):
+            owned.add((section, package))
+    return owned
+
+
+def _environment_version(
+    workspace: Path,
+    repo_id: str | None,
+    section: str,
+) -> str | None:
+    """Latest stable version in the local clone. Rc tags are not stable."""
+    if not repo_id:
+        return None
     repo_path = _repo_path_by_id(workspace, repo_id)
     if repo_path is None:
         return None
@@ -912,19 +933,64 @@ def _stable_pep_npm(workspace: Path, repo_id: str) -> tuple[str, str] | None:
     if not tag:
         return None
     info = versions.read_version_at_ref(repo_path, tag)
-    pep = str(info.get("python") or "").strip()
-    npm = str(info.get("npm") or "").strip()
-    if pep:
-        try:
-            return versions.drop_rc(pep)
-        except GitConvoyError:
-            return pep, npm
-    if npm:
-        try:
-            return versions.drop_rc(npm)
-        except GitConvoyError:
-            return npm, npm
-    return None
+    key = "python" if section == "python" else "npm"
+    raw = str(info.get(key) or "").strip()
+    if not raw:
+        return None
+    try:
+        pep, npm = versions.drop_rc(raw)
+    except GitConvoyError:
+        return raw
+    return pep if section == "python" else npm
+
+
+def _off_train_placement_pin(
+    *,
+    workspace: Path,
+    bom_data: dict,
+    section: str,
+    package: str,
+    repo_id: str | None,
+    previous_pin: str,
+    train_owned: set[tuple[str, str]],
+    from_version: str,
+) -> dict | None:
+    """Pin a package the train did not touch from the local stable tag.
+
+    The previous BOM is only the fallback when this workspace has no stable tag
+    for that repo. A copied pin is replaced when the local stable tag differs.
+    """
+    if (section, package) in train_owned:
+        return None
+    live = bom_data.get(section)
+    live_pin = str(live.get(package) or "").strip() if isinstance(live, dict) else ""
+    environment = _environment_version(workspace, repo_id, section)
+    if environment:
+        if live_pin == environment:
+            return None
+        chosen = environment
+        kind = "stable"
+    elif live_pin:
+        return None
+    else:
+        chosen = previous_pin
+        kind = "carried"
+        if not chosen:
+            where = f"bom {_strip_v(from_version)}" if from_version else "previous BOM"
+            raise GitConvoyError(
+                f"placement requires {section} package {package!r}, but it is not pinned "
+                f"and could not be resolved from {where} or a stable tag"
+                + (f" (repo {repo_id!r})" if repo_id else "")
+            )
+    bom_data.setdefault(section, {})[package] = chosen
+    return {
+        "section": section,
+        "package": package,
+        "pin": chosen,
+        "kind": kind,
+        "action": "placement",
+        **({"id": repo_id} if repo_id else {}),
+    }
 
 
 def _ensure_placement_pins(
@@ -937,81 +1003,60 @@ def _ensure_placement_pins(
     catalog: list[PackageSlot] | None,
     placement,
 ) -> list[dict]:
-    """Guarantee every placement dist/npm has a pin (train updates; others carry or stable)."""
+    """Fill pins the train did not set.
+
+    Train repos keep the version from the train sheet. Every other package uses
+    the latest stable tag in the local clone. The previous BOM pin is kept only
+    when that clone has no stable tag. Placement still requires hub and peer
+    packages even when the previous BOM omitted them.
+    """
     del version  # bom_data is the working master; split happens later.
-    if not placement.hub_python and not placement.peers:
-        return []
-    required_python, required_npm = required_master_pins(placement, catalog)
+    if placement.hub_python or placement.peers:
+        required_python, required_npm = required_master_pins(placement, catalog)
+    else:
+        required_python, required_npm = set(), set()
+    live_py = bom_data.get("python") if isinstance(bom_data.get("python"), dict) else {}
+    live_npm = bom_data.get("npm") if isinstance(bom_data.get("npm"), dict) else {}
+    python_names = set(required_python) | set(live_py)
+    npm_names = set(required_npm) | set(live_npm)
     previous = _master_at_version(root, from_version)
+    train_owned = _train_owned_packages(workspace, train, bom_data, catalog)
     pinned: list[dict] = []
 
     prev_py = previous.get("python") if isinstance(previous.get("python"), dict) else {}
     prev_npm = previous.get("npm") if isinstance(previous.get("npm"), dict) else {}
 
-    for dist in sorted(required_python):
-        live = bom_data.get("python")
-        if isinstance(live, dict) and str(live.get(dist) or "").strip():
-            continue
-        pin = str(prev_py.get(dist) or "").strip()
-        kind = "carried"
-        repo_id = _repo_id_for_python_dist(dist, catalog)
-        if not pin:
-            stable = _stable_pep_npm(workspace, repo_id) if repo_id else None
-            if stable:
-                pin = stable[0]
-                kind = "stable"
-        if not pin:
-            where = f"bom {_strip_v(from_version)}" if from_version else "previous BOM"
-            raise GitConvoyError(
-                f"placement requires python package {dist!r}, but it is not pinned "
-                f"and could not be resolved from {where} or a stable tag"
-                + (f" (repo {repo_id!r})" if repo_id else "")
-            )
-        bom_data.setdefault("python", {})[dist] = pin
-        pinned.append(
-            {
-                "section": "python",
-                "package": dist,
-                "pin": pin,
-                "kind": kind,
-                "action": "placement",
-                **({"id": repo_id} if repo_id else {}),
-            }
+    for dist in sorted(python_names):
+        row = _off_train_placement_pin(
+            workspace=workspace,
+            bom_data=bom_data,
+            section="python",
+            package=dist,
+            repo_id=_repo_id_for_python_dist(dist, catalog),
+            previous_pin=str(prev_py.get(dist) or "").strip(),
+            train_owned=train_owned,
+            from_version=from_version,
         )
+        if row:
+            pinned.append(row)
 
-    for name in sorted(required_npm):
-        live = bom_data.get("npm")
-        if isinstance(live, dict) and str(live.get(name) or "").strip():
-            continue
-        pin = str(prev_npm.get(name) or "").strip()
-        kind = "carried"
+    for name in sorted(npm_names):
         slot = slot_for_npm(catalog, name) if catalog else None
         repo_id = slot.id if slot else None
         if name == CONSOLE_NPM_HOST and not repo_id:
             repo_id = "console"
-        if not pin:
-            stable = _stable_pep_npm(workspace, repo_id) if repo_id else None
-            if stable and stable[1]:
-                pin = stable[1]
-                kind = "stable"
-        if not pin:
-            where = f"bom {_strip_v(from_version)}" if from_version else "previous BOM"
-            raise GitConvoyError(
-                f"placement requires npm package {name!r}, but it is not pinned "
-                f"and could not be resolved from {where} or a stable tag"
-                + (f" (repo {repo_id!r})" if repo_id else "")
-            )
-        bom_data.setdefault("npm", {})[name] = pin
-        pinned.append(
-            {
-                "section": "npm",
-                "package": name,
-                "pin": pin,
-                "kind": kind,
-                "action": "placement",
-                **({"id": repo_id} if repo_id else {}),
-            }
+        row = _off_train_placement_pin(
+            workspace=workspace,
+            bom_data=bom_data,
+            section="npm",
+            package=name,
+            repo_id=repo_id,
+            previous_pin=str(prev_npm.get(name) or "").strip(),
+            train_owned=train_owned,
+            from_version=from_version,
         )
+        if row:
+            pinned.append(row)
     return pinned
 
 
