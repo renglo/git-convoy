@@ -197,11 +197,6 @@ def test_take_updates_bom_repo_shas(tmp_path: Path) -> None:
     (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
     (tmp_path / "extensions").mkdir(exist_ok=True)
     pes = init_repo(tmp_path / "extensions" / "pes")
-    subprocess.run(
-        ["git", "-C", str(pes), "remote", "add", "origin", "git@github.com:renglo/pes.git"],
-        check=True,
-        capture_output=True,
-    )
     git(pes, "checkout", "-b", "release/2026-W34")
     git(pes, "commit", "--allow-empty", "-m", "train cut")
     tagged = git(pes, "rev-parse", "HEAD").stdout.strip()
@@ -715,6 +710,92 @@ release:
     dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
     assert dest["python"]["renglo-gro"] == "9.9.9"
     assert dest["python"]["renglo-lib"] == "1.2.4"
+
+
+def test_placement_pins_off_train_package_from_local_stable_tag(tmp_path: Path) -> None:
+    """A repo that sat out of the train still publishes its local stable version."""
+    from conftest import git, init_repo
+
+    bom_repo = _bom_repo(tmp_path)
+    src = json.loads((bom_repo / "bom" / "v1.4.0.json").read_text())
+    src["python"]["renglo-gro"] = "0.0.8"
+    src["npm"]["@renglo/gro"] = "0.0.8"
+    (bom_repo / "bom" / "v1.4.0.json").write_text(json.dumps(src, indent=2) + "\n")
+    (bom_repo / "renglo.yaml").write_text(
+        """
+name: acme
+github:
+  repo: acme/acme-bom
+email:
+  from: a@b.c
+  identity: email
+accounts:
+  staging:
+    id: "1"
+    region: us-east-1
+    enabled: true
+  production:
+    id: "1"
+    region: us-east-1
+    enabled: false
+placement:
+  hub:
+  - renglo-gro
+packages:
+  renglo-lib:
+    python: renglo-lib
+  gro:
+    python: renglo-gro
+    npm: "@renglo/gro"
+release:
+  bom: 1.4.0
+""",
+        encoding="utf-8",
+    )
+    _seed_train_packages(tmp_path)
+    lib = tmp_path / "dev" / "renglo-lib"
+    (lib / "pyproject.toml").write_text(
+        '[project]\nname = "renglo-lib"\nversion = "0.0.1"\n'
+    )
+    subprocess.run(["git", "init", "-b", "main", str(lib)], check=True, capture_output=True)
+    git(lib, "config", "user.email", "test@example.com")
+    git(lib, "config", "user.name", "Test")
+    git(lib, "add", "-A")
+    git(lib, "commit", "-m", "init")
+    git(lib, "tag", "v0.0.1")
+
+    gro = init_repo(tmp_path / "extensions" / "gro")
+    (gro / "pyproject.toml").write_text(
+        '[project]\nname = "renglo-gro"\nversion = "0.0.12"\n'
+    )
+    (gro / "package.json").write_text('{"name":"@renglo/gro","version":"0.0.12"}\n')
+    git(gro, "add", "-A")
+    git(gro, "commit", "-m", "release 0.0.12")
+    git(gro, "tag", "v0.0.12")
+
+    state = State(current_train="2026-W34")
+    train = Train(name="2026-W34", branch="release/2026-W34", status="published")
+    train.add_repo(
+        TrainRepo(
+            id="renglo-lib",
+            path="dev/renglo-lib",
+            from_version="1.2.3",
+            to="1.2.4",
+            stable_tag="v1.2.4",
+        )
+    )
+    state.trains["2026-W34"] = train
+    data = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    console = json.loads((bom_repo / "console_bom" / "v1.4.1.json").read_text())
+    assert dest["python"]["renglo-gro"] == "0.0.12"
+    assert console["npm"]["@renglo/gro"] == "0.0.12"
+    assert dest["python"]["renglo-lib"] == "1.2.4"
+    gro_pins = [
+        row for row in data["pins"]
+        if row.get("package") in {"renglo-gro", "@renglo/gro"} and row.get("kind") == "stable"
+    ]
+    assert len(gro_pins) == 2
 
 
 def test_take_without_catalog_keeps_copy_forward(tmp_path: Path) -> None:

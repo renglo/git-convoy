@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,62 @@ def test_read_python_package_name_under_package(tmp_path: Path) -> None:
         '[project]\nname = "arbitium-lab"\nversion = "0.0.4rc1"\n'
     )
     assert read_python_package_name(repo) == "arbitium-lab"
+
+
+def test_write_version_aligns_platform(tmp_path: Path) -> None:
+    from gitconvoy.versions import read_version, write_version
+
+    repo = tmp_path / "renglo-api"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "renglo-api"\nversion = "0.0.9"\n\n'
+        '[tool.renglo]\nplatform = "0.1.4"\n'
+    )
+    (repo / "package.json").write_text(
+        '{\n  "name": "@renglo/console",\n  "version": "0.0.11",\n'
+        '  "renglo": {\n    "platform": "0.1.4"\n  }\n}\n'
+    )
+    write_version(repo, "0.0.10rc1", "0.0.10-rc.1", platform="0.1.5rc1")
+    text = (repo / "pyproject.toml").read_text()
+    assert 'version = "0.0.10rc1"' in text
+    assert 'platform = "0.1.5"' in text
+    npm = (repo / "package.json").read_text()
+    assert '"version": "0.0.10-rc.1"' in npm
+    assert '"platform": "0.1.5"' in npm
+    assert read_version(repo)["python"] == "0.0.10rc1"
+
+
+def test_clear_platform_roundtrip() -> None:
+    from gitconvoy.versions import (
+        clear_package_json_platform,
+        clear_pyproject_platform,
+        set_package_json_platform,
+        set_pyproject_platform,
+    )
+
+    pyproject = '[project]\nname = "renglo-api"\nversion = "0.0.9"\n'
+    assert clear_pyproject_platform(set_pyproject_platform(pyproject, "0.1.6")) == pyproject
+    replaced = set_pyproject_platform(
+        '[project]\nversion = "0.0.9"\n\n[tool.renglo]\nplatform = "0.1.5"\n',
+        "0.1.4",
+    )
+    assert 'platform = "0.1.4"' in replaced
+    assert 'platform = "0.1.5"' not in replaced
+    assert 'version = "0.0.9"' in replaced
+
+    package = (
+        '{\n  "name": "@renglo/schd",\n  "version": "1.0.0",\n'
+        '  "license": "MIT"\n}\n'
+    )
+    assert clear_package_json_platform(set_package_json_platform(package, "0.1.6")) == package
+    declared = (
+        '{\n  "name": "@renglo/schd",\n  "version": "1.0.0",\n'
+        '  "renglo": {\n    "platform": "0.1.6",\n    "extra": true\n  }\n}\n'
+    )
+    cleared = clear_package_json_platform(declared)
+    assert '"platform"' not in cleared
+    assert '"extra": true' in cleared
+    json.loads(cleared)
 
 
 def test_sibling_cli_and_lib_pyprojects(tmp_path: Path) -> None:

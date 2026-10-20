@@ -148,7 +148,7 @@ def test_commit_header_only_requires_header(
     assert "requires --header" in err["error"]
 
 
-def test_commit_refuses_unadopted_dirty(
+def test_commit_ignores_dirty_repos_not_on_sheet(
     workspace: Path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(workspace)
@@ -160,11 +160,11 @@ def test_commit_refuses_unadopted_dirty(
     assert main(["--json", "feature", "adopt"]) == 0
     capsys.readouterr()
     (lib / "extra.py").write_text("nope\n")
-    assert main(["--json", "feature", "commit"]) == 1
-    err = json.loads(capsys.readouterr().out)
-    assert "not on the feature sheet" in err["error"]
-    assert "renglo-lib" in err["error"]
-    assert gitutil.is_dirty(schd)
+    assert main(["--json", "feature", "commit", "--header", "feat: schd only", "--header-only"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert [row["id"] for row in result["repos"]] == ["schd"]
+    assert not gitutil.is_dirty(schd)
+    assert gitutil.is_dirty(lib)
 
 
 def test_commit_empty_header_from_plan(

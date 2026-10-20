@@ -103,7 +103,7 @@ def _resolve_ids(state: State, repo_ids: list[str] | None) -> tuple[list[str], b
     if not state.current_ops:
         raise GitConvoyError(
             "ops publish needs a repo id or a current ops sheet; "
-            "example: git convoy ops publish renglo-ops"
+            "example: git convoy ops publish git-convoy"
         )
     sheet = state.require_ops()
     if not sheet.repos:

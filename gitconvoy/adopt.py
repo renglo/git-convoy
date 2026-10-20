@@ -22,11 +22,18 @@ from gitconvoy import ghutil
 from gitconvoy import membership
 from gitconvoy.bom_layout import (
     CONSOLE_NPM_HOST,
+    apply_released_platform,
     copy_split_bom_draft,
     load_placement,
+    load_platform,
+    load_staging_platform,
     merge_union_bom,
+    promote_staging_pins,
     required_master_pins,
+    staging_release_pin,
     sync_deploy_target_versions,
+    sync_staging_pins,
+    write_bom_file,
     write_split_boms,
 )
 from gitconvoy.workflows import repo_registry_ready
@@ -186,7 +193,7 @@ def draft(
     if _uses_three_bom_layout(root):
         write_split_boms(root, to_version, master, catalog=load_package_catalog(root))
     else:
-        dest.write_text(json.dumps(master, indent=2) + "\n")
+        write_bom_file(root, dest, master)
     data = master
     return {
         "ok": True,
@@ -223,7 +230,7 @@ def pin(
     if not isinstance(master[section], dict):
         master[section] = {}
     master[section][package] = pin_value
-    path.write_text(json.dumps(master, indent=2) + "\n")
+    write_bom_file(root, path, master)
     if split and _uses_three_bom_layout(root):
         write_split_boms(root, version, master, catalog=load_package_catalog(root))
     return {"ok": True, "file": str(path), "section": section, "package": package, "pin": pin_value}
@@ -234,35 +241,61 @@ def point(
     version: str,
     bom: str | None = None,
     production: bool = False,
+    *,
+    hotfix: bool = False,
 ) -> dict:
     root = find_bom_repo(workspace, bom)
     targets = tenant_config_path(root)
     if not targets.exists():
         raise GitConvoyError(f"missing {targets}")
     number = version.lstrip("v")
-    enabled = "true" if production else "false"
-    text = targets.read_text()
-    if _uses_three_bom_layout(root):
+    if targets.name == "renglo.yaml" and hotfix:
         sync_deploy_target_versions(root, version)
-        text = targets.read_text()
-    else:
-        text, n = re.subn(
-            r"(?m)^bom:\s+\S+",
-            f"bom: {number}",
-            text,
-            count=1,
+        _set_production_enabled(root, False)
+        return {
+            "ok": True,
+            "file": str(targets),
+            "bom": number,
+            "production_enabled": False,
+            "note": (
+                "updated production pins. staging block, if any, was left in place. "
+                "production.enabled stays false until bom --production."
+            ),
+        }
+    if targets.name == "renglo.yaml" and not production:
+        sync_staging_pins(
+            root,
+            version,
+            platform=load_staging_platform(root) or load_platform(root),
         )
-        if n != 1:
-            raise GitConvoyError("could not update bom: in deploy_targets.yml")
-    text, n = re.subn(
-        r"(?m)^(\s+production:\n(?:[ \t].*\n)*?[ \t]+enabled:\s+)\S+",
-        rf"\g<1>{enabled}",
-        text,
-        count=1,
-    )
-    if n != 1:
-        raise GitConvoyError(f"could not update production.enabled in {targets.name}")
-    targets.write_text(text)
+        _set_production_enabled(root, False)
+        return {
+            "ok": True,
+            "file": str(targets),
+            "bom": number,
+            "production_enabled": False,
+            "note": (
+                "staging pins updated. production pins were left in place. "
+                "production.enabled stays false until bom --production."
+            ),
+        }
+    if targets.name == "renglo.yaml" and production:
+        if not promote_staging_pins(root):
+            sync_deploy_target_versions(root, version)
+    elif targets.name != "renglo.yaml":
+        if _uses_three_bom_layout(root):
+            sync_deploy_target_versions(root, version)
+        else:
+            text, n = re.subn(
+                r"(?m)^bom:\s+\S+",
+                f"bom: {number}",
+                targets.read_text(),
+                count=1,
+            )
+            if n != 1:
+                raise GitConvoyError("could not update bom: in deploy_targets.yml")
+            targets.write_text(text)
+    _set_production_enabled(root, production)
     return {
         "ok": True,
         "file": str(targets),
@@ -284,6 +317,9 @@ def take(
     no_verify: bool = False,
 ) -> dict:
     train_obj = state.require_train(train)
+    from gitconvoy.train import _refuse_unviable
+
+    _refuse_unviable(workspace, state, train_obj)
     verify_by_repo, verify_summary = _adopt_verify_context(
         workspace,
         state,
@@ -300,6 +336,15 @@ def take(
             "run train tag-rc or train publish first"
         )
     root = find_bom_repo(workspace, bom)
+    from gitconvoy.platform_check import report_for_take
+
+    platform_report = report_for_take(
+        workspace,
+        train_obj,
+        root,
+        from_version=from_version,
+    )
+    released_platform = apply_released_platform(root, train_obj.repos)
     src, dest, refresh = _resolve_take_target(
         root,
         train_obj,
@@ -338,7 +383,7 @@ def take(
     bom_data = json.loads(_bom_file(root, dest).read_text())
     if _uses_three_bom_layout(root):
         bom_data = merge_union_bom(root, dest)
-        _bom_file(root, dest).write_text(json.dumps(bom_data, indent=2) + "\n")
+        write_bom_file(root, _bom_file(root, dest), bom_data)
     catalog = load_package_catalog(root)
     pinned: list[dict] = []
     for repo in train_obj.repos:
@@ -408,12 +453,16 @@ def take(
         master = json.loads(_bom_file(root, dest).read_text())
         master = _merge_master_from_bom_data(master, bom_data)
         write_split_boms(root, dest, master, catalog=catalog)
-    staging_only = not refresh
+    # A new release, and any refresh while a staging block exists, stays off
+    # the production pins. Refreshing a train that is already in production
+    # (no staging block) updates those pins in place.
+    staging_open = bool(staging_release_pin(root))
+    promote_now = refresh and not staging_open and _production_enabled(root)
     pointed = point(
         workspace,
         dest,
         bom=bom,
-        production=False if staging_only else _production_enabled(root),
+        production=promote_now,
     )
     note = pointed["note"]
     if mode == "refresh":
@@ -431,6 +480,9 @@ def take(
         "pins": pinned,
         "files": _written_bom_summaries(root, dest),
         "point": pointed,
+        "platform": load_platform(root),
+        "platform_source": "renglo-ops" if released_platform else "renglo.yaml",
+        "platform_warnings": platform_report["platform_warnings"],
         "note": note,
     }
     if verify_summary is not None:
@@ -476,6 +528,7 @@ def promote(
         "files": _written_bom_summaries(root, version),
         "take": {"from": taken["from"], "to": taken["to"]},
         "point": pointed,
+        "platform_warnings": taken.get("platform_warnings") or [],
         "note": (
             pointed["note"]
             + " CI deploys staging, verifies it, then production; "
@@ -497,7 +550,7 @@ def _merge_master_from_bom_data(master: dict, bom_data: dict) -> dict:
     repos = bom_data.get("repos")
     if isinstance(repos, dict):
         merged["repos"] = {**merged.get("repos", {}), **repos}
-    for key in ("version", "created_at", "description", "train", "deploy_stage"):
+    for key in ("version", "created_at", "description", "train"):
         if bom_data.get(key):
             merged[key] = bom_data[key]
     return merged
@@ -554,13 +607,19 @@ def _pin_is_rc(pin: str) -> bool:
         return bool(re.search(r"(?:rc\d|-rc\.)", pin, re.I))
 
 
-def _pointed_version(root: Path) -> str:
+def _pointed_version(root: Path, *, prefer_staging: bool = False) -> str:
     targets = tenant_config_path(root)
     if not targets.exists():
         raise GitConvoyError(f"missing {targets}")
     text = targets.read_text()
     if targets.name == "renglo.yaml":
-        match = re.search(r"(?m)^[ \t]+bom:\s+(\S+)", text)
+        if prefer_staging:
+            staged = staging_release_pin(root)
+            if staged:
+                return staged
+        match = re.search(r"(?ms)^release:\n(.*?)(?=^\S|\Z)", text)
+        body = match.group(1) if match else text
+        match = re.search(r"(?m)^[ \t]+bom:\s+(\S+)", body)
     else:
         match = re.search(r"(?m)^bom:\s+(\S+)", text)
     if not match:
@@ -575,7 +634,7 @@ def _resolve_take_target(
     from_version: str | None,
     to_version: str | None,
 ) -> tuple[str, str, bool]:
-    pointed = _pointed_version(root)
+    pointed = _pointed_version(root, prefer_staging=True)
     if to_version:
         src = from_version or pointed
         return src, _strip_v(to_version), False
@@ -600,6 +659,21 @@ def _production_enabled(root: Path) -> bool:
     return bool(match and match.group(1).lower() == "true")
 
 
+def _set_production_enabled(root: Path, enabled: bool) -> None:
+    """Turn production deploys on only for a final-tag promotion."""
+    targets = tenant_config_path(root)
+    flag = "true" if enabled else "false"
+    text, n = re.subn(
+        r"(?m)^(\s+production:\n(?:[ \t].*\n)*?[ \t]+enabled:\s+)\S+",
+        rf"\g<1>{flag}",
+        targets.read_text(),
+        count=1,
+    )
+    if n != 1:
+        raise GitConvoyError(f"could not update production.enabled in {targets.name}")
+    targets.write_text(text)
+
+
 def _production_description(train: str) -> str:
     return f"Production. Release {train}."
 
@@ -613,7 +687,7 @@ def _set_bom_description(root: Path, version: str, description: str) -> None:
     path = _bom_file(root, version)
     data = json.loads(path.read_text())
     data["description"] = description
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    write_bom_file(root, path, data)
 
 
 def _update_draft_metadata(
@@ -635,7 +709,7 @@ def _update_draft_metadata(
         refresh=refresh,
         production_enabled=_production_enabled(root),
     )
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    write_bom_file(root, path, data)
 
 
 def _description_for_take(
@@ -830,7 +904,28 @@ def _repo_path_by_id(workspace: Path, repo_id: str) -> Path | None:
     return None
 
 
-def _stable_pep_npm(workspace: Path, repo_id: str) -> tuple[str, str] | None:
+def _train_owned_packages(
+    workspace: Path,
+    train: Train,
+    bom_data: dict,
+    catalog: list[PackageSlot] | None,
+) -> set[tuple[str, str]]:
+    """Packages whose pin this train already chose."""
+    owned: set[tuple[str, str]] = set()
+    for repo in train.repos:
+        for section, package in _package_targets(repo, bom_data, workspace, catalog):
+            owned.add((section, package))
+    return owned
+
+
+def _environment_version(
+    workspace: Path,
+    repo_id: str | None,
+    section: str,
+) -> str | None:
+    """Latest stable version in the local clone. Rc tags are not stable."""
+    if not repo_id:
+        return None
     repo_path = _repo_path_by_id(workspace, repo_id)
     if repo_path is None:
         return None
@@ -838,19 +933,64 @@ def _stable_pep_npm(workspace: Path, repo_id: str) -> tuple[str, str] | None:
     if not tag:
         return None
     info = versions.read_version_at_ref(repo_path, tag)
-    pep = str(info.get("python") or "").strip()
-    npm = str(info.get("npm") or "").strip()
-    if pep:
-        try:
-            return versions.drop_rc(pep)
-        except GitConvoyError:
-            return pep, npm
-    if npm:
-        try:
-            return versions.drop_rc(npm)
-        except GitConvoyError:
-            return npm, npm
-    return None
+    key = "python" if section == "python" else "npm"
+    raw = str(info.get(key) or "").strip()
+    if not raw:
+        return None
+    try:
+        pep, npm = versions.drop_rc(raw)
+    except GitConvoyError:
+        return raw
+    return pep if section == "python" else npm
+
+
+def _off_train_placement_pin(
+    *,
+    workspace: Path,
+    bom_data: dict,
+    section: str,
+    package: str,
+    repo_id: str | None,
+    previous_pin: str,
+    train_owned: set[tuple[str, str]],
+    from_version: str,
+) -> dict | None:
+    """Pin a package the train did not touch from the local stable tag.
+
+    The previous BOM is only the fallback when this workspace has no stable tag
+    for that repo. A copied pin is replaced when the local stable tag differs.
+    """
+    if (section, package) in train_owned:
+        return None
+    live = bom_data.get(section)
+    live_pin = str(live.get(package) or "").strip() if isinstance(live, dict) else ""
+    environment = _environment_version(workspace, repo_id, section)
+    if environment:
+        if live_pin == environment:
+            return None
+        chosen = environment
+        kind = "stable"
+    elif live_pin:
+        return None
+    else:
+        chosen = previous_pin
+        kind = "carried"
+        if not chosen:
+            where = f"bom {_strip_v(from_version)}" if from_version else "previous BOM"
+            raise GitConvoyError(
+                f"placement requires {section} package {package!r}, but it is not pinned "
+                f"and could not be resolved from {where} or a stable tag"
+                + (f" (repo {repo_id!r})" if repo_id else "")
+            )
+    bom_data.setdefault(section, {})[package] = chosen
+    return {
+        "section": section,
+        "package": package,
+        "pin": chosen,
+        "kind": kind,
+        "action": "placement",
+        **({"id": repo_id} if repo_id else {}),
+    }
 
 
 def _ensure_placement_pins(
@@ -863,81 +1003,60 @@ def _ensure_placement_pins(
     catalog: list[PackageSlot] | None,
     placement,
 ) -> list[dict]:
-    """Guarantee every placement dist/npm has a pin (train updates; others carry or stable)."""
+    """Fill pins the train did not set.
+
+    Train repos keep the version from the train sheet. Every other package uses
+    the latest stable tag in the local clone. The previous BOM pin is kept only
+    when that clone has no stable tag. Placement still requires hub and peer
+    packages even when the previous BOM omitted them.
+    """
     del version  # bom_data is the working master; split happens later.
-    if not placement.hub_python and not placement.peers:
-        return []
-    required_python, required_npm = required_master_pins(placement, catalog)
+    if placement.hub_python or placement.peers:
+        required_python, required_npm = required_master_pins(placement, catalog)
+    else:
+        required_python, required_npm = set(), set()
+    live_py = bom_data.get("python") if isinstance(bom_data.get("python"), dict) else {}
+    live_npm = bom_data.get("npm") if isinstance(bom_data.get("npm"), dict) else {}
+    python_names = set(required_python) | set(live_py)
+    npm_names = set(required_npm) | set(live_npm)
     previous = _master_at_version(root, from_version)
+    train_owned = _train_owned_packages(workspace, train, bom_data, catalog)
     pinned: list[dict] = []
 
     prev_py = previous.get("python") if isinstance(previous.get("python"), dict) else {}
     prev_npm = previous.get("npm") if isinstance(previous.get("npm"), dict) else {}
 
-    for dist in sorted(required_python):
-        live = bom_data.get("python")
-        if isinstance(live, dict) and str(live.get(dist) or "").strip():
-            continue
-        pin = str(prev_py.get(dist) or "").strip()
-        kind = "carried"
-        repo_id = _repo_id_for_python_dist(dist, catalog)
-        if not pin:
-            stable = _stable_pep_npm(workspace, repo_id) if repo_id else None
-            if stable:
-                pin = stable[0]
-                kind = "stable"
-        if not pin:
-            where = f"bom {_strip_v(from_version)}" if from_version else "previous BOM"
-            raise GitConvoyError(
-                f"placement requires python package {dist!r}, but it is not pinned "
-                f"and could not be resolved from {where} or a stable tag"
-                + (f" (repo {repo_id!r})" if repo_id else "")
-            )
-        bom_data.setdefault("python", {})[dist] = pin
-        pinned.append(
-            {
-                "section": "python",
-                "package": dist,
-                "pin": pin,
-                "kind": kind,
-                "action": "placement",
-                **({"id": repo_id} if repo_id else {}),
-            }
+    for dist in sorted(python_names):
+        row = _off_train_placement_pin(
+            workspace=workspace,
+            bom_data=bom_data,
+            section="python",
+            package=dist,
+            repo_id=_repo_id_for_python_dist(dist, catalog),
+            previous_pin=str(prev_py.get(dist) or "").strip(),
+            train_owned=train_owned,
+            from_version=from_version,
         )
+        if row:
+            pinned.append(row)
 
-    for name in sorted(required_npm):
-        live = bom_data.get("npm")
-        if isinstance(live, dict) and str(live.get(name) or "").strip():
-            continue
-        pin = str(prev_npm.get(name) or "").strip()
-        kind = "carried"
+    for name in sorted(npm_names):
         slot = slot_for_npm(catalog, name) if catalog else None
         repo_id = slot.id if slot else None
         if name == CONSOLE_NPM_HOST and not repo_id:
             repo_id = "console"
-        if not pin:
-            stable = _stable_pep_npm(workspace, repo_id) if repo_id else None
-            if stable and stable[1]:
-                pin = stable[1]
-                kind = "stable"
-        if not pin:
-            where = f"bom {_strip_v(from_version)}" if from_version else "previous BOM"
-            raise GitConvoyError(
-                f"placement requires npm package {name!r}, but it is not pinned "
-                f"and could not be resolved from {where} or a stable tag"
-                + (f" (repo {repo_id!r})" if repo_id else "")
-            )
-        bom_data.setdefault("npm", {})[name] = pin
-        pinned.append(
-            {
-                "section": "npm",
-                "package": name,
-                "pin": pin,
-                "kind": kind,
-                "action": "placement",
-                **({"id": repo_id} if repo_id else {}),
-            }
+        row = _off_train_placement_pin(
+            workspace=workspace,
+            bom_data=bom_data,
+            section="npm",
+            package=name,
+            repo_id=repo_id,
+            previous_pin=str(prev_npm.get(name) or "").strip(),
+            train_owned=train_owned,
+            from_version=from_version,
         )
+        if row:
+            pinned.append(row)
     return pinned
 
 
@@ -976,7 +1095,7 @@ def _prune_bom_to_catalog(
         if not block:
             data.pop(section, None)
     if dropped:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        write_bom_file(root, path, data)
     return dropped
 
 
@@ -1007,7 +1126,7 @@ def _restore_adopt_pins(
         bom_data.setdefault(section, {})[package] = value
         changed = True
     if changed:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        write_bom_file(root, path, data)
 
 
 def _clear_package_pins(
@@ -1046,7 +1165,7 @@ def _clear_package_pins(
             }
         )
     if cleared:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        write_bom_file(root, path, data)
     return cleared
 
 
@@ -1178,7 +1297,7 @@ def _clear_repo_shas(
         if isinstance(bom_data.get("repos"), dict) and not bom_data["repos"]:
             bom_data.pop("repos", None)
     if cleared:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        write_bom_file(root, path, data)
     return cleared
 
 
@@ -1258,7 +1377,7 @@ def _pin_repo_shas(
                 "pin": commit,
             }
         )
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    write_bom_file(root, path, data)
     return pinned
 
 

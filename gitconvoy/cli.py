@@ -90,7 +90,12 @@ def _feature(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, st
             )
         return data, f"feature {data['feature']} started ({data['branch']})"
     if sub == "adopt":
-        data = feature_cmd.adopt(workspace, state)
+        repos = (
+            [item.strip() for item in args.repos.split(",") if item.strip()]
+            if args.repos
+            else None
+        )
+        data = feature_cmd.adopt(workspace, state, repo_ids=repos)
         names = ", ".join(item["id"] for item in data["adopted"]) or "(none)"
         dropped = ", ".join(item["id"] for item in data.get("dropped") or [])
         text = f"adopted {data['repo_count']} repos: {names}"
@@ -272,6 +277,10 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
         )
         data = train_cmd.adopt(workspace, state, repo_ids=repos)
         return data, _adopt_train_text(data)
+    if sub == "unadopt":
+        repos = [item.strip() for item in args.repos.split(",") if item.strip()]
+        data = train_cmd.unadopt(workspace, state, repo_ids=repos)
+        return data, _unadopt_train_text(data)
     if sub == "commit":
         data = commit_cmd.commit(
             workspace,
@@ -298,8 +307,11 @@ def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]
             workspace, state, args.name, push=not args.no_push
         )
         return data, train_cmd.format_mergeback_text(data)
+    if sub == "unfold":
+        data = train_cmd.unfold(workspace, state)
+        return data, _unfold_train_text(data)
     if sub == "show":
-        data = train_cmd.show(state, args.name)
+        data = train_cmd.show(workspace, state, args.name)
         return data, _train_show_text(data)
     if sub in ("close", "delete"):
         data = train_cmd.close(
@@ -423,7 +435,19 @@ def _sync(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
 
 
 def _bom(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
+    from gitconvoy.platform_check import check as platform_check
+    from gitconvoy.platform_check import format_check_text
+
     sub = args.bom_cmd
+    if sub == "check":
+        data = platform_check(
+            workspace,
+            state,
+            bom=args.bom,
+            train=getattr(args, "train", None),
+            from_version=getattr(args, "from_version", None),
+        )
+        return data, format_check_text(data)
     production = getattr(args, "production", False)
     if production and sub == "take":
         raise GitConvoyError(
@@ -542,7 +566,7 @@ def _parser() -> argparse.ArgumentParser:
         "-s",
         "--summaries",
         action="store_true",
-        help="Print one-line description after each command",
+        help="Accepted for compatibility. Summaries are always shown.",
     )
     sub.add_parser("status", help="Current feature, ops, train, hotfix, and dirty repos")
 
@@ -553,7 +577,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Create the feature sheet; pick up existing feature/<name>; otherwise checkout develop",
     )
     start.add_argument("name")
-    fsub.add_parser("adopt", help="Move local changes onto feature/<name>")
+    fadopt = fsub.add_parser(
+        "adopt",
+        help=(
+            "Move local changes onto feature/<name>. "
+            "Default: every dirty product repo; --repos limits which repos move"
+        ),
+    )
+    fadopt.add_argument(
+        "--repos",
+        help="Comma-separated product repo ids (other dirty repos stay on develop)",
+    )
     abandon = fsub.add_parser(
         "abandon",
         help="Drop the feature sheet (does not delete branches or files)",
@@ -753,6 +787,15 @@ def _parser() -> argparse.ArgumentParser:
         "--repos",
         help="Comma-separated product repo ids (force-include even when clean)",
     )
+    tunadopt = tsub.add_parser(
+        "unadopt",
+        help="Remove repos from the train and keep their release-branch work on develop",
+    )
+    tunadopt.add_argument(
+        "--repos",
+        required=True,
+        help="Comma-separated repo ids to remove from the train",
+    )
     tcommit = tsub.add_parser("commit", help="Commit dirty train participant repos")
     tcommit.add_argument("--plan", action="store_true", help="Print the commit plan; do not commit")
     tcommit.add_argument("--from", dest="from_file", help="Apply a filled plan (JSON file, or - for stdin)")
@@ -776,7 +819,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     mergeback.add_argument("name", nargs="?")
     mergeback.add_argument("--no-push", action="store_true")
-    tshow = tsub.add_parser("show", help="Print the train sheet")
+    tsub.add_parser(
+        "unfold",
+        help="Turn this train into feature/<train> and retire it; then feature refresh and feature prs",
+    )
+    tshow = tsub.add_parser("show", help="Print the train sheet and whether it can still be published")
     tshow.add_argument("name", nargs="?")
     tclose = tsub.add_parser(
         "close",
@@ -846,6 +893,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Promote the current BOM to production",
     )
     bsub = bom.add_subparsers(dest="bom_cmd", required=False)
+    check = bsub.add_parser(
+        "check",
+        help="Print each package against the platform pin, with a status; write nothing",
+    )
+    check.add_argument("--bom", help="BOM repo path (override ops.toml)")
+    check.add_argument("--train", help="Train to check (default: current)")
+    check.add_argument(
+        "--from",
+        dest="from_version",
+        help="System version whose pins are carried forward (default: same as bom)",
+    )
     take = bsub.add_parser(
         "take",
         help="Write a release BOM from the current train (staging)",
@@ -1103,6 +1161,40 @@ def _cut_train_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _unadopt_train_text(data: dict) -> str:
+    lines = [
+        f"unadopted {len(data.get('removed') or [])} repos from train {data['train']}"
+    ]
+    branch = data.get("branch") or "release/<train>"
+    for repo in data.get("removed") or []:
+        bits = [f"checked out {repo.get('branch') or 'develop'}"]
+        merged = int(repo.get("merged_commits") or 0)
+        if merged:
+            bits.append(f"merged {merged} commits into develop")
+        else:
+            bits.append("no code beyond the version bump")
+        if repo.get("restored_version"):
+            bits.append("restored version")
+        if repo.get("platform_restore") == "cleared":
+            bits.append("cleared platform declaration")
+        elif repo.get("platform_restore"):
+            bits.append(f"restored platform {repo['platform_restore']}")
+        if repo.get("deleted_local"):
+            bits.append(f"deleted local {branch}")
+        if repo.get("on_origin"):
+            bits.append(f"{branch} still on origin")
+        lines.append(f"  {repo['id']:20}  " + "; ".join(bits))
+    for repo in data.get("platform_restored") or []:
+        target = repo.get("platform")
+        if target:
+            lines.append(f"  {repo['id']:20}  restored platform {target}")
+        else:
+            lines.append(f"  {repo['id']:20}  cleared platform declaration")
+    if not data.get("repo_count"):
+        lines.append("train has no repos")
+    return "\n".join(lines)
+
+
 def _adopt_train_text(data: dict) -> str:
     names = ", ".join(item["id"] for item in data.get("adopted") or []) or "(none)"
     lines = [
@@ -1147,15 +1239,54 @@ def _delete_train_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _viability_lines(findings: list[dict]) -> list[str]:
+    lines: list[str] = []
+    contests = [row for row in findings if row.get("kind") == "rc-contest"]
+    for finding in findings:
+        if finding.get("kind") == "rc-contest":
+            continue
+        text = train_cmd._finding_sentence(finding)
+        lines.extend(line for line in text.splitlines() if line)
+    if contests:
+        train_name = next((row.get("train") for row in contests if row.get("train")), None)
+        owner = f" train {train_name}" if train_name else ""
+        lines.append(
+            f"rc contest{owner}. "
+            "Another train is releasing the same repo and it is using the same release tags."
+        )
+    return lines
+
+
 def _train_show_text(data: dict) -> str:
+    viable = data.get("viable", True)
+    flag = "viable" if viable else "not viable"
     lines = [
-        f"{data['name']}  {data['branch']}  {data['status']}  {data['repo_count']} repos",
+        f"{data['name']}  {data['branch']}  {data['status']}  {data['repo_count']} repos  {flag}",
     ]
+    report = data.get("viability") or {}
+    by_id = {row["id"]: row for row in report.get("repos") or []}
     for repo in data["repos"]:
         lines.append(
             f"  {repo['id']:20} {repo['from'] or '-'} → {repo['to'] or '-'}  "
-            f"{repo['rc_tag'] or ''} {repo['stable_tag'] or ''}"
+            f"{repo['rc_tag'] or ''} {repo['stable_tag'] or ''}".rstrip()
         )
+        findings = (by_id.get(repo["id"]) or {}).get("findings") or []
+        for line in _viability_lines(findings):
+            lines.append(f"    {line}")
+    note = (report.get("note") or "").strip()
+    if note:
+        lines.append(note)
+    return "\n".join(lines)
+
+
+def _unfold_train_text(data: dict) -> str:
+    lines = [
+        f"{data['train']}  unfolded  {data['branch']}",
+        data.get("note") or "",
+    ]
+    for repo in data.get("repos") or []:
+        restored = "version restored" if repo.get("version_restored") else "version unchanged"
+        lines.append(f"  {repo['id']:20} {repo['branch']}  {restored}")
     return "\n".join(lines)
 
 
@@ -1354,6 +1485,8 @@ def _approve_text(data: dict) -> str:
 
 
 def _adopt_text(data: dict, *, production: bool = False) -> str:
+    from gitconvoy.platform_check import format_warning_lines
+
     mode = data.get("mode") or "draft"
     if production:
         lines = [
@@ -1363,6 +1496,11 @@ def _adopt_text(data: dict, *, production: bool = False) -> str:
         lines = [
             f"adopted {data['version']} from train {data['train']} ({mode})",
         ]
+        if data.get("platform_source") == "renglo-ops" and data.get("platform"):
+            lines.append(
+                f"  platform {data['platform']} from renglo-ops on this train"
+            )
+    lines.extend(format_warning_lines(data.get("platform_warnings") or []))
     publish_ci = _format_publish_ci(data.get("verify"))
     if publish_ci:
         lines.append(publish_ci)

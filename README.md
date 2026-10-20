@@ -102,7 +102,7 @@ git convoy help feature            # cycle 1 process (+ related sync, hotfix ref
 git convoy help train              # cycles 2–4 (+ bom)
 git convoy help ops                # ship one ops repo, then optional develop review
 git convoy help hotfix             # production emergency (+ bom, feature refresh)
-git convoy help staging -s              # one-line description per command
+git convoy help staging             # cycle 3 only; command and summary
 git convoy --json help train
 ```
 
@@ -136,7 +136,7 @@ git convoy init
 
 That command:
 
-- Discovers git repos under `console/`, `dev/`, `extensions/`, and `ops/`
+- Discovers git repos under `console/`, `dev/`, `extensions/`, and `ops/`, plus workspace-root clones marked `role = "ops"` in `gitconvoy.toml` (e.g. `renglo-dev/`)
 - Writes `.gitconvoy/state.json`
 - Adds `.gitconvoy/` to the workspace `.gitignore`
 - Writes `.cursor/skills/gitconvoy/SKILL.md` so Cursor agents know to call `git convoy`
@@ -228,9 +228,12 @@ Edit code (or let an agent edit). Work happens on `develop`. That is expected.
 
 ```bash
 git convoy feature adopt
+git convoy feature adopt --repos renglo-lib,renglo-api
 ```
 
-For each feature repo that is dirty, has local commits on its integration branch that are not on `origin/<integration>`, or already has `feature/<name>` with unique commits:
+Without `--repos`, every dirty product repo is adopted. With `--repos`, only the listed ids move onto `feature/<name>`; other dirty product repos stay on `develop` so you can start another feature and adopt them there. `feature commit`, `feature prs`, and `feature push` only touch repos on the sheet; other dirty clones do not block them.
+
+For each adopted feature repo that is dirty, has local commits on its integration branch that are not on `origin/<integration>`, or already has `feature/<name>` with unique commits:
 
 - Creates or checks out `feature/<name>`
 - If you committed on `develop` (and did not push it), resets local `develop` to `origin/develop`
@@ -398,6 +401,37 @@ git convoy train adopt --repos console,lab
 ```
 
 Creates or checks out `release/<name>` from the current integration branch and adds the repo to the train sheet. Refuses dirty work on `feature/*` (or any other branch). Ignores ops and BOM.
+
+To take a repo back off the train before `tag-rc`, without discarding work that landed on the release branch:
+
+```bash
+git convoy train unadopt --repos renglo-ops
+```
+
+Commits on `release/<train>` other than the automatic version bump are merged into `develop`. The version bump is left behind, the local release branch is deleted, and the repo drops off the sheet. Uncommitted files must be committed or stashed first. A copy of the release branch that was already pushed stays on `origin` until you delete it.
+
+### When the train is no longer viable
+
+`git convoy train show` tells you. A release manager does not need to know which other project moved. For each participant, the check looks at three things:
+
+1. **The stable tag this train would publish is already taken**, and that tag does not point at this release branch. The sheet names the commit, its subject, and the branches that contain it (`origin/main`, `origin/release/<other>`), including the other train name when the subject or the branch says so.
+2. **`main` has commits this release does not contain.** Publishing would merge this branch into that `main`.
+3. **An rc tag for the same version points at someone else’s commit.** You are sharing the rc series with another line.
+
+Any one of those means the train cannot continue. `train tag-rc`, `git convoy bom`, and `train publish` run this check first and refuse.
+
+Keep the patches by turning the train into a feature. This does not merge `develop` into the release branch.
+
+```bash
+git convoy train unfold
+git convoy feature refresh
+# resolve conflicts, then feature refresh again
+git convoy feature prs
+```
+
+`unfold` creates `feature/<train>` at the release tip, puts the version numbers back to `develop`, and retires the train sheet so publish cannot run. The release branches and existing rc tags stay. `feature prs` refuses until `feature refresh` has brought the integration branch into that feature. After the PRs merge, cut a new train. `tag-rc` starts at the next free patch when `vX.Y.Z` already exists.
+
+Removing `renglo-ops` also puts the other packages back to the platform they declared before the cut. Cut stamps renglo-ops's next version into `[tool.renglo] platform` and `package.json` `renglo.platform`. Once renglo-ops leaves, those files on the repos that stay are committed back to the integration-branch value. A repo removed in the same command gets the same restore on `develop` when its release-branch work is merged.
 
 Commit stabilize work through convoy — do not leave the tool to guess which repos are dirty:
 
@@ -809,7 +843,7 @@ When those PRs merge, the change is on `develop`. That is not a release. `ops pu
 
 ### Publish an ops package
 
-`ops publish` is what you run after `ops prs` merges. No second GitHub PR. The person who ships `renglo-ops` is not the person who pins `platform` on a tenant BOM.
+`ops publish` is what you run after `ops prs` merges. No second GitHub PR. `renglo-ops` is not an ops repo: it rides the product feature and release train with the extensions it changed. `git convoy bom` then pins `platform` to that train's `renglo-ops` version. Other ops packages stay on `ops publish`, and that command does not write a tenant BOM.
 
 ```bash
 git convoy ops prs
@@ -817,7 +851,7 @@ git convoy ops prs
 git convoy ops publish
 ```
 
-With a current ops sheet and no repo ids, publish walks the sheet and ships every participant whose policy is not `publish = "none"`. Name repos to ship just those: `git convoy ops publish renglo-ops`.
+With a current ops sheet and no repo ids, publish walks the sheet and ships every participant whose policy is not `publish = "none"`. Name repos to ship just those: `git convoy ops publish git-convoy`.
 
 It bumps on `develop` when the version still matches the last tag, merges `develop` into `main`, tags `vX.Y.Z`, and pushes. The tag push publishes wheels when `publish = "python-wheel"`. Repos with `publish = "none"` are skipped on a sheet run.
 
@@ -841,13 +875,13 @@ Each ops repo must declare `version`, `publish`, and `pin` in `gitconvoy.toml`.
 git convoy ops publish
 
 # One repo, no sheet required
-git convoy ops publish renglo-ops
+git convoy ops publish git-convoy
 
 # Minor bump, then merge to main and tag
-git convoy ops publish renglo-ops --bump minor
+git convoy ops publish git-convoy --bump minor
 
 # Wait for the publish workflow after the tag
-git convoy ops publish renglo-ops --verify --wait
+git convoy ops publish git-convoy --verify --wait
 ```
 
 ---
@@ -1029,7 +1063,7 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy sync` | * | Update every clean clone in place; report repos that still need a commit or conflict fix |
 | `git convoy sync develop` | * | Merge stable/`main` into `develop` for **product** repos only (no idle check) |
 | `git convoy feature start NAME` | 1 | Sheet; pick up existing `feature/NAME`; else checkout `develop` |
-| `git convoy feature adopt` | 1 | Branch changed repos onto `feature/NAME`; drop empty leftover branches |
+| `git convoy feature adopt [--repos …]` | 1 | Branch changed product repos onto `feature/NAME`; `--repos` limits which repos move |
 | `git convoy feature abandon` | 1 | Drop the feature sheet (no branch or file deletes) |
 | `git convoy feature commit` | 1 | Commit dirty participants |
 | `git convoy feature push` | 1 | Push `feature/<name>` (no PRs) |
@@ -1053,12 +1087,15 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy ops close` | * | After merge to develop: checkout develop; remove ops branches |
 | `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
 | `git convoy train adopt [--repos …]` | 2 | Late-join dirty (or named) product repos; no version bump |
+| `git convoy train unadopt --repos …` | 2 | Remove repos from the train; merge their release-branch work into develop |
 | `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/ops commit) |
-| `git convoy train show [NAME]` | 2 | Read train sheet |
+| `git convoy train show [NAME]` | 2 | Train sheet, plus whether the aspirational tags, `main`, or the rc series still belong to this release |
+| `git convoy train unfold` | 2 | Turn a train that can no longer be published into `feature/<train>`; then `feature refresh` and `feature prs` |
 | `git convoy train close` | 2, 4 | Delete merged `release/<train>` branches only; refuse dirty or unique commits |
 | `git convoy train tag-rc` | 3 | Sync develop from stable, push rc tags → registry (`--no-push` for cycle 2 only) |
 | `git convoy train verify` | 3–4 | Tag-publish workflows via gh (skips git-clone-only repos; `--wait` to poll) |
-| `git convoy bom` | 3 | Staging BOM from `.gitconvoy/ops.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)` |
+| `git convoy bom check` | 3 | Compare the platform pin with package declarations; write nothing |
+| `git convoy bom` | 3 | Staging BOM from `.gitconvoy/ops.toml` `[bom]` (or `*-bom` / `--bom`); `(draft)` or `(refresh)`. Warns on platform mismatches before writing |
 | `git convoy bom --require-verify` | 3–4 | Strict: refuse writing the BOM when any publish workflow failed |
 | `git convoy bom --no-verify` | 3–4 | Skip verify; local workflow heuristic only (Simple mode) |
 | `git convoy train publish` | 4 | Stable tags → registry; then mergeback into `develop` |

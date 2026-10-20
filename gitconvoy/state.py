@@ -24,6 +24,7 @@ class Feature:
     branch: str
     status: str = "in-progress"
     repos: list[FeatureRepo] = field(default_factory=list)
+    unfolded_from: str | None = None
 
     def repo_ids(self) -> list[str]:
         return [repo.id for repo in self.repos]
@@ -68,6 +69,11 @@ class Train:
             if existing.id == row.id:
                 return
         self.repos.append(row)
+
+    def drop_repo(self, repo_id: str) -> bool:
+        before = len(self.repos)
+        self.repos = [repo for repo in self.repos if repo.id != repo_id]
+        return len(self.repos) < before
 
 
 @dataclass
@@ -218,6 +224,7 @@ def _to_dict(state: State) -> dict[str, Any]:
                 "name": feat.name,
                 "branch": feat.branch,
                 "status": feat.status,
+                "unfolded_from": feat.unfolded_from,
                 "repos": [asdict(repo) for repo in feat.repos],
             }
             for name, feat in state.features.items()
@@ -300,6 +307,7 @@ def _from_dict(raw: dict[str, Any]) -> State:
             name=item.get("name", name),
             branch=item.get("branch", f"feature/{name}"),
             status=item.get("status", "in-progress"),
+            unfolded_from=item.get("unfolded_from"),
             repos=[
                 FeatureRepo(
                     id=row["id"],

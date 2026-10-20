@@ -38,7 +38,8 @@ git convoy --json hotfix show
 git convoy --json feature commit
 ```
 
-- "What's on the current train?" → `git convoy --json train show`
+- "What's on the current train?" → `git convoy --json train show` (`viable`, and `viability` when the aspirational tag, `main`, or the rc series belongs to another line)
+- "This train cannot be published" → `train tag-rc` and `bom` refuse the same check. `git convoy train unfold`, then `feature refresh`, resolve, `feature refresh`, `feature prs`
 - "Catch up after time away / put me on develop?" → `git convoy --json sync`
 - "How many repos is this feature touching?" → `git convoy --json feature show` (`repo_count`)
 - "Which feature am I on?" → `git convoy --json status`
@@ -174,7 +175,7 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 
 - **1–2:** features and local release branches — git only (Full optional).
 - **Ops ship:** `git convoy ops prs`, merge into develop, then `git convoy ops publish`. Does not write `renglo.yaml`.
-- **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging).
+- **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom check` (warnings only) → `bom` → push BOM (staging). `bom` runs the same platform check before it writes and still writes the file.
 - **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.
 - **Hotfix** (parallel, not a fifth cycle): production PATCH without a new train. May touch several repos. PRs into `main`. Publish merges tagged `main` into `develop` and absorbs local `feature/*`.
