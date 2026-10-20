@@ -16,7 +16,7 @@ from gitconvoy.workspace import (
     product_repos,
 )
 
-from conftest import init_repo
+from conftest import git, init_repo
 
 
 def _mark_aux(path: Path) -> None:
@@ -110,6 +110,32 @@ def test_bom_id_fallback_without_membership(workspace: Path) -> None:
     init_repo(workspace / "ops" / "example-bom", develop=False)
     ids = {repo.id for repo in feature_repos(workspace)}
     assert "example-bom" not in ids
+
+
+def test_discover_root_ops_repo_with_marker(workspace: Path) -> None:
+    launcher = init_repo(workspace / "renglo-dev")
+    (launcher / "gitconvoy.toml").write_text('role = "ops"\n')
+    git(launcher, "add", "gitconvoy.toml")
+    git(launcher, "commit", "-m", "marker")
+    membership.refresh_membership(workspace, discover_repos(workspace))
+
+    ids = {repo.id for repo in discover_repos(workspace)}
+    assert "renglo-dev" in ids
+    assert "renglo-dev" in {repo.id for repo in ops_repos(workspace)}
+    assert "renglo-dev" not in {repo.id for repo in product_repos(workspace)}
+
+
+def test_discover_root_repo_without_ops_marker_is_skipped(workspace: Path) -> None:
+    init_repo(workspace / "renglo-dev")
+    assert "renglo-dev" not in {repo.id for repo in discover_repos(workspace)}
+
+
+def test_discover_root_product_marker_is_skipped(workspace: Path) -> None:
+    launcher = init_repo(workspace / "renglo-dev")
+    (launcher / "gitconvoy.toml").write_text('role = "product"\n')
+    git(launcher, "add", "gitconvoy.toml")
+    git(launcher, "commit", "-m", "marker")
+    assert "renglo-dev" not in {repo.id for repo in discover_repos(workspace)}
 
 
 def test_bom_suffix_excluded_when_ops_toml_lists_another_bom(
