@@ -503,7 +503,8 @@ def apply_released_platform(root: Path, repos: Any) -> str:
 
 
 def _staging_section(text: str) -> re.Match[str] | None:
-    return re.search(r"(?ms)^staging:\n(?:^[ \t].*\n)*", text)
+    """Match the full ``staging:`` block, including a last line with no trailing newline."""
+    return re.search(r"(?ms)^staging:\n(?:^[ \t].*(?:\n|$))*", text)
 
 
 def parse_staging_pins(text: str) -> dict[str, Any]:

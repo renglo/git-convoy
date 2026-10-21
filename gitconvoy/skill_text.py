@@ -39,6 +39,7 @@ git convoy --json feature commit
 ```
 
 - "What's on the current train?" → `git convoy --json train show` (`viable`, and `viability` when the aspirational tag, `main`, or the rc series belongs to another line)
+- "Will this cut hit a tag conflict?" → `git convoy --json train check` (no train name; same check as train viability; creates no branches). `train cut` runs it first and refuses before creating release branches.
 - "This train cannot be published" → `train tag-rc` and `bom` refuse the same check. `git convoy train unfold`, then `feature refresh`, resolve, `feature refresh`, `feature prs`
 - "Catch up after time away / put me on develop?" → `git convoy --json sync`
 - "How many repos is this feature touching?" → `git convoy --json feature show` (`repo_count`)
@@ -174,7 +175,7 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 
 ## Cycles (see README)
 
-- **1–2:** features and local release branches — git only (Full optional).
+- **1–2:** features and local release branches — git only (Full optional). `train check` reports tag conflicts before a train exists. `train cut` runs that check and refuses before creating release branches.
 - **Ops ship:** `git convoy ops prs`, merge into develop, then `git convoy ops publish`. Does not write `renglo.yaml`.
 - **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging).
 - **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.

@@ -43,6 +43,7 @@ def _packages_platform(
     *,
     bump: str = "patch",
     choose_rc: bool = False,
+    our_train: str = "",
 ) -> str:
     """Stable platform version the packages on this train should declare."""
     for repo in repos:
@@ -57,7 +58,7 @@ def _packages_platform(
         if not current:
             return ""
         if choose_rc:
-            pep, _npm, _tag = _choose_rc(directory, current)
+            pep, _npm, _tag = _choose_rc(directory, current, our_train=our_train)
             return versions.drop_rc(pep)[0]
         return versions.drop_rc(versions.bump(current, bump))[0]
     return _bom_declared_platform(workspace)
@@ -88,59 +89,47 @@ def cut(
     repo_ids: list[str] | None = None,
     no_bump: bool = False,
 ) -> dict:
-    slug = _slug(name)
-    branch = f"release/{slug}"
-    repos = product_repos(workspace)
-    skipped: list[dict] = []
-    if repo_ids:
-        chosen = [require_repo(repos, repo_id) for repo_id in repo_ids]
-        for repo in chosen:
-            if not _has_version(repo.path):
-                raise GitConvoyError(
-                    f"{repo.id}: no version file; cannot cut a release train for this repo"
-                )
-    else:
-        chosen = []
-        for repo in repos:
-            if not gitutil.develop_ahead_of_stable(repo.path):
-                continue
-            if not _has_version(repo.path):
-                skipped.append(
-                    {
-                        "id": repo.id,
-                        "path": repo.rel,
-                        "reason": "no-version-file",
-                    }
-                )
-                continue
-            chosen.append(repo)
-    if not chosen:
-        if skipped:
-            ids = ", ".join(item["id"] for item in skipped)
-            raise GitConvoyError(
-                "no publishable repos are ahead of their last stable tag "
-                f"(skipped without version files: {ids})"
-            )
-        raise GitConvoyError(
-            "no repos are ahead of their last stable tag; pass --repos to force"
-        )
+    plan = _plan_cut(
+        workspace,
+        name,
+        bump=bump,
+        repo_ids=repo_ids,
+        no_bump=no_bump,
+    )
+    blocked = _precut_block(_plan_viability(workspace, plan))
+    if blocked:
+        raise GitConvoyError(blocked)
+    for repo in plan["chosen"]:
+        if gitutil.is_dirty(repo.path):
+            raise GitConvoyError(f"{repo.id} is dirty; commit or stash before train cut")
+    slug = plan["slug"]
+    branch = plan["branch"]
+    chosen = plan["chosen"]
+    skipped = plan["skipped"]
     train = state.trains.get(slug) or Train(name=slug, branch=branch)
     train.status = "cut"
-    platform = "" if no_bump else _packages_platform(workspace, chosen, bump=bump)
+    planned = {row.id: row for row in plan["rows"]}
+    ops_row = next(
+        (row for row in plan["rows"] if _is_renglo_ops(row.id, row.path) and row.to),
+        None,
+    )
+    if ops_row and ops_row.to:
+        platform = versions.drop_rc(ops_row.to)[0]
+    else:
+        platform = "" if no_bump else _packages_platform(workspace, chosen, bump=bump)
     added: list[dict] = []
     for repo in chosen:
         gitutil.fetch(repo.path)
-        if gitutil.is_dirty(repo.path):
-            raise GitConvoyError(f"{repo.id} is dirty; commit or stash before train cut")
         gitutil.checkout_integration(repo.path)
         gitutil.checkout_branch(repo.path, branch)
         info = versions.read_version(repo.path)
         current = info.get("python") or info.get("npm")
         to = None
         changed: list[str] = []
-        if current and not no_bump:
-            to = versions.bump(current, bump)
-            pep, npm = versions.with_rc(to, 1)
+        target = planned[repo.id].to
+        if current and target:
+            pep = target
+            _pep, npm = versions.with_rc(pep)
             changed = versions.write_version(
                 repo.path,
                 pep,
@@ -181,6 +170,292 @@ def cut(
         "repos": added,
         "skipped": skipped,
     }
+
+
+def check(
+    workspace: Path,
+    state: State,
+    name: str | None = None,
+    bump: str = "patch",
+    repo_ids: list[str] | None = None,
+    no_bump: bool = False,
+) -> dict:
+    """Report whether the next ``cut`` would create a train that cannot be published.
+
+    No train name is required. Uses the same stable-tag, rc-series, and ``main``
+    checks as ``viability``, read from the integration branch. Does not check
+    out or create release branches. ``state`` is unused; the sheet is not read
+    or written.
+    """
+    del state
+    plan = _plan_cut(
+        workspace,
+        name,
+        bump=bump,
+        repo_ids=repo_ids,
+        no_bump=no_bump,
+    )
+    report = _plan_viability(workspace, plan)
+    report["planned"] = [
+        {
+            "id": row.id,
+            "path": row.path,
+            "from": row.from_version,
+            "to": row.to,
+            "tag": _stable_tag_for(row.to or row.from_version),
+        }
+        for row in plan["rows"]
+    ]
+    report["skipped"] = plan["skipped"]
+    report["skipped_series"] = plan["skipped_series"]
+    return report
+
+
+def _plan_cut(
+    workspace: Path,
+    name: str | None,
+    *,
+    bump: str,
+    repo_ids: list[str] | None,
+    no_bump: bool,
+) -> dict:
+    """Repos and versions ``cut`` would write, without creating branches."""
+    slug = _slug(name) if name else ""
+    branch = f"release/{slug}" if slug else ""
+    repos = product_repos(workspace)
+    skipped: list[dict] = []
+    if repo_ids:
+        chosen = [require_repo(repos, repo_id) for repo_id in repo_ids]
+        for repo in chosen:
+            if not _has_version(repo.path):
+                raise GitConvoyError(
+                    f"{repo.id}: no version file; cannot cut a release train for this repo"
+                )
+    else:
+        chosen = []
+        for repo in repos:
+            if not gitutil.develop_ahead_of_stable(repo.path):
+                continue
+            if not _has_version(repo.path):
+                skipped.append(
+                    {
+                        "id": repo.id,
+                        "path": repo.rel,
+                        "reason": "no-version-file",
+                    }
+                )
+                continue
+            chosen.append(repo)
+    if not chosen:
+        if skipped:
+            ids = ", ".join(item["id"] for item in skipped)
+            raise GitConvoyError(
+                "no publishable repos are ahead of their last stable tag "
+                f"(skipped without version files: {ids})"
+            )
+        raise GitConvoyError(
+            "no repos are ahead of their last stable tag; pass --repos to force"
+        )
+    rows: list[TrainRepo] = []
+    tips: dict[str, str] = {}
+    skipped_series: list[dict] = []
+    for repo in chosen:
+        gitutil.fetch(repo.path)
+        tip = _cut_tip(repo.path)
+        current, to, series = _cut_target(repo.path, tip, bump, no_bump)
+        tips[repo.id] = tip
+        for item in series:
+            item["id"] = repo.id
+            skipped_series.append(item)
+        rows.append(
+            TrainRepo(
+                id=repo.id,
+                path=repo.rel,
+                from_version=current,
+                to=to,
+            )
+        )
+    return {
+        "slug": slug,
+        "branch": branch,
+        "chosen": chosen,
+        "skipped": skipped,
+        "skipped_series": skipped_series,
+        "rows": rows,
+        "tips": tips,
+    }
+
+
+def _cut_tip(repo: Path) -> str:
+    """Integration commit ``cut`` would branch from, including a fast-forward."""
+    branch = gitutil.integration_branch(repo)
+    local = gitutil.rev_parse(repo, branch)
+    origin = gitutil.rev_parse(repo, f"origin/{branch}")
+    if origin and (not local or gitutil.is_ancestor(repo, local, origin)):
+        return origin
+    if local:
+        return local
+    raise GitConvoyError(f"{repo.name}: no {branch} to cut from")
+
+
+def _cut_target(
+    repo: Path,
+    tip: str,
+    bump: str,
+    no_bump: bool,
+) -> tuple[str | None, str | None, list[dict]]:
+    info = versions.read_version_at_ref(repo, tip)
+    current = info.get("python") or info.get("npm")
+    if not current or no_bump:
+        return current, None, []
+    pep, _npm = versions.with_rc(versions.bump(current, bump), 1)
+    pep, _npm, skipped = _advance_past_foreign_series(repo, pep, "", tip)
+    return current, pep, skipped
+
+
+def _advance_past_foreign_series(
+    repo: Path, pep: str, our_train: str, tip: str
+) -> tuple[str, str, list[dict]]:
+    """Move to the next patch only after another train has finished this series.
+
+    Finished means its ``release/<train>`` is already contained in ``tip``.
+    An active release still ahead of ``tip`` is left alone so this cut does
+    not take the next patch out from under it.
+    """
+    skipped: list[dict] = []
+    npm = versions.with_rc(pep)[1]
+    for _ in range(100):
+        claim = _retired_foreign_claim(repo, pep, our_train, tip)
+        if not claim:
+            return pep, npm, skipped
+        owner, tag = claim
+        skipped.append(
+            {
+                "version": versions.drop_rc(pep)[0],
+                "tag": tag,
+                "train": owner,
+            }
+        )
+        pep, npm = versions.with_rc(versions.bump(versions.drop_rc(pep)[0], "patch"), 1)
+    raise GitConvoyError(
+        f"{repo.name}: could not find a free version after {pep}"
+    )
+
+
+def _foreign_rc_claim(
+    repo: Path, version: str, our_train: str
+) -> tuple[str, str] | None:
+    """``(train, tag)`` when another train already tagged this ``X.Y.Z`` rc series."""
+    try:
+        stable, _npm = versions.drop_rc(version)
+    except GitConvoyError:
+        return None
+    body = _tag_body(stable)
+    claim: tuple[str, str] | None = None
+    for tag_name, sha in _rc_tags(repo, body):
+        info = gitutil.commit_oneline(repo, sha)
+        subject_train = _train_from_subject(info["subject"])
+        _places, branch_train = _containers(repo, sha, our_train)
+        owner = subject_train or branch_train
+        if owner and owner != our_train:
+            claim = (owner, tag_name)
+    return claim
+
+
+def _retired_foreign_claim(
+    repo: Path, version: str, our_train: str, tip: str
+) -> tuple[str, str] | None:
+    """Foreign rc series whose release branch is already contained in ``tip``."""
+    claim = _foreign_rc_claim(repo, version, our_train)
+    if not claim:
+        return None
+    owner, tag = claim
+    sha = _existing_tag_commit(repo, tag)
+    if not sha or not tip or not gitutil.is_ancestor(repo, sha, tip):
+        return None
+    if _release_still_ahead(repo, owner, tip):
+        return None
+    return claim
+
+
+def _release_ref(repo: Path, train_name: str) -> str | None:
+    for ref in (f"origin/release/{train_name}", f"release/{train_name}"):
+        if gitutil.rev_parse(repo, ref):
+            return ref
+    return None
+
+
+def _release_still_ahead(repo: Path, train_name: str, tip: str) -> bool:
+    ref = _release_ref(repo, train_name)
+    if not ref or not tip:
+        return False
+    return not gitutil.is_ancestor(repo, ref, tip)
+
+
+def _foreign_release_still_open(
+    repo: Path, sha: str, our_train: str, tip: str
+) -> bool:
+    info = gitutil.commit_oneline(repo, sha)
+    subject_train = _train_from_subject(info["subject"])
+    _places, branch_train = _containers(repo, sha, our_train)
+    owner = subject_train or branch_train
+    if not owner or owner == our_train:
+        return False
+    return _release_still_ahead(repo, owner, tip)
+
+
+def _stable_tag_for(version: str | None) -> str:
+    if not version:
+        return ""
+    try:
+        pep, _npm = versions.drop_rc(version)
+    except GitConvoyError:
+        return ""
+    return f"v{pep}"
+
+
+def _plan_viability(workspace: Path, plan: dict) -> dict:
+    train = Train(name=plan["slug"], branch=plan["branch"], status="cut")
+    for row in plan["rows"]:
+        train.add_repo(row)
+    repos: list[dict] = []
+    for row in train.repos:
+        findings = _repo_viability(
+            workspace / row.path,
+            train,
+            row,
+            tip=plan["tips"][row.id],
+        )
+        if findings:
+            repos.append({"id": row.id, "path": row.path, "findings": findings})
+    viable = not repos
+    note = ""
+    if not viable:
+        note = (
+            "Do not cut yet. Resolve the conflicts above, then re-run train check."
+        )
+    return {
+        "ok": viable,
+        "viable": viable,
+        "train": train.name or None,
+        "branch": train.branch or None,
+        "status": "planned",
+        "repos": repos,
+        "note": note,
+    }
+
+
+def _precut_block(report: dict) -> str | None:
+    name = report.get("train") or "?"
+    return _viability_error(
+        report,
+        kinds=_VIABILITY_KINDS,
+        headline=f"train {name} would not be viable.",
+        recommendation=(
+            "Cut refused before creating release branches. "
+            "Re-check with: git convoy train check"
+        ),
+    )
 
 
 def adopt(
@@ -630,7 +905,9 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
         retry_hint="git convoy train tag-rc",
     )
     tagged: list[dict] = []
-    platform = _packages_platform(workspace, list(train.repos), choose_rc=True)
+    platform = _packages_platform(
+        workspace, list(train.repos), choose_rc=True, our_train=train.name
+    )
     for repo_row in _ordered(train):
         repo_path = workspace / repo_row.path
         gitutil.checkout_branch(repo_path, train.branch)
@@ -638,7 +915,7 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
         current = info.get("python") or info.get("npm")
         if not current:
             raise GitConvoyError(f"{repo_row.id}: no version file")
-        pep, npm, tag = _choose_rc(repo_path, current)
+        pep, npm, tag = _choose_rc(repo_path, current, our_train=train.name)
         if pep != current or info.get("npm") not in {None, npm}:
             versions.write_version(
                 repo_path,
@@ -1283,7 +1560,13 @@ def _refuse_unviable(workspace: Path, state: State, train: Train) -> None:
         raise GitConvoyError(blocked)
 
 
-def _viability_error(report: dict, *, kinds: tuple[str, ...]) -> str | None:
+def _viability_error(
+    report: dict,
+    *,
+    kinds: tuple[str, ...],
+    headline: str | None = None,
+    recommendation: str | None = None,
+) -> str | None:
     if report.get("viable", True) and not report.get("repos"):
         return None
     lines: list[str] = []
@@ -1294,16 +1577,19 @@ def _viability_error(report: dict, *, kinds: tuple[str, ...]) -> str | None:
             lines.append(f"{repo['id']}: {_finding_sentence(finding)}")
     if not lines:
         return None
-    return (
-        f"train {report.get('train') or '?'} is not viable.\n  "
-        + "\n  ".join(lines)
-        + "\n"
-        + _UNFOLD_RECOMMENDATION
-    )
+    title = headline or f"train {report.get('train') or '?'} is not viable."
+    rec = _UNFOLD_RECOMMENDATION if recommendation is None else recommendation
+    return f"{title}\n  " + "\n  ".join(lines) + "\n" + rec
 
 
-def _repo_viability(repo_path: Path, train: Train, row: TrainRepo) -> list[dict]:
-    tip = _release_tip(repo_path, train.branch)
+def _repo_viability(
+    repo_path: Path,
+    train: Train,
+    row: TrainRepo,
+    *,
+    tip: str | None = None,
+) -> list[dict]:
+    tip = tip or _release_tip(repo_path, train.branch)
     if not tip:
         return [
             {
@@ -1339,6 +1625,12 @@ def _repo_viability(repo_path: Path, train: Train, row: TrainRepo) -> list[dict]
                 )
             for tag_name, sha in _rc_tags(repo_path, body):
                 if gitutil.is_ancestor(repo_path, sha, tip):
+                    if _foreign_release_still_open(repo_path, sha, train.name, tip):
+                        findings.append(
+                            _tag_finding(
+                                repo_path, "rc-contest", tag_name, sha, train.name
+                            )
+                        )
                     continue
                 findings.append(
                     _tag_finding(repo_path, "rc-contest", tag_name, sha, train.name)
@@ -1441,7 +1733,7 @@ def _containers(
         if name in {"origin/HEAD", "HEAD"} or name.endswith("/HEAD"):
             continue
         short = name.removeprefix("origin/")
-        if short in {f"release/{our_train}", our_train}:
+        if our_train and short in {f"release/{our_train}", our_train}:
             continue
         if name not in places:
             places.append(name)
@@ -1631,12 +1923,16 @@ def _ensure_rc(version: str) -> tuple[str, str]:
     return versions.with_rc(version, rc)
 
 
-def _choose_rc(repo: Path, current: str) -> tuple[str, str, str]:
+def _choose_rc(
+    repo: Path, current: str, our_train: str = ""
+) -> tuple[str, str, str]:
     """Pick the next unused rc version and ``v*`` tag for this repo.
 
     Skips tags that already exist locally or on origin (unless they already
     point at HEAD — idempotent re-run). If this X.Y.Z was already released
-    (``vX.Y.Z`` exists), start at the next patch ``rc.1``.
+    (``vX.Y.Z`` exists), start at the next patch ``rc.1``. A foreign rc series
+    moves to the next patch only when that train's release branch is already
+    contained in HEAD.
     """
     gitutil.fetch(repo)
     major, minor, patch, _rc = versions.parse(current)
@@ -1645,6 +1941,10 @@ def _choose_rc(repo: Path, current: str) -> tuple[str, str, str]:
     else:
         pep, npm = _ensure_rc(current)
     head = gitutil.rev_parse(repo, "HEAD")
+    if head:
+        pep, npm, _skipped = _advance_past_foreign_series(
+            repo, pep, our_train, head
+        )
     for _ in range(100):
         tag = f"v{_tag_body(pep)}"
         taken = _existing_tag_commit(repo, tag)

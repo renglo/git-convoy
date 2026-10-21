@@ -244,6 +244,37 @@ accounts:
         self.assertIn("peers_bom: 0.1.2\n", text)
         self.assertFalse(promote_staging_pins(root))
 
+    def test_staging_rewrite_drops_old_peer_pin_without_trailing_newline(self) -> None:
+        root = Path(self._tmp()) / "bom"
+        root.mkdir()
+        (root / "renglo.yaml").write_text(
+            """
+name: apollo
+platform: 0.1.4
+release:
+  bom: 0.1.1
+  console: 0.1.1
+placement:
+  peers:
+    tourbot:
+      extensions:
+        - tourbotlink
+      peers_bom: 0.1.1
+staging:
+  platform: 0.1.5rc1
+  bom: 0.1.2
+  console: 0.1.2
+  peers:
+    tourbot: 0.1.2""".lstrip(),
+            encoding="utf-8",
+        )
+        sync_staging_pins(root, "v0.1.3", platform="0.1.5rc1")
+        text = (root / "renglo.yaml").read_text(encoding="utf-8")
+        staging = text.split("staging:", 1)[1]
+        self.assertEqual(staging.count("    tourbot:"), 1)
+        self.assertIn("    tourbot: 0.1.3\n", staging)
+        self.assertNotIn("0.1.2", staging)
+
     def test_split_puts_wl_python_on_hub_and_keeps_console_host(self) -> None:
         catalog = [
             PackageSlot(id="console", npm="@renglo/console"),

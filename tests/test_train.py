@@ -1061,3 +1061,154 @@ def test_unfold_becomes_a_feature_and_prs_wait_for_refresh(
     monkeypatch.setattr(feature_cmd, "_push_feature_branches", lambda _w, _f: [])
     opened = feature_cmd.prs(workspace, load(workspace), use_gh=False)
     assert opened["ok"] is True
+
+
+def _rc_tag_on_another_line(repo: Path, *, merged: bool = True) -> None:
+    git(repo, "tag", "v1.0.0")
+    git(repo, "checkout", "develop")
+    (repo / "ahead.txt").write_text("work\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "work on develop")
+    git(repo, "checkout", "-b", "release/other", "main")
+    git(repo, "commit", "--allow-empty", "-m", "Set 1.0.1rc1 for train other")
+    git(repo, "tag", "v1.0.1-rc.1")
+    git(repo, "checkout", "develop")
+    if merged:
+        git(repo, "merge", "--no-edit", "release/other")
+
+
+def test_check_skips_an_rc_series_another_train_already_tagged(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    schd = workspace / "extensions" / "schd"
+    lib = workspace / "dev" / "renglo-lib"
+    _rc_tag_on_another_line(schd)
+    assert gitutil.is_ancestor(schd, "v1.0.1-rc.1", "develop")
+    data = train_cmd.check(workspace, State())
+    assert data["viable"] is True
+    planned = next(row for row in data["planned"] if row["id"] == "schd")
+    assert planned["to"] == "1.0.2rc1"
+    assert planned["tag"] == "v1.0.2"
+    skipped = next(row for row in data["skipped_series"] if row["id"] == "schd")
+    assert skipped["version"] == "1.0.1"
+    assert skipped["train"] == "other"
+    assert skipped["tag"] == "v1.0.1-rc.1"
+    assert not gitutil.has_local_branch(schd, "release/2026-10-06")
+    assert not gitutil.has_local_branch(lib, "release/2026-10-06")
+    assert gitutil.current_branch(schd) == "develop"
+
+
+def test_check_does_not_skip_an_active_release(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    schd = workspace / "extensions" / "schd"
+    _rc_tag_on_another_line(schd, merged=False)
+    data = train_cmd.check(workspace, State(), repo_ids=["schd"])
+    assert data["viable"] is False
+    assert data["skipped_series"] == []
+    assert data["planned"][0]["to"] == "1.0.1rc1"
+    contest = next(
+        row
+        for row in data["repos"][0]["findings"]
+        if row["kind"] == "rc-contest"
+    )
+    assert contest["tag"] == "v1.0.1-rc.1"
+    with pytest.raises(GitConvoyError, match="would not be viable"):
+        train_cmd.cut(workspace, State(), "2026-10-06", repo_ids=["schd"])
+    assert not gitutil.has_local_branch(schd, "release/2026-10-06")
+
+
+def test_check_blocks_a_release_that_moved_past_a_merged_rc(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    schd = workspace / "extensions" / "schd"
+    _rc_tag_on_another_line(schd)
+    git(schd, "checkout", "release/other")
+    git(schd, "commit", "--allow-empty", "-m", "Set 1.0.1rc2 for train other")
+    git(schd, "tag", "v1.0.1-rc.2")
+    git(schd, "checkout", "develop")
+    data = train_cmd.check(workspace, State(), repo_ids=["schd"])
+    assert data["viable"] is False
+    assert data["skipped_series"] == []
+    assert data["planned"][0]["to"] == "1.0.1rc1"
+    assert any(
+        row["kind"] == "rc-contest" for row in data["repos"][0]["findings"]
+    )
+
+
+def test_cut_starts_past_another_trains_rc_series(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    schd = workspace / "extensions" / "schd"
+    _rc_tag_on_another_line(schd)
+    data = train_cmd.cut(workspace, State(), "2026-10-06", repo_ids=["schd"])
+    row = next(item for item in data["repos"] if item["id"] == "schd")
+    assert row["to"] == "1.0.2rc1"
+    assert 'version = "1.0.2rc1"' in (schd / "pyproject.toml").read_text()
+    assert gitutil.current_branch(schd) == "release/2026-10-06"
+
+
+def test_check_names_a_stable_tag_taken_before_cut(
+    workspace: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "main")
+    git(schd, "commit", "--allow-empty", "-m", "Release 1.0.1")
+    git(schd, "tag", "v1.0.1")
+    git(schd, "checkout", "develop")
+    data = train_cmd.check(workspace, State(), repo_ids=["schd"])
+    assert data["viable"] is False
+    taken = next(
+        row
+        for row in data["repos"][0]["findings"]
+        if row["kind"] == "stable-taken"
+    )
+    assert taken["tag"] == "v1.0.1"
+    assert not gitutil.has_local_branch(schd, "release/2026-10-06")
+
+
+def test_check_is_viable_and_cut_still_branches(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    schd = workspace / "extensions" / "schd"
+    data = train_cmd.check(workspace, State(), repo_ids=["schd"])
+    assert data["train"] is None
+    assert data["ok"] is True
+    assert data["viable"] is True
+    assert data["planned"][0]["to"] == "1.0.1rc1"
+    assert data["planned"][0]["tag"] == "v1.0.1"
+    assert not gitutil.has_local_branch(schd, "release/2026-10-06")
+    cut = train_cmd.cut(workspace, State(), "2026-10-06", repo_ids=["schd"])
+    assert cut["ok"] is True
+    assert gitutil.has_local_branch(schd, "release/2026-10-06")
+
+
+def test_check_command_reports_a_skipped_rc_series(
+    workspace: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(workspace)
+    _rc_tag_on_another_line(workspace / "extensions" / "schd")
+    assert main(["--json", "train", "check"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    planned = next(row for row in data["planned"] if row["id"] == "schd")
+    assert planned["to"] == "1.0.2rc1"
+    skipped = next(row for row in data["skipped_series"] if row["id"] == "schd")
+    assert skipped["train"] == "other"
+    assert skipped["tag"] == "v1.0.1-rc.1"
+    assert "release/2026-10-06" not in git(
+        workspace / "extensions" / "schd", "branch", "--list"
+    ).stdout
+
+
+def test_choose_rc_leaves_a_foreign_series(workspace: Path, monkeypatch) -> None:
+    monkeypatch.chdir(workspace)
+    schd = workspace / "extensions" / "schd"
+    git(schd, "commit", "--allow-empty", "-m", "Set 1.0.1rc1 for train other")
+    git(schd, "tag", "v1.0.1-rc.1")
+    pep, _npm, tag = train_cmd._choose_rc(schd, "1.0.1rc1", our_train="2026-10-20")
+    assert pep == "1.0.2rc1"
+    assert tag == "v1.0.2-rc.1"
