@@ -356,6 +356,21 @@ def _targets(
         if branch != sheet.branch:
             wrong_branch.append(f"{row.id} is on {branch}, not {sheet.branch}")
             continue
+        if not gitutil.has_commits(repo_path):
+            boot = gitutil.bootstrap_new_repository(
+                repo_path,
+                push=bool(gitutil.origin_url(repo_path)),
+                return_branch=sheet.branch,
+            )
+            if boot.get("status") == "failed":
+                raise GitConvoyError(
+                    gitutil.format_ensure_develop_failure(
+                        row.id,
+                        repo_path,
+                        boot,
+                        retry="git convoy feature commit",
+                    )
+                )
         dirty.append(_snapshot(row.id, row.path, repo_path, branch, include_diff))
     if wrong_branch:
         raise GitConvoyError("; ".join(wrong_branch) + f". {hint}")

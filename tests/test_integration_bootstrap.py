@@ -33,6 +33,29 @@ def test_ensure_develop_pushes_main_then_creates_develop(tmp_path: Path) -> None
     assert git(repo, "ls-remote", "--heads", "origin", "develop").stdout.strip()
 
 
+def test_bootstrap_new_repository_restores_feature_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "rops"
+    subprocess.run(
+        ["git", "init", "-b", "feature/supervisor", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    (repo / "handler.py").write_text("new\n")
+    _bare_remote(repo)
+
+    boot = gitutil.bootstrap_new_repository(
+        repo, push=True, return_branch="feature/supervisor"
+    )
+    assert boot["bootstrapped"] is True
+    assert git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "feature/supervisor"
+    assert gitutil.is_dirty(repo)
+    assert gitutil.has_commits(repo)
+    assert git(repo, "ls-remote", "--heads", "origin", "main").stdout.strip()
+    assert git(repo, "ls-remote", "--heads", "origin", "develop").stdout.strip()
+
+
 def test_ensure_develop_empty_commit_leaves_dirty_tree(tmp_path: Path) -> None:
     repo = tmp_path / "tool"
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)

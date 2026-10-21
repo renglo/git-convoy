@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,6 +27,39 @@ def _prepare_two_dirty(workspace: Path, monkeypatch) -> tuple[Path, Path]:
 
 def _last_message(repo: Path) -> str:
     return capture(repo, "log", "-1", "--format=%B")
+
+
+def test_feature_commit_bootstraps_unborn_repository(
+    workspace: Path, monkeypatch, capsys
+) -> None:
+    rops = workspace / "extensions" / "rops"
+    rops.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "feature/supervisor", str(rops)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(rops), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(rops), "config", "user.name", "Test"],
+        check=True,
+    )
+    (rops / "handler.py").write_text("print('rops')\n")
+    monkeypatch.chdir(workspace)
+    assert main(["--json", "init"]) == 0
+    assert main(["--json", "feature", "start", "supervisor"]) == 0
+    assert main(["--json", "feature", "adopt", "--repos", "rops"]) == 0
+    capsys.readouterr()
+    assert main(["--json", "feature", "commit"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["ok"] is True
+    assert [row["id"] for row in plan["repos"]] == ["rops"]
+    assert gitutil.has_commits(rops)
+    assert gitutil.current_branch(rops) == "feature/supervisor"
+    assert gitutil.is_dirty(rops)
 
 
 def test_json_commit_without_apply_flags_is_plan(
