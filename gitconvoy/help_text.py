@@ -139,8 +139,12 @@ HELP_SECTIONS: list[HelpSection] = [
         "name": "Cycle 2 — Release train (local)",
         "commands": [
             {
+                "cmd": "git convoy train check",
+                "summary": "Report tag, rc, and main conflicts a cut would hit. Creates no branches.",
+            },
+            {
                 "cmd": "git convoy train cut NAME",
-                "summary": "Create release/NAME on changed product repos and open the train sheet.",
+                "summary": "Create release/NAME on changed product repos and open the train sheet. Refuses first when that cut would not be publishable.",
             },
             {
                 "cmd": "git convoy train commit --header \"fix: …\" --header-only",
@@ -552,8 +556,12 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
             "name": "Cycle 2 — Cut and stabilize locally",
             "commands": [
                 {
+                    "cmd": "git convoy train check",
+                    "summary": "Report tag, rc, and main conflicts a cut would hit. Creates no branches.",
+                },
+                {
                     "cmd": "git convoy train cut NAME",
-                    "summary": "Create release/NAME on changed product repos.",
+                    "summary": "Create release/NAME on changed product repos. Refuses first when that cut would not be publishable.",
                 },
                 {
                     "cmd": "git convoy train adopt",
