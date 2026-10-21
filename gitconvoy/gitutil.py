@@ -70,12 +70,21 @@ def porcelain_paths(porcelain: str) -> list[str]:
     return files
 
 
+def has_commits(repo: Path) -> bool:
+    """False on a fresh ``git init`` before the first commit (unborn HEAD)."""
+    return bool(rev_parse(repo, "HEAD"))
+
+
 def diff_stat(repo: Path) -> str:
-    return capture(repo, "diff", "--stat", "HEAD")
+    if not has_commits(repo):
+        return ""
+    return run(repo, "diff", "--stat", "HEAD", check=False).stdout.strip()
 
 
 def diff_patch(repo: Path) -> str:
-    return capture(repo, "diff", "HEAD")
+    if not has_commits(repo):
+        return ""
+    return run(repo, "diff", "HEAD", check=False).stdout.strip()
 
 
 def commit_all(repo: Path, message: str) -> str:
@@ -472,6 +481,37 @@ def checkout_integration(repo: Path) -> str:
 
 def has_main_commits(repo: Path) -> bool:
     return bool(rev_parse(repo, "origin/main") or rev_parse(repo, "main"))
+
+
+def bootstrap_new_repository(
+    repo: Path,
+    *,
+    push: bool = True,
+    return_branch: str | None = None,
+    initial_commit_message: str = "Initial commit",
+) -> dict:
+    """Bootstrap ``main`` and ``develop`` when the clone has no commits yet.
+
+    Used for empty GitHub repos and fresh ``git init`` checkouts. Creates an
+    empty Initial commit (working tree stays dirty). When ``return_branch`` is
+    a feature branch name, recreates that branch from ``develop`` afterward.
+    """
+    if has_commits(repo):
+        return {"status": "already", "bootstrapped": False}
+    saved = (return_branch or "").strip() or current_branch(repo)
+    ensured = ensure_develop(
+        repo,
+        push=push,
+        initial_commit_message=initial_commit_message,
+    )
+    if ensured.get("status") == "failed":
+        return {**ensured, "bootstrapped": False}
+    if saved and saved not in {"", "HEAD"}:
+        if saved in {"main", "develop"}:
+            checkout_branch(repo, saved)
+        else:
+            checkout(repo, saved, create=True)
+    return {**ensured, "bootstrapped": True}
 
 
 def ensure_main_on_origin(repo: Path, *, push: bool = True) -> dict:
