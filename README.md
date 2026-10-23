@@ -591,6 +591,8 @@ git convoy train tag-rc
 
 For each train participant: merges latest stable/main into `develop` (catches hotfixes since the last rc), then candidate tag (`v1.2.4-rc.1`), push `release/<name>` and the tag. **CI publishes rc packages to CodeArtifact.** Develop sync failures are reported but tagging still proceeds — resolve conflicts during stabilization.
 
+If a `v*` publish workflow exists only on the release branch, `tag-rc` commits that file onto `main` and `develop`, merges the `main` commit back into the release branch, and pushes `main` before the tag. GitHub does not start a tag workflow until the file is on the default branch. The previous rc tag stays; the new HEAD gets the next rc.
+
 `tag-rc` will not reuse a `v*` tag that already exists locally or on origin (unless it already points at HEAD). It walks `rc.N` until it finds a free tag. If `vX.Y.Z` was already released, it starts at `vX.Y.Z+1-rc.1` instead of minting another `X.Y.Z-rc.N`.
 
 Use `--no-push` to stay in cycle 2 (local tags only).

@@ -243,6 +243,44 @@ def test_take_refresh_same_train_updates_in_place(
     assert "bom: 1.4.1" in text
 
 
+def test_take_refreshes_draft_when_pin_still_names_previous(
+    tmp_path: Path,
+) -> None:
+    """A draft for this train is updated even if the pin was not moved forward."""
+    bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
+    state = _train(status="stabilizing")
+    first = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    assert first["mode"] == "draft"
+    assert first["version"] == "v1.4.1"
+    targets = bom_repo / "deploy_targets.yml"
+    targets.write_text(targets.read_text().replace("bom: 1.4.1", "bom: 1.4.0", 1))
+    state.trains["2026-W34"].repos[0].to = "1.2.5"
+    second = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    assert second["mode"] == "refresh"
+    assert second["version"] == "v1.4.1"
+    assert not (bom_repo / "bom" / "v1.4.2.json").exists()
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["python"]["renglo-lib"] == "1.2.5"
+    assert "bom: 1.4.1" in targets.read_text()
+
+
+def test_take_refuses_to_rewrite_published_bom_from_old_pin(tmp_path: Path) -> None:
+    bom_repo = _bom_repo(tmp_path)
+    _seed_train_packages(tmp_path)
+    state = _train(status="published")
+    adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    adopt_cmd.promote(tmp_path, state, bom=str(bom_repo))
+    targets = bom_repo / "deploy_targets.yml"
+    targets.write_text(targets.read_text().replace("bom: 1.4.1", "bom: 1.4.0", 1))
+    state.trains["2026-W34"].repos[0].to = "1.2.5"
+    with pytest.raises(GitConvoyError, match="not changed after production"):
+        adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
+    assert dest["python"]["renglo-lib"] == "1.2.4"
+    assert dest["description"].startswith("Production.")
+
+
 def test_take_after_production_bumps_new_version(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
     _seed_train_packages(tmp_path)
@@ -465,7 +503,7 @@ def test_refresh_after_publish_sets_staging_description(tmp_path: Path) -> None:
     assert dest["description"] == "Staging. Release 2026-W34."
 
 
-def test_refresh_preserves_production_enabled(tmp_path: Path) -> None:
+def test_refresh_returns_catalog_to_staging(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
     _seed_train_packages(tmp_path)
     state = _train(status="published")
@@ -473,9 +511,82 @@ def test_refresh_preserves_production_enabled(tmp_path: Path) -> None:
     adopt_cmd.promote(tmp_path, state, bom=str(bom_repo))
     adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
     text = (bom_repo / "deploy_targets.yml").read_text()
-    assert "enabled: true" in text
+    assert "production:\n        enabled: false" in text
     dest = json.loads((bom_repo / "bom" / "v1.4.1.json").read_text())
-    assert dest["description"] == "Production. Release 2026-W34."
+    assert dest["description"] == "Staging. Release 2026-W34."
+
+
+def test_refresh_stages_when_production_flag_is_already_on(tmp_path: Path) -> None:
+    """A platform-only staging block must not promote a refresh."""
+    bom_repo = _bom_repo(tmp_path)
+    (bom_repo / "renglo.yaml").write_text(
+        """
+name: acme
+platform: 0.1.4
+accounts:
+  staging:
+    id: "1"
+    region: us-east-1
+    enabled: true
+  production:
+    id: "1"
+    region: us-east-1
+    enabled: true
+staging:
+  platform: 0.1.5rc1
+release:
+  bom: 1.4.0
+  console: 1.4.0
+packages:
+  renglo-lib:
+    python: renglo-lib
+  schd:
+    python: renglo-schd
+    npm: "@renglo/schd"
+  console:
+    npm: "@renglo/console"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    _seed_train_packages(tmp_path)
+    state = _train(status="stabilizing")
+    adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    (bom_repo / "renglo.yaml").write_text(
+        """
+name: acme
+platform: 0.1.4
+accounts:
+  staging:
+    id: "1"
+    region: us-east-1
+    enabled: true
+  production:
+    id: "1"
+    region: us-east-1
+    enabled: true
+staging:
+  platform: 0.1.5rc1
+release:
+  bom: 1.4.0
+  console: 1.4.0
+packages:
+  renglo-lib:
+    python: renglo-lib
+  schd:
+    python: renglo-schd
+    npm: "@renglo/schd"
+  console:
+    npm: "@renglo/console"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    data = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    text = (bom_repo / "renglo.yaml").read_text()
+    assert data["point"]["production_enabled"] is False
+    assert "staging pins updated" in data["note"]
+    assert "production:\n    id: \"1\"\n    region: us-east-1\n    enabled: false\n" in text
+    assert "staging:\n  platform: 0.1.5rc1\n  bom: 1.4.1\n  console: 1.4.1\n" in text
+    assert "release:\n  bom: 1.4.0\n" in text
 
 
 def test_promote_cli_flag(tmp_path: Path) -> None:

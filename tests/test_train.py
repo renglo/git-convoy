@@ -438,6 +438,51 @@ def test_tag_rc_again_bumps_rc_suffix(workspace: Path, monkeypatch) -> None:
     assert sheet.to == "1.0.1rc2"
 
 
+def test_tag_rc_puts_publish_workflow_on_main(
+    workspace: Path, monkeypatch
+) -> None:
+    """A v* workflow that exists only on the release branch must land on main.
+
+    GitHub does not start the workflow until the file is on the default branch.
+    main must stay an ancestor of the release tip, and product commits stay off main.
+    """
+    monkeypatch.chdir(workspace)
+    state = State()
+    train_cmd.cut(workspace, state, "2026-08-31", repo_ids=["schd"])
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "release/2026-08-31")
+    wf = schd / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "publish-extension.yml").write_text(
+        'name: Publish\non:\n  push:\n    tags:\n      - "v*"\n'
+    )
+    (schd / "fix.py").write_text("print('on the train')\n")
+    git(schd, "add", "-A")
+    git(schd, "commit", "-m", "publish workflow")
+
+    data = train_cmd.tag_rc(workspace, load(workspace), push=False)
+    row = next(item for item in data["repos"] if item["id"] == "schd")
+    assert row["seeded_workflow"] is True
+    assert gitutil.current_branch(schd) == "release/2026-08-31"
+    assert gitutil.is_ancestor(schd, "main", "HEAD")
+    assert gitutil.is_ancestor(schd, "main", "develop")
+    main_files = set(
+        git(schd, "ls-tree", "-r", "--name-only", "main").stdout.splitlines()
+    )
+    develop_files = set(
+        git(schd, "ls-tree", "-r", "--name-only", "develop").stdout.splitlines()
+    )
+    assert ".github/workflows/publish-extension.yml" in main_files
+    assert "fix.py" not in main_files
+    assert ".github/workflows/publish-extension.yml" in develop_files
+    assert "fix.py" not in develop_files
+
+    again = train_cmd.tag_rc(workspace, load(workspace), push=False)
+    again_row = next(item for item in again["repos"] if item["id"] == "schd")
+    assert again_row["seeded_workflow"] is False
+    assert again_row["tag"] == row["tag"]
+
+
 def test_tag_rc_again_keeps_rc_when_head_matches_tag(
     workspace: Path, monkeypatch
 ) -> None:

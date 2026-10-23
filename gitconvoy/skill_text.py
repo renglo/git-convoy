@@ -177,7 +177,7 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 
 - **1–2:** features and local release branches — git only (Full optional). `train check` reports tag conflicts before a train exists. `train cut` runs that check and refuses before creating release branches.
 - **Ops ship:** `git convoy ops prs`, merge into develop, then `git convoy ops publish`. Does not write `renglo.yaml`.
-- **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging).
+- **3:** `train tag-rc` syncs develop from stable for participants, copies any `v*` publish workflow that exists only on the release branch onto `main` (and `develop`) and pushes `main` before the tag, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging). GitHub does not start a tag workflow until that file is on the default branch.
 - **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.
 - **Hotfix** (parallel, not a fifth cycle): production PATCH without a new train. May touch several repos. PRs into `main`. Publish merges tagged `main` into `develop` and absorbs local `feature/*`.

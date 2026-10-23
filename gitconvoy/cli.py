@@ -1157,6 +1157,16 @@ def _close_text(data: dict) -> str:
 
 def _tag_rc_text(data: dict) -> str:
     lines = [f"tagged rc for {data['train']}"]
+    seeded = [
+        repo["id"]
+        for repo in data.get("repos") or []
+        if repo.get("seeded_workflow")
+    ]
+    if seeded:
+        lines.append(
+            "publish workflow placed on main before the rc tag: "
+            + ", ".join(seeded)
+        )
     sync = data.get("develop_sync") or {}
     failed = sync.get("failed") or []
     if failed:

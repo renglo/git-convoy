@@ -453,16 +453,13 @@ def take(
         master = json.loads(_bom_file(root, dest).read_text())
         master = _merge_master_from_bom_data(master, bom_data)
         write_split_boms(root, dest, master, catalog=catalog)
-    # A new release, and any refresh while a staging block exists, stays off
-    # the production pins. Refreshing a train that is already in production
-    # (no staging block) updates those pins in place.
-    staging_open = bool(staging_release_pin(root))
-    promote_now = refresh and not staging_open and _production_enabled(root)
+    # Plain bom always points staging and leaves production.enabled false.
+    # Production pins move only in promote(), via bom --production.
     pointed = point(
         workspace,
         dest,
         bom=bom,
-        production=promote_now,
+        production=False,
     )
     note = pointed["note"]
     if mode == "refresh":
@@ -645,18 +642,24 @@ def _resolve_take_target(
         data = json.loads(pointed_path.read_text())
         if data.get("train") == train.name:
             return pointed, _strip_v(pointed), True
-    return pointed, versions.bump(_strip_v(pointed), "patch"), False
+    nxt = versions.bump(_strip_v(pointed), "patch")
+    nxt_path = _bom_file(root, nxt)
+    if nxt_path.is_file():
+        data = json.loads(nxt_path.read_text())
+        if data.get("train") == train.name:
+            if _bom_is_published(data):
+                raise GitConvoyError(
+                    f"bom/{_strip_v(nxt)}.json is the published release for "
+                    f"train {train.name}; it is not changed after production"
+                )
+            # The draft is already on disk, but the staging/release pin still
+            # names the previous version. Keep editing that file.
+            return pointed, _strip_v(nxt), True
+    return pointed, nxt, False
 
 
-def _production_enabled(root: Path) -> bool:
-    targets = tenant_config_path(root)
-    if not targets.exists():
-        return False
-    match = re.search(
-        r"(?m)^\s+production:\n(?:[ \t].*\n)*?[ \t]+enabled:\s+(\S+)",
-        targets.read_text(),
-    )
-    return bool(match and match.group(1).lower() == "true")
+def _bom_is_published(data: dict) -> bool:
+    return str(data.get("description") or "").strip().startswith("Production.")
 
 
 def _set_production_enabled(root: Path, enabled: bool) -> None:
@@ -707,7 +710,6 @@ def _update_draft_metadata(
         train,
         description,
         refresh=refresh,
-        production_enabled=_production_enabled(root),
     )
     write_bom_file(root, path, data)
 
@@ -718,15 +720,16 @@ def _description_for_take(
     override: str | None,
     *,
     refresh: bool,
-    production_enabled: bool,
 ) -> str:
     if override:
         return override
     if refresh:
-        if production_enabled or (existing or "").strip().startswith("Production."):
-            return existing or _production_description(train.name)
+        # A published train's plain bom is the staging release. Production
+        # wording is written only by bom --production.
         if train.status == "published":
             return f"Staging. Release {train.name}."
+        if (existing or "").strip().startswith("Production."):
+            return f"Draft. Taking {train.name}. Not production."
         return _increment_release_description(existing or "", train.name)
     return f"Draft. Taking {train.name}. Not production."
 

@@ -911,6 +911,12 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
     for repo_row in _ordered(train):
         repo_path = workspace / repo_row.path
         gitutil.checkout_branch(repo_path, train.branch)
+        # GitHub starts a v* workflow only after that file exists on the
+        # default branch. Copy it to main before the tag push, and merge
+        # main back so the train stays viable.
+        seeded = _seed_publish_workflows_on_main(
+            repo_path, repo_row.id, train.branch, push=push
+        )
         info = versions.read_version(repo_path)
         current = info.get("python") or info.get("npm")
         if not current:
@@ -946,7 +952,14 @@ def tag_rc(workspace: Path, state: State, push: bool = True) -> dict:
             )
         repo_row.to = pep
         repo_row.rc_tag = tag
-        tagged.append({"id": repo_row.id, "tag": tag, "version": pep})
+        tagged.append(
+            {
+                "id": repo_row.id,
+                "tag": tag,
+                "version": pep,
+                "seeded_workflow": seeded,
+            }
+        )
     train.status = "stabilizing"
     save(workspace, state)
     result = {
@@ -1914,6 +1927,102 @@ def _confirm_yes(input_fn, prompt: str) -> bool:
             return True
         if answer in {"no", "n"}:
             return False
+
+
+def _tree_blob(repo: Path, rev: str, rel: str) -> str | None:
+    result = gitutil.run(
+        repo, "rev-parse", "--verify", "--quiet", f"{rev}:{rel}", check=False
+    )
+    sha = (result.stdout or "").strip()
+    return sha or None
+
+
+def _blobs_match(repo: Path, left: str, right: str, rels: list[str]) -> bool:
+    return all(
+        _tree_blob(repo, left, rel) == _tree_blob(repo, right, rel) for rel in rels
+    )
+
+
+def _ff_only(repo: Path, ref: str, repo_id: str, branch: str) -> None:
+    if not gitutil.rev_parse(repo, ref):
+        return
+    merged = gitutil.run(repo, "merge", "--ff-only", ref, check=False)
+    if merged.returncode != 0:
+        raise GitConvoyError(
+            f"{repo_id}: cannot fast-forward {branch} to {ref} "
+            "before adding the tag-publish workflow"
+        )
+
+
+def _merge_ref(repo: Path, ref: str, repo_id: str, branch: str) -> None:
+    if gitutil.is_ancestor(repo, ref, "HEAD"):
+        return
+    merged = gitutil.merge(repo, ref)
+    if merged.returncode != 0:
+        gitutil.run(repo, "merge", "--abort", check=False)
+        raise GitConvoyError(
+            f"{repo_id}: merge {ref} into {branch} failed after "
+            "adding the publish workflow. resolve, then git convoy train tag-rc"
+        )
+
+
+def _seed_publish_workflows_on_main(
+    repo: Path, repo_id: str, release_branch: str, *, push: bool
+) -> bool:
+    """Copy v* publish workflows from the release branch onto ``main``.
+
+    GitHub registers workflows from the default branch. A tag push does not
+    start a workflow that exists only on ``release/*``. The new ``main``
+    commit is merged back into the release branch (and ``develop``) so a
+    later viability check still sees ``main`` as an ancestor. ``main`` is
+    pushed before the caller pushes the rc tag.
+    """
+    names = tag_push_workflows(repo)
+    if not names or not gitutil.rev_parse(repo, "refs/heads/main"):
+        return False
+    rels = [f".github/workflows/{name}" for name in names]
+    release_sha = gitutil.rev_parse(repo, "HEAD")
+    if not release_sha:
+        return False
+    on_main = _blobs_match(repo, "main", release_sha, rels)
+    contained = gitutil.is_ancestor(repo, "main", "HEAD")
+    if on_main and contained and _develop_has_main(repo):
+        return False
+    try:
+        if not on_main:
+            gitutil.checkout(repo, "main")
+            _ff_only(repo, "origin/main", repo_id, "main")
+            if not _blobs_match(repo, "HEAD", release_sha, rels):
+                for rel in rels:
+                    gitutil.run(repo, "checkout", release_sha, "--", rel)
+                gitutil.run(repo, "add", "--", *rels)
+                if gitutil.has_tracked_changes(repo):
+                    gitutil.run(repo, "commit", "-m", "Add tag-publish workflow")
+            if push and gitutil.origin_url(repo):
+                gitutil.push(repo, "origin", "main")
+        gitutil.checkout(repo, release_branch)
+        _merge_ref(repo, "main", repo_id, release_branch)
+        if gitutil.rev_parse(repo, "refs/heads/develop"):
+            gitutil.checkout(repo, "develop")
+            _ff_only(repo, "origin/develop", repo_id, "develop")
+            _merge_ref(repo, "main", repo_id, "develop")
+            if (
+                push
+                and gitutil.origin_url(repo)
+                and gitutil.rev_parse(repo, "origin/develop")
+            ):
+                gitutil.push(repo, "origin", "develop")
+        return True
+    finally:
+        if gitutil.current_branch(repo) != release_branch:
+            gitutil.run(repo, "merge", "--abort", check=False)
+            gitutil.checkout(repo, release_branch)
+
+
+def _develop_has_main(repo: Path) -> bool:
+    if not gitutil.rev_parse(repo, "refs/heads/develop"):
+        return True
+    return gitutil.is_ancestor(repo, "main", "develop")
 
 
 def _ensure_rc(version: str) -> tuple[str, str]:
