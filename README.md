@@ -152,7 +152,7 @@ git convoy --json status
 
 After a few days away, or in the middle of a feature: fetch every clone and bring latest commits into the branch you are already on. Clean repos update. Dirty repos and merge conflicts are listed with a next step. Re-run until the summary says every repo is synchronized. An open feature, ops sheet, hotfix, or train does not block the other repos.
 
-On `develop`, product repos fast-forward `origin/develop` and merge the latest stable tag (or `origin/main`). Ops repos fast-forward `develop` and merge a stable tag only when `main` received a hotfix — raw `origin/main` is not merged. On `feature/*` and `ops/*`, that same integration line is merged into the current branch. `release/*` receives only `origin/release/<name>` — work that landed on `develop` after the cut stays off the train. `hotfix/*` and `main` receive `main`. BOM repos on `main` fast-forward `origin/main`.
+On `develop`, product repos fast-forward `origin/develop` and merge the latest stable tag (or `origin/main`). When `main` does not exist, sync creates it at the `develop` tip and pushes it. Ops repos fast-forward `develop` and merge a stable tag only when `main` received a hotfix — raw `origin/main` is not merged. On `feature/*` and `ops/*`, that same integration line is merged into the current branch. `release/*` receives only `origin/release/<name>` — work that landed on `develop` after the cut stays off the train. `hotfix/*` and `main` receive `main`. BOM repos on `main` fast-forward `origin/main`.
 
 ```bash
 git convoy sync

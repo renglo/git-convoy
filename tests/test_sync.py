@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,29 @@ def test_sync_develop_cli(workspace: Path, monkeypatch, capsys) -> None:
 def test_sync_develop_unknown_repo(workspace: Path) -> None:
     with pytest.raises(GitConvoyError, match="repo not in workspace"):
         sync_cmd.sync_product_repos(workspace, repo_ids=["missing"], push=False)
+
+
+def test_sync_develop_creates_missing_main(tmp_path: Path) -> None:
+    repo = tmp_path / "dood"
+    subprocess.run(["git", "init", "-b", "develop", str(repo)], check=True, capture_output=True)
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    git(repo, "commit", "--allow-empty", "-m", "history on develop")
+    bare = tmp_path / "dood.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "-u", "origin", "develop")
+
+    data = sync_cmd.sync_develop_from_ref(repo, repo_id="dood", push=True)
+    assert data["status"] == "already"
+    assert data["main_created"] is True
+    assert data["next"] == "created main from develop"
+    assert git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
+    assert git(repo, "rev-parse", "main").stdout.strip() == git(repo, "rev-parse", "develop").stdout.strip()
+    assert git(repo, "ls-remote", "--heads", "origin", "main").stdout.strip()
+    again = sync_cmd.sync_develop_from_ref(repo, repo_id="dood", push=True)
+    assert again["status"] == "already"
+    assert again["main_created"] is False
 
 
 def test_sync_develop_creates_missing_develop(workspace: Path) -> None:

@@ -75,7 +75,7 @@ git convoy sync --no-push    # local only; do not push develop
 
 **What it does (every clone, staying on the current branch):**
 
-- **On `develop` (product):** fetch → fast-forward `origin/develop` → merge latest stable tag (or `origin/main`) → optionally push `develop`.
+- **On `develop` (product):** fetch → fast-forward `origin/develop` → if `main` is absent, create it at the `develop` tip and push it → merge latest stable tag (or `origin/main`) → optionally push `develop`.
 - **On `develop` (ops):** fetch → fast-forward `origin/develop`; merge a stable `v*` tag only when that tag is not yet an ancestor (hotfix landed on `main`). Raw `origin/main` is **not** merged.
 - **On `feature/*` or `ops/*`:** merge that same integration line into the current branch. The branch is not switched.
 - **On `release/*`:** merge `origin/release/<name>` only. Commits that landed on `develop` after the cut are not brought onto the train.
