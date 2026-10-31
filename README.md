@@ -152,7 +152,7 @@ git convoy --json status
 
 After a few days away, or in the middle of a feature: fetch every clone and bring latest commits into the branch you are already on. Clean repos update. Dirty repos and merge conflicts are listed with a next step. Re-run until the summary says every repo is synchronized. An open feature, ops sheet, hotfix, or train does not block the other repos.
 
-On `develop`, product repos fast-forward `origin/develop` and merge the latest stable tag (or `origin/main`). Ops repos fast-forward `develop` and merge a stable tag only when `main` received a hotfix — raw `origin/main` is not merged. On `feature/*` and `ops/*`, that same integration line is merged into the current branch. `release/*` receives only `origin/release/<name>` — work that landed on `develop` after the cut stays off the train. `hotfix/*` and `main` receive `main`. BOM repos on `main` fast-forward `origin/main`.
+On `develop`, product repos fast-forward `origin/develop` and merge the latest stable tag (or `origin/main`). When `main` does not exist, sync creates it at the `develop` tip and pushes it. Ops repos fast-forward `develop` and merge a stable tag only when `main` received a hotfix — raw `origin/main` is not merged. On `feature/*` and `ops/*`, that same integration line is merged into the current branch. `release/*` receives only `origin/release/<name>` — work that landed on `develop` after the cut stays off the train. `hotfix/*` and `main` receive `main`. BOM repos on `main` fast-forward `origin/main`.
 
 ```bash
 git convoy sync
@@ -379,9 +379,19 @@ Nothing on `develop` for `schd` (Z has not merged). That repo sits this train ou
 
 ### 1. Cut the train
 
+Before creating branches, check whether this cut would publish a tag another line already owns, share an rc series, or miss commits that are already on `main`:
+
+```bash
+git convoy train check
+```
+
+No train name. Same `--bump`, `--no-bump`, and `--repos` as `train cut`. It reads the integration branch and creates nothing. Exit status is non-zero when the cut would not be publishable. If another train already tagged that rc series and its `release/<train>` is already contained in `develop`, the plan skips to the next patch (`0.0.12` → `0.0.13rc1`). A release branch that is still ahead of `develop` is left alone: the check is not viable and `train cut` refuses, so this cut does not take the next patch while that train is still releasing.
+
 ```bash
 git convoy train cut 2026-W34
 ```
+
+`train cut` runs that check first and refuses before it creates any `release/` branch. A refusal here does not need `train unfold`.
 
 For each product repo whose integration branch (`develop`, or `main` when there is no `develop`) is ahead of its last stable tag, creates `release/2026-W34`, bumps one **patch** (override with `--bump minor|major` or `--no-bump`), and writes rc versions (`1.2.4rc1` / `1.2.4-rc.1`). Repos without `pyproject.toml` or `package.json` are skipped automatically.
 
@@ -580,6 +590,8 @@ git convoy train tag-rc
 ```
 
 For each train participant: merges latest stable/main into `develop` (catches hotfixes since the last rc), then candidate tag (`v1.2.4-rc.1`), push `release/<name>` and the tag. **CI publishes rc packages to CodeArtifact.** Develop sync failures are reported but tagging still proceeds — resolve conflicts during stabilization.
+
+If a `v*` publish workflow exists only on the release branch, `tag-rc` commits that file onto `main` and `develop`, merges the `main` commit back into the release branch, and pushes `main` before the tag. GitHub does not start a tag workflow until the file is on the default branch. The previous rc tag stays; the new HEAD gets the next rc.
 
 `tag-rc` will not reuse a `v*` tag that already exists locally or on origin (unless it already points at HEAD). It walks `rc.N` until it finds a free tag. If `vX.Y.Z` was already released, it starts at `vX.Y.Z+1-rc.1` instead of minting another `X.Y.Z-rc.N`.
 
@@ -1085,7 +1097,8 @@ Pass `--train NAME` if the train you want is not current. Rollback: `bom point` 
 | `git convoy ops publish [REPO…]` | * | After `ops prs` merge: merge `develop`→`main` and tag (sheet default; does not write `renglo.yaml`) |
 | `git convoy ops show [NAME]` | * | Ops sheet + merge status |
 | `git convoy ops close` | * | After merge to develop: checkout develop; remove ops branches |
-| `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos |
+| `git convoy train check` | 2 | Before any train exists: report tag, rc, and main conflicts the next cut would hit; create no branches |
+| `git convoy train cut NAME` | 2 | Cut `release/NAME` on changed repos; refuse first when that cut would not be publishable |
 | `git convoy train adopt [--repos …]` | 2 | Late-join dirty (or named) product repos; no version bump |
 | `git convoy train unadopt --repos …` | 2 | Remove repos from the train; merge their release-branch work into develop |
 | `git convoy train commit` | 2 | Commit dirty train participants (same plan as feature/ops commit) |

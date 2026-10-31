@@ -258,6 +258,16 @@ def _ops(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
 
 def _train(workspace: Path, state, args: argparse.Namespace) -> tuple[dict, str]:
     sub = args.train_cmd
+    if sub == "check":
+        repos = [item.strip() for item in args.repos.split(",") if item.strip()] if args.repos else None
+        data = train_cmd.check(
+            workspace,
+            state,
+            bump=args.bump,
+            repo_ids=repos,
+            no_bump=args.no_bump,
+        )
+        return data, _check_train_text(data)
     if sub == "cut":
         repos = [item.strip() for item in args.repos.split(",") if item.strip()] if args.repos else None
         data = train_cmd.cut(
@@ -774,6 +784,13 @@ def _parser() -> argparse.ArgumentParser:
 
     train = sub.add_parser("train", help="Release train commands")
     tsub = train.add_subparsers(dest="train_cmd", required=True)
+    tcheck = tsub.add_parser(
+        "check",
+        help="Report tag conflicts a cut would hit; creates no branches",
+    )
+    tcheck.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
+    tcheck.add_argument("--no-bump", action="store_true")
+    tcheck.add_argument("--repos", help="Comma-separated repo ids (skip discovery)")
     cut = tsub.add_parser("cut", help="Create release/<train> on changed repos")
     cut.add_argument("name")
     cut.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
@@ -1140,6 +1157,16 @@ def _close_text(data: dict) -> str:
 
 def _tag_rc_text(data: dict) -> str:
     lines = [f"tagged rc for {data['train']}"]
+    seeded = [
+        repo["id"]
+        for repo in data.get("repos") or []
+        if repo.get("seeded_workflow")
+    ]
+    if seeded:
+        lines.append(
+            "publish workflow placed on main before the rc tag: "
+            + ", ".join(seeded)
+        )
     sync = data.get("develop_sync") or {}
     failed = sync.get("failed") or []
     if failed:
@@ -1255,6 +1282,33 @@ def _viability_lines(findings: list[dict]) -> list[str]:
             "Another train is releasing the same repo and it is using the same release tags."
         )
     return lines
+
+
+def _check_train_text(data: dict) -> str:
+    flag = "viable" if data.get("viable", True) else "not viable"
+    label = data.get("train") or "next cut"
+    branch = f"  {data['branch']}" if data.get("branch") else ""
+    lines = [f"{label}{branch}  {flag}"]
+    by_id = {row["id"]: row for row in data.get("repos") or []}
+    for repo in data.get("planned") or []:
+        lines.append(
+            f"  {repo['id']:20} {repo.get('from') or '-'} → {repo.get('to') or '-'}  "
+            f"{repo.get('tag') or ''}".rstrip()
+        )
+        for skip in data.get("skipped_series") or []:
+            if skip.get("id") != repo["id"]:
+                continue
+            owner = f"train {skip['train']} " if skip.get("train") else ""
+            lines.append(
+                f"    skipped {skip.get('version')}; {owner}already tagged {skip.get('tag')}"
+            )
+        findings = (by_id.get(repo["id"]) or {}).get("findings") or []
+        for line in _viability_lines(findings):
+            lines.append(f"    {line}")
+    note = (data.get("note") or "").strip()
+    if note:
+        lines.append(note)
+    return "\n".join(lines)
 
 
 def _train_show_text(data: dict) -> str:

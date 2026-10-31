@@ -374,6 +374,8 @@ Nothing on `develop` for `schd` (Z has not merged). That repo sits this train ou
 
 ## 6. Cut the train
 
+Before creating a train, run `git convoy train check`. No train name is required. It reports a stable tag another line already owns, an rc series you would share, or `main` commits the release would not contain. It creates no branches. `git convoy train cut <name>` runs the same check first and stops before any release branch exists, so a conflict here does not need `train unfold`.
+
 For each participating repo, after the cutoff:
 
 ```bash

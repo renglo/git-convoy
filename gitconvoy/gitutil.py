@@ -70,12 +70,21 @@ def porcelain_paths(porcelain: str) -> list[str]:
     return files
 
 
+def has_commits(repo: Path) -> bool:
+    """False on a fresh ``git init`` before the first commit (unborn HEAD)."""
+    return bool(rev_parse(repo, "HEAD"))
+
+
 def diff_stat(repo: Path) -> str:
-    return capture(repo, "diff", "--stat", "HEAD")
+    if not has_commits(repo):
+        return ""
+    return run(repo, "diff", "--stat", "HEAD", check=False).stdout.strip()
 
 
 def diff_patch(repo: Path) -> str:
-    return capture(repo, "diff", "HEAD")
+    if not has_commits(repo):
+        return ""
+    return run(repo, "diff", "HEAD", check=False).stdout.strip()
 
 
 def commit_all(repo: Path, message: str) -> str:
@@ -474,9 +483,59 @@ def has_main_commits(repo: Path) -> bool:
     return bool(rev_parse(repo, "origin/main") or rev_parse(repo, "main"))
 
 
+def bootstrap_new_repository(
+    repo: Path,
+    *,
+    push: bool = True,
+    return_branch: str | None = None,
+    initial_commit_message: str = "Initial commit",
+) -> dict:
+    """Bootstrap ``main`` and ``develop`` when the clone has no commits yet.
+
+    Used for empty GitHub repos and fresh ``git init`` checkouts. Creates an
+    empty Initial commit (working tree stays dirty). When ``return_branch`` is
+    a feature branch name, recreates that branch from ``develop`` afterward.
+    """
+    if has_commits(repo):
+        return {"status": "already", "bootstrapped": False}
+    saved = (return_branch or "").strip() or current_branch(repo)
+    ensured = ensure_develop(
+        repo,
+        push=push,
+        initial_commit_message=initial_commit_message,
+    )
+    if ensured.get("status") == "failed":
+        return {**ensured, "bootstrapped": False}
+    if saved and saved not in {"", "HEAD"}:
+        if saved in {"main", "develop"}:
+            checkout_branch(repo, saved)
+        else:
+            checkout(repo, saved, create=True)
+    return {**ensured, "bootstrapped": True}
+
+
 def ensure_main_on_origin(repo: Path, *, push: bool = True) -> dict:
     """Push local ``main`` when the remote has no ``main`` yet."""
     return _push_missing_branch(repo, "main", push=push)
+
+
+def ensure_main_from_develop(repo: Path) -> dict:
+    """Create local ``main`` at the ``develop`` tip when ``main`` does not exist.
+
+    Some product repos are published with only ``develop``. Tags, hotfixes, and
+    trains need ``main``. The new branch matches ``develop``; HEAD stays put.
+    An existing local or ``origin/main`` is left alone.
+    """
+    if rev_parse(repo, "refs/heads/main") or rev_parse(repo, "origin/main"):
+        return {"status": "already", "created": False}
+    tip = rev_parse(repo, "refs/heads/develop") or rev_parse(repo, "origin/develop")
+    if not tip:
+        return {"status": "skipped", "created": False}
+    result = run(repo, "branch", "main", tip, check=False)
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "branch main failed").strip()
+        return {"status": "failed", "created": False, "error": err}
+    return {"status": "created", "created": True}
 
 
 def _push_missing_branch(repo: Path, branch: str, *, push: bool) -> dict:
@@ -561,6 +620,33 @@ def format_ensure_develop_failure(
     return message
 
 
+def _publish_develop_with_main(repo: Path, *, push: bool) -> dict:
+    """Publish ``develop``, creating ``main`` from it when ``main`` is absent."""
+    main = ensure_main_from_develop(repo)
+    if main.get("status") == "failed":
+        return {
+            "status": "failed",
+            "created": False,
+            "main_created": False,
+            "error": main.get("error") or "branch main failed",
+            "hint": integration_setup_hint(repo),
+        }
+    published = publish_missing_integration(repo, push=push)
+    if published.get("status") == "failed":
+        return {
+            "status": "failed",
+            "created": False,
+            "main_created": bool(main.get("created")),
+            "error": published.get("error") or "push integration failed",
+            "hint": integration_setup_hint(repo),
+        }
+    return {
+        "status": "already",
+        "created": False,
+        "main_created": bool(main.get("created")),
+    }
+
+
 def ensure_develop(
     repo: Path,
     *,
@@ -575,7 +661,8 @@ def ensure_develop(
     (or ``feature adopt``) is what picks them up. ``bootstrap`` is ignored.
 
     When ``main`` has commits locally but ``origin/main`` is empty, pushes ``main``
-    first.
+    first. When ``develop`` already exists and ``main`` does not, creates ``main``
+    at the ``develop`` tip and publishes it.
 
     Returns ``{"status": "already"|"created"|"failed", "created": bool, ...}``.
     Leaves HEAD on ``develop`` when creating; otherwise does not change branches
@@ -584,18 +671,10 @@ def ensure_develop(
     del bootstrap
     fetch(repo)
     if has_local_branch(repo, "develop"):
-        published = publish_missing_integration(repo, push=push)
-        if published.get("status") == "failed":
-            return {
-                "status": "failed",
-                "created": False,
-                "error": published.get("error") or "push integration failed",
-                "hint": integration_setup_hint(repo),
-            }
-        return {"status": "already", "created": False}
+        return _publish_develop_with_main(repo, push=push)
     if has_remote_branch(repo, "develop"):
         checkout_branch(repo, "develop")
-        return {"status": "already", "created": False}
+        return _publish_develop_with_main(repo, push=push)
 
     main_tip = rev_parse(repo, "origin/main") or rev_parse(repo, "main")
     if not main_tip:

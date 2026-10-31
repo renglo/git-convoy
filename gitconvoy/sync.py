@@ -20,13 +20,22 @@ class DevelopSyncEntry:
     ref: str | None = None
 
 
-def stable_ref(repo_path: Path) -> str:
+def stable_ref(repo_path: Path) -> str | None:
+    """Latest stable tag, else ``main``. ``None`` when the repo has no ``main``."""
     tag = gitutil.last_stable_tag(repo_path)
     if tag:
         return tag
     if gitutil.rev_parse(repo_path, "origin/main"):
         return "origin/main"
-    return "main"
+    if gitutil.rev_parse(repo_path, "refs/heads/main"):
+        return "main"
+    return None
+
+
+def _main_created_note(ensured: dict) -> str:
+    if not ensured.get("main_created"):
+        return ""
+    return "created main from develop"
 
 
 def sync_develop_from_ref(
@@ -40,9 +49,11 @@ def sync_develop_from_ref(
     """Merge tagged main (or a stable tag) into develop.
 
     Fetches first, creates ``develop`` from ``main`` when it is missing (product
-    and ops repos always have an integration branch), updates local ``main``
-    without leaving you on it, then checks out ``develop``. On merge conflict
-    the merge is aborted so the repo is not left mid-merge.
+    and ops repos always have an integration branch). When ``develop`` exists
+    and ``main`` does not, creates ``main`` at the ``develop`` tip and publishes
+    it. Updates local ``main`` without leaving you on it, then checks out
+    ``develop``. On merge conflict the merge is aborted so the repo is not left
+    mid-merge.
     """
     gitutil.fetch(repo_path)
     ensured = gitutil.ensure_develop(repo_path, push=push)
@@ -62,7 +73,7 @@ def sync_develop_from_ref(
         return {
             "status": "skipped",
             "synced": False,
-            "ref": ref or stable_ref(repo_path),
+            "ref": ref or stable_ref(repo_path) or "develop",
             "branch": gitutil.current_branch(repo_path),
         }
     main_ff = gitutil.fast_forward_branch(repo_path, "main")
@@ -72,7 +83,7 @@ def sync_develop_from_ref(
             f"fix main, then {retry_hint}"
         )
     merge_ref = ref or stable_ref(repo_path)
-    if merge_ref not in {"main", "origin/main"} and not gitutil.rev_parse(
+    if merge_ref and merge_ref not in {"main", "origin/main"} and not gitutil.rev_parse(
         repo_path, merge_ref
     ):
         raise GitConvoyError(
@@ -92,7 +103,7 @@ def sync_develop_from_ref(
         raise GitConvoyError(
             f"{repo_id} develop is dirty; commit or stash, then {retry_hint}"
         )
-    already = gitutil.is_ancestor(repo_path, merge_ref, "develop")
+    already = not merge_ref or gitutil.is_ancestor(repo_path, merge_ref, "develop")
     if not already:
         merged = gitutil.merge(repo_path, merge_ref)
         if merged.returncode != 0:
@@ -109,12 +120,15 @@ def sync_develop_from_ref(
         repo_path, "origin/develop"
     ):
         gitutil.push(repo_path, "origin", "develop")
+    note = _main_created_note(ensured)
     return {
         "status": status,
         "synced": True,
-        "ref": merge_ref,
+        "ref": merge_ref or "develop",
         "branch": "develop",
         "develop_created": bool(ensured.get("created")),
+        "main_created": bool(ensured.get("main_created")),
+        "next": note,
     }
 
 
@@ -149,6 +163,9 @@ def sync_repos_develop(
             item["ref"] = result.get("ref")
             item["branch"] = result.get("branch")
             item["develop_created"] = result.get("develop_created")
+            item["main_created"] = result.get("main_created")
+            if result.get("next"):
+                item["next"] = result["next"]
         except GitConvoyError as exc:
             item["error"] = exc.message
             failed.append(entry.id)
@@ -323,6 +340,8 @@ def sync_ops_develop(
         "ref": merge_ref or "origin/develop",
         "branch": "develop",
         "develop_created": bool(ensured.get("created")),
+        "main_created": bool(ensured.get("main_created")),
+        "next": _main_created_note(ensured),
     }
 
 
@@ -364,6 +383,9 @@ def sync_ops_repos(
             item["ref"] = result.get("ref")
             item["branch"] = result.get("branch")
             item["develop_created"] = result.get("develop_created")
+            item["main_created"] = result.get("main_created")
+            if result.get("next"):
+                item["next"] = result["next"]
         except GitConvoyError as exc:
             item["error"] = exc.message
             failed.append(entry.id)
@@ -435,14 +457,18 @@ def _sync_one_workspace_repo(
                 push=push,
                 retry_hint=_RETRY_WORKSPACE,
             )
-        return {
+        row = {
             "status": result["status"],
             "synced": result["synced"],
             "ref": result.get("ref"),
             "branch": result.get("branch") or "develop",
             "role": role,
             "develop_created": result.get("develop_created"),
+            "main_created": result.get("main_created"),
         }
+        if result.get("next"):
+            row["next"] = result["next"]
+        return row
     if branch == "main" or branch.startswith("hotfix/"):
         return _sync_into_current_branch(
             repo,

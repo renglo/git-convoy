@@ -33,6 +33,12 @@ def start(workspace: Path, state: State, name: str) -> dict:
     picked: list[dict] = []
     for repo in feature_repos(workspace):
         gitutil.fetch(repo.path)
+        if not gitutil.has_commits(repo.path):
+            gitutil.bootstrap_new_repository(
+                repo.path,
+                push=bool(gitutil.origin_url(repo.path)),
+                return_branch=gitutil.current_branch(repo.path),
+            )
         current = gitutil.current_branch(repo.path)
         dirty = gitutil.is_dirty(repo.path)
         exists = gitutil.has_branch(repo.path, branch)
@@ -197,6 +203,22 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
     current = gitutil.current_branch(repo.path)
     dirty = gitutil.is_dirty(repo.path)
     gitutil.fetch(repo.path)
+    if not gitutil.has_commits(repo.path):
+        boot = gitutil.bootstrap_new_repository(
+            repo.path,
+            push=bool(gitutil.origin_url(repo.path)),
+            return_branch=current if current == branch else branch,
+        )
+        if boot.get("status") == "failed":
+            return {
+                "id": repo.id,
+                "path": repo.rel,
+                "adopted": False,
+                "reason": "bootstrap-failed",
+                "error": boot.get("error"),
+                "hint": boot.get("hint"),
+            }
+        current = gitutil.current_branch(repo.path)
     integration = gitutil.integration_branch(repo.path)
     origin_int = gitutil.origin_integration(repo.path)
     on_integration = current == integration

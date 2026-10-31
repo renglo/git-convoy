@@ -39,6 +39,7 @@ git convoy --json feature commit
 ```
 
 - "What's on the current train?" → `git convoy --json train show` (`viable`, and `viability` when the aspirational tag, `main`, or the rc series belongs to another line)
+- "Will this cut hit a tag conflict?" → `git convoy --json train check` (no train name; same check as train viability; creates no branches). `train cut` runs it first and refuses before creating release branches.
 - "This train cannot be published" → `train tag-rc` and `bom` refuse the same check. `git convoy train unfold`, then `feature refresh`, resolve, `feature refresh`, `feature prs`
 - "Catch up after time away / put me on develop?" → `git convoy --json sync`
 - "How many repos is this feature touching?" → `git convoy --json feature show` (`repo_count`)
@@ -56,7 +57,7 @@ Bring every clone up to date without requiring an idle workspace:
 git convoy --json sync
 ```
 
-Updates each clean repo **in place** and continues when one repo cannot move. A repo on `develop` fast-forwards `origin/develop` and, for product repos, merges the latest stable tag (or `origin/main`). Ops repos on `develop` fast-forward `develop` and merge a stable tag only when a hotfix landed on `main` — not raw `origin/main`. A repo on `feature/*` or `ops/*` stays there and receives `develop`. `release/*` receives only `origin/release/<name>`, so work committed to `develop` after the cut stays off the train. `hotfix/*` and `main` receive `main`. BOM on `main` fast-forwards `origin/main`. Tracked local edits are left untouched and reported as `needs-commit`. Merge conflicts abort that repo only. The summary lists how many repos are still behind and the next step for each. Re-run `git convoy sync` until `remaining` is 0. Do not `git pull` on `main` to start product work.
+Updates each clean repo **in place** and continues when one repo cannot move. A repo on `develop` fast-forwards `origin/develop` and, for product repos, merges the latest stable tag (or `origin/main`). When `main` does not exist, sync creates it at the `develop` tip and pushes it. Ops repos on `develop` fast-forward `develop` and merge a stable tag only when a hotfix landed on `main` — not raw `origin/main`. A repo on `feature/*` or `ops/*` stays there and receives `develop`. `release/*` receives only `origin/release/<name>`, so work committed to `develop` after the cut stays off the train. `hotfix/*` and `main` receive `main`. BOM on `main` fast-forwards `origin/main`. Tracked local edits are left untouched and reported as `needs-commit`. Merge conflicts abort that repo only. The summary lists how many repos are still behind and the next step for each. Re-run `git convoy sync` until `remaining` is 0. Do not `git pull` on `main` to start product work.
 
 ## Heal develop from main (no idle workspace required)
 
@@ -174,9 +175,9 @@ Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trig
 
 ## Cycles (see README)
 
-- **1–2:** features and local release branches — git only (Full optional).
+- **1–2:** features and local release branches — git only (Full optional). `train check` reports tag conflicts before a train exists. `train cut` runs that check and refuses before creating release branches.
 - **Ops ship:** `git convoy ops prs`, merge into develop, then `git convoy ops publish`. Does not write `renglo.yaml`.
-- **3:** `train tag-rc` syncs develop from stable for participants, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging).
+- **3:** `train tag-rc` syncs develop from stable for participants, copies any `v*` publish workflow that exists only on the release branch onto `main` (and `develop`) and pushes `main` before the tag, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging). GitHub does not start a tag workflow until that file is on the default branch.
 - **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.
 - **Hotfix** (parallel, not a fifth cycle): production PATCH without a new train. May touch several repos. PRs into `main`. Publish merges tagged `main` into `develop` and absorbs local `feature/*`.

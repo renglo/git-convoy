@@ -33,6 +33,29 @@ def test_ensure_develop_pushes_main_then_creates_develop(tmp_path: Path) -> None
     assert git(repo, "ls-remote", "--heads", "origin", "develop").stdout.strip()
 
 
+def test_bootstrap_new_repository_restores_feature_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "rops"
+    subprocess.run(
+        ["git", "init", "-b", "feature/supervisor", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    (repo / "handler.py").write_text("new\n")
+    _bare_remote(repo)
+
+    boot = gitutil.bootstrap_new_repository(
+        repo, push=True, return_branch="feature/supervisor"
+    )
+    assert boot["bootstrapped"] is True
+    assert git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "feature/supervisor"
+    assert gitutil.is_dirty(repo)
+    assert gitutil.has_commits(repo)
+    assert git(repo, "ls-remote", "--heads", "origin", "main").stdout.strip()
+    assert git(repo, "ls-remote", "--heads", "origin", "develop").stdout.strip()
+
+
 def test_ensure_develop_empty_commit_leaves_dirty_tree(tmp_path: Path) -> None:
     repo = tmp_path / "tool"
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
@@ -78,6 +101,42 @@ def test_ops_start_then_adopt_on_unborn_main(workspace: Path) -> None:
     assert git(helper, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "ops/implement"
     assert gitutil.is_dirty(helper)
     assert "tool.py" not in git(helper, "ls-tree", "-r", "--name-only", "HEAD").stdout
+
+
+def test_ensure_develop_creates_main_from_develop_only_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "budget"
+    subprocess.run(["git", "init", "-b", "develop", str(repo)], check=True, capture_output=True)
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    git(repo, "commit", "--allow-empty", "-m", "history on develop")
+    _bare_remote(repo)
+    git(repo, "push", "-u", "origin", "develop")
+    assert not git(repo, "ls-remote", "--heads", "origin", "main").stdout.strip()
+
+    ensured = gitutil.ensure_develop(repo, push=True)
+    assert ensured["status"] == "already"
+    assert ensured["main_created"] is True
+    assert git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
+    assert git(repo, "rev-parse", "main").stdout.strip() == git(repo, "rev-parse", "develop").stdout.strip()
+    assert git(repo, "ls-remote", "--heads", "origin", "main").stdout.strip()
+
+
+def test_ensure_develop_leaves_existing_main(tmp_path: Path) -> None:
+    repo = tmp_path / "budget"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    git(repo, "commit", "--allow-empty", "-m", "main tip")
+    main_tip = git(repo, "rev-parse", "HEAD").stdout.strip()
+    git(repo, "checkout", "-b", "develop")
+    git(repo, "commit", "--allow-empty", "-m", "develop moved on")
+    _bare_remote(repo)
+    git(repo, "push", "-u", "origin", "develop")
+    git(repo, "push", "origin", "main")
+
+    ensured = gitutil.ensure_develop(repo, push=True)
+    assert ensured["main_created"] is False
+    assert git(repo, "rev-parse", "main").stdout.strip() == main_tip
 
 
 def test_ensure_develop_pushes_existing_local_develop(tmp_path: Path) -> None:
