@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from gitconvoy.catalog import parse_package_catalog, slot_for_repo
+from gitconvoy.catalog import (
+    parse_package_catalog,
+    parse_registry_scopes,
+    slot_for_repo,
+    slot_served_by_registry,
+    unregistered_wl_slots,
+)
 
 
 def test_parse_package_catalog() -> None:
@@ -80,3 +86,30 @@ def test_slot_for_repo_matches_id_then_npm() -> None:
     assert catalog is not None
     assert slot_for_repo(catalog, "skbrk-wl").id == "skbrk-wl"
     assert slot_for_repo(catalog, "other", npm_name="@skbrk/wl").id == "skbrk-wl"
+
+
+def test_registry_scopes_decide_whether_a_wl_pack_exists() -> None:
+    text = """
+registries:
+- domain: renglo
+  scopes:
+  - '@renglo'
+packages:
+  liga-wl:
+    python: liga-wl
+    npm: '@liga/wl'
+  data:
+    python: renglo-data
+    npm: '@renglo/data'
+"""
+    scopes = parse_registry_scopes(text)
+    assert scopes == {"@renglo"}
+    catalog = parse_package_catalog(text)
+    assert catalog is not None
+    liga = next(slot for slot in catalog if slot.id == "liga-wl")
+    data = next(slot for slot in catalog if slot.id == "data")
+    assert slot_served_by_registry(data, scopes)
+    assert not slot_served_by_registry(liga, scopes)
+    assert [slot.id for slot in unregistered_wl_slots(catalog, scopes)] == ["liga-wl"]
+    assert unregistered_wl_slots(catalog, {"@liga", "@renglo"}) == []
+    assert parse_registry_scopes("registries: []\n") == set()

@@ -99,6 +99,97 @@ def parse_package_catalog(text: str) -> list[PackageSlot] | None:
     return slots
 
 
+_WL_NPM = re.compile(r"^@[^/]+/wl$")
+_SCOPE_ITEM = re.compile(
+    r"^\s*-\s*(?:(?P<q>['\"])(?P<quoted>@[^'\"]+)(?P=q)|(?P<bare>@\S+))\s*(?:#.*)?$"
+)
+
+
+def parse_registry_scopes(text: str) -> set[str]:
+    """npm scopes listed under top-level ``registries:``.
+
+    A scope is ``@owner``. Packages under a scope that no row lists are not
+    in any registry this environment can install from.
+    """
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(r"^registries:\s*\[\s*\]\s*(?:#.*)?$", line):
+            return set()
+        if re.match(r"^registries:\s*(?:#.*)?$", line):
+            start = index + 1
+            break
+    if start is None:
+        return set()
+    scopes: set[str] = set()
+    for line in lines[start:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # The next top-level key ends the block. List items sit at column 0
+        # (`- domain:`) and stay inside it.
+        if re.match(r"^[A-Za-z_][^:]*:", line):
+            break
+        match = _SCOPE_ITEM.match(line)
+        if not match:
+            continue
+        value = (match.group("quoted") or match.group("bare") or "").strip()
+        if value.startswith("@"):
+            scopes.add(value)
+    return scopes
+
+
+def load_registry_scopes(root: Path) -> set[str]:
+    path = tenant_config_path(root)
+    if not path.is_file():
+        return set()
+    return parse_registry_scopes(path.read_text(encoding="utf-8"))
+
+
+def wl_slots(catalog: list[PackageSlot] | None) -> list[PackageSlot]:
+    """Package slots that are a white-label pack (``*-wl`` or ``@scope/wl``)."""
+    found: list[PackageSlot] = []
+    if not catalog:
+        return found
+    for slot in catalog:
+        python_name = slot.python or ""
+        npm_name = slot.npm or ""
+        if (
+            slot.id == "wl"
+            or slot.id.endswith("-wl")
+            or python_name == "wl"
+            or python_name.endswith("-wl")
+            or bool(_WL_NPM.match(npm_name))
+        ):
+            found.append(slot)
+    return found
+
+
+def npm_scope(name: str) -> str:
+    if name.startswith("@") and "/" in name:
+        return "@" + name[1:].split("/", 1)[0]
+    return ""
+
+
+def slot_served_by_registry(slot: PackageSlot, scopes: set[str]) -> bool:
+    """True when some ``registries`` row can hold this slot's package.
+
+    An npm pack is served only when its scope is listed. A python-only pack
+    has no scope; any configured registry can hold the wheel.
+    """
+    scope = npm_scope(slot.npm)
+    if scope:
+        return scope in scopes
+    return bool(scopes)
+
+
+def unregistered_wl_slots(
+    catalog: list[PackageSlot] | None,
+    scopes: set[str],
+) -> list[PackageSlot]:
+    return [slot for slot in wl_slots(catalog) if not slot_served_by_registry(slot, scopes)]
+
+
 def catalog_allowlist(catalog: list[PackageSlot]) -> dict[str, set[str]]:
     allowed: dict[str, set[str]] = {"python": set(), "npm": set(), "repos": set()}
     for slot in catalog:

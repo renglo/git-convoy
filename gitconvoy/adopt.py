@@ -11,10 +11,12 @@ from gitconvoy.catalog import (
     PackageSlot,
     catalog_allowlist,
     load_package_catalog,
+    load_registry_scopes,
     slot_for_npm,
     slot_for_python,
     slot_for_repo,
     tenant_config_path,
+    unregistered_wl_slots,
 )
 from gitconvoy.errors import GitConvoyError
 from gitconvoy.state import State, Train, TrainRepo
@@ -38,6 +40,9 @@ from gitconvoy.bom_layout import (
 )
 from gitconvoy.workflows import repo_registry_ready
 from gitconvoy.workspace import SKIP_DIR_NAMES, discover_repos
+
+# A new *-bom repo's renglo.yaml names this pin before any manifest exists.
+FIRST_BOM_VERSION = "0.0.1"
 
 _BOM_SKIP = SKIP_DIR_NAMES | {"gitconvoy", "git-convoy"}
 
@@ -161,6 +166,66 @@ def _uses_three_bom_layout(root: Path) -> bool:
     return (root / "console_bom").is_dir()
 
 
+def _has_any_bom_manifest(root: Path) -> bool:
+    """True when this repo already has a versioned hub, console, or peer BOM."""
+    bom = root / "bom"
+    if bom.is_dir() and any(bom.glob("v*.json")):
+        return True
+    console = root / "console_bom"
+    if console.is_dir() and any(console.glob("v*.json")):
+        return True
+    peers = root / "peers_bom"
+    return peers.is_dir() and any(peers.glob("*/v*.json"))
+
+
+def _is_first_bom(root: Path, from_version: str, to_version: str) -> bool:
+    return (
+        _strip_v(from_version) == FIRST_BOM_VERSION
+        and _strip_v(to_version) == FIRST_BOM_VERSION
+        and not _has_any_bom_manifest(root)
+    )
+
+
+def _seed_first_bom(
+    root: Path,
+    dest: Path,
+    *,
+    train: str | None,
+    description: str | None,
+) -> dict:
+    """Write bom/v0.0.1.json when there is no manifest to copy forward."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    master: dict = {
+        "version": _v(FIRST_BOM_VERSION),
+        "created_at": _utc_now_iso(),
+        "description": description
+        or f"Draft. Taking {train or 'selected pins'}. Not production.",
+        "python": {},
+        "npm": {},
+        "repos": {},
+    }
+    if train:
+        master["train"] = train
+    if _uses_three_bom_layout(root):
+        write_split_boms(
+            root,
+            FIRST_BOM_VERSION,
+            master,
+            catalog=load_package_catalog(root),
+        )
+    else:
+        write_bom_file(root, dest, master)
+    return {
+        "ok": True,
+        "from": str(dest),
+        "to": str(dest),
+        "version": master["version"],
+        "train": master.get("train"),
+        "seeded": True,
+        "note": "first BOM is 0.0.1; no previous manifest to copy",
+    }
+
+
 def draft(
     workspace: Path,
     state: State,
@@ -173,6 +238,13 @@ def draft(
     root = find_bom_repo(workspace, bom)
     src = _bom_file(root, from_version)
     dest = _bom_file(root, to_version)
+    if _is_first_bom(root, from_version, to_version):
+        return _seed_first_bom(
+            root,
+            dest,
+            train=train or state.current_train,
+            description=description,
+        )
     if not src.exists():
         raise GitConvoyError(f"missing {src}")
     if dest.exists():
@@ -446,6 +518,7 @@ def take(
             placement,
         )
     )
+    pinned = _pin_unregistered_wl(workspace, root, dest, bom_data, catalog, pinned)
     if catalog is not None:
         pinned.extend(_prune_bom_to_catalog(root, dest, bom_data, catalog))
         _restore_adopt_pins(root, dest, bom_data, pinned)
@@ -462,6 +535,9 @@ def take(
         production=False,
     )
     note = pointed["note"]
+    seeded = bool(drafted.get("seeded"))
+    if seeded:
+        note = "Created the first BOM at 0.0.1. " + note
     if mode == "refresh":
         note = (
             f"Updated bom/{_v(dest).lstrip('v')}.json in place for train {train_obj.name}. "
@@ -480,6 +556,7 @@ def take(
         "platform": load_platform(root),
         "platform_source": "renglo-ops" if released_platform else "renglo.yaml",
         "platform_warnings": platform_report["platform_warnings"],
+        "seeded": seeded,
         "note": note,
     }
     if verify_summary is not None:
@@ -515,6 +592,13 @@ def promote(
     pointed = point(workspace, version, bom=bom, production=True)
     description = _production_description(train.name)
     _set_bom_description(root, version, description)
+    note = (
+        pointed["note"]
+        + " CI deploys staging, verifies it, then production; "
+        "production is blocked if staging fails."
+    )
+    if taken.get("seeded"):
+        note = "Created the first BOM at 0.0.1. " + note
     payload = {
         "ok": True,
         "mode": taken["mode"],
@@ -526,11 +610,8 @@ def promote(
         "take": {"from": taken["from"], "to": taken["to"]},
         "point": pointed,
         "platform_warnings": taken.get("platform_warnings") or [],
-        "note": (
-            pointed["note"]
-            + " CI deploys staging, verifies it, then production; "
-            "production is blocked if staging fails."
-        ),
+        "seeded": bool(taken.get("seeded")),
+        "note": note,
     }
     if taken.get("verify") is not None:
         payload["verify"] = taken["verify"]
@@ -637,6 +718,8 @@ def _resolve_take_target(
         return src, _strip_v(to_version), False
     if from_version:
         return from_version, versions.bump(_strip_v(from_version), "patch"), False
+    if not _has_any_bom_manifest(root):
+        return FIRST_BOM_VERSION, FIRST_BOM_VERSION, False
     pointed_path = _bom_file(root, pointed)
     if pointed_path.exists():
         data = json.loads(pointed_path.read_text())
@@ -1022,6 +1105,16 @@ def _ensure_placement_pins(
     live_npm = bom_data.get("npm") if isinstance(bom_data.get("npm"), dict) else {}
     python_names = set(required_python) | set(live_py)
     npm_names = set(required_npm) | set(live_npm)
+    # A white-label pack with no registry is pinned by commit later. A version
+    # here would send deploy to CodeArtifact for a package that was never published.
+    uncovered = {
+        name
+        for slot in unregistered_wl_slots(catalog, load_registry_scopes(root))
+        for name in (slot.python, slot.npm)
+        if name
+    }
+    python_names -= uncovered
+    npm_names -= uncovered
     previous = _master_at_version(root, from_version)
     train_owned = _train_owned_packages(workspace, train, bom_data, catalog)
     pinned: list[dict] = []
@@ -1063,6 +1156,166 @@ def _ensure_placement_pins(
     return pinned
 
 
+def _stable_commit(repo: Path) -> tuple[str, str]:
+    """Latest stable tag's commit, or the tip of main when no stable tag exists."""
+    tag = gitutil.last_stable_tag(repo)
+    if tag:
+        sha = gitutil.rev_parse(repo, tag)
+        if sha:
+            branch = "main" if gitutil.rev_parse(repo, "main") or gitutil.rev_parse(repo, "origin/main") else "develop"
+            return sha, branch
+    for ref, branch in (("origin/main", "main"), ("main", "main"), ("HEAD", "main")):
+        sha = gitutil.rev_parse(repo, ref)
+        if sha:
+            return sha, branch
+    return "", ""
+
+
+def _wl_checkout(workspace: Path, slot: PackageSlot) -> Path | None:
+    for repo_id in (slot.id, slot.python):
+        if not repo_id:
+            continue
+        found = _repo_path_by_id(workspace, repo_id)
+        if found is not None:
+            return found
+    for name in (slot.id, slot.python):
+        if not name:
+            continue
+        candidate = workspace / "dev" / name
+        if candidate.is_dir() and gitutil.is_git_repo(candidate):
+            return candidate
+    return None
+
+
+def _drop_package_pin(data: dict, section: str, package: str) -> bool:
+    block = data.get(section)
+    if not isinstance(block, dict) or package not in block:
+        return False
+    del block[package]
+    if not block:
+        data.pop(section, None)
+    return True
+
+
+def _pin_unregistered_wl(
+    workspace: Path,
+    root: Path,
+    version: str,
+    bom_data: dict,
+    catalog: list[PackageSlot] | None,
+    pinned: list[dict],
+) -> list[dict]:
+    """Pin a white-label pack by commit when no registry can serve it.
+
+    ``packages`` names the pack. ``registries`` says which npm scopes exist.
+    A scope that is not listed was never published, so a version pin would
+    miss at deploy. The latest stable commit is written under ``repos`` and
+    the version pins for that pack are removed.
+    """
+    slots = unregistered_wl_slots(catalog, load_registry_scopes(root))
+    if not slots:
+        return pinned
+    plans: list[dict] = []
+    for slot in slots:
+        repo_path = _wl_checkout(workspace, slot)
+        label = slot.npm or slot.python or slot.id
+        if repo_path is None:
+            raise GitConvoyError(
+                f"{slot.id} ({label}) is listed in packages, and no registry serves it. "
+                f"Clone the repo at dev/{slot.id} so bom can pin its latest stable commit."
+            )
+        sha, branch = _stable_commit(repo_path)
+        if not sha:
+            raise GitConvoyError(
+                f"{slot.id} ({label}) has no commit to pin. "
+                "Tag a stable release or commit on main."
+            )
+        slug = gitutil.github_slug(repo_path)
+        if not slug:
+            raise GitConvoyError(
+                f"{slot.id} has no GitHub origin, so bom cannot name the repo to clone."
+            )
+        try:
+            rel = repo_path.resolve().relative_to(workspace.resolve()).as_posix()
+        except ValueError:
+            rel = f"dev/{slot.id}"
+        url = gitutil.origin_url(repo_path) or f"https://github.com/{slug}.git"
+        entry = {
+            "url": url,
+            "commit": sha,
+            "branch": branch,
+            "path": rel,
+        }
+        # One file is checked out by both jobs. Split files set this per pipeline.
+        if not _uses_three_bom_layout(root):
+            entry["pipelines"] = ["backend", "console"]
+        plans.append({"slot": slot, "slug": slug, "entry": entry})
+
+    path = _bom_file(root, version)
+    data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    drop: set[tuple[str, str]] = set()
+    rows: list[dict] = []
+    for plan in plans:
+        slot = plan["slot"]
+        for section, package in (("python", slot.python), ("npm", slot.npm)):
+            if not package:
+                continue
+            drop.add((section, package))
+            removed = _drop_package_pin(data, section, package)
+            _drop_package_pin(bom_data, section, package)
+            if removed:
+                rows.append(
+                    {
+                        "id": slot.id,
+                        "section": section,
+                        "package": package,
+                        "pin": "(removed)",
+                        "action": "cleared",
+                        "kind": "git",
+                    }
+                )
+        entry = plan["entry"]
+        data.setdefault("repos", {})[plan["slug"]] = entry
+        bom_data.setdefault("repos", {})[plan["slug"]] = dict(entry)
+        rows.append(
+            {
+                "id": slot.id,
+                "section": "repos",
+                "package": plan["slug"],
+                "pin": entry["commit"],
+                "kind": "git",
+                "action": "placement",
+            }
+        )
+    write_bom_file(root, path, data)
+    kept = [
+        row
+        for row in pinned
+        if (row.get("section"), row.get("package")) not in drop
+        or row.get("action") in {"pruned", "cleared"}
+    ]
+    kept.extend(rows)
+    return kept
+
+
+def _unregistered_wl_repo_keys(
+    repos: dict,
+    catalog: list[PackageSlot],
+    scopes: set[str],
+) -> set[str]:
+    """Repo keys for white-label packs that are pinned by commit, not by version."""
+    slots = unregistered_wl_slots(catalog, scopes)
+    if not slots:
+        return set()
+    keys: set[str] = set()
+    for key in repos:
+        short = str(key).split("/")[-1]
+        for slot in slots:
+            if key == slot.repo or short == slot.id or short == slot.python:
+                keys.add(str(key))
+    return keys
+
+
 def _prune_bom_to_catalog(
     root: Path,
     version: str,
@@ -1074,12 +1327,17 @@ def _prune_bom_to_catalog(
     data = json.loads(path.read_text())
     dropped: list[dict] = []
     section_keys = (("python", "python"), ("npm", "npm"), ("repos", "repos"))
+    keep_repos = _unregistered_wl_repo_keys(
+        data.get("repos") if isinstance(data.get("repos"), dict) else {},
+        catalog,
+        load_registry_scopes(root),
+    )
     for section, allow_key in section_keys:
         block = data.get(section)
         if not isinstance(block, dict):
             continue
         for name in list(block):
-            if name in allowed[allow_key]:
+            if name in allowed[allow_key] or (section == "repos" and name in keep_repos):
                 continue
             del block[name]
             live = bom_data.get(section)

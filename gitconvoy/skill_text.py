@@ -171,14 +171,14 @@ git convoy --json bom --require-verify --bom ops/<system>-bom    # strict: refus
 git convoy --json bom --no-verify --bom ops/<system>-bom        # Simple heuristic only
 ```
 
-Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trigger in `.github/workflows/` (any filename). Skips repos without such a workflow (console today). Default `bom` clears registry pins for failed publishes and falls back to `repos.*.commit`. `--require-verify` refuses to write the BOM when verify fails.
+Run after `tag-rc` or `train publish`. Detects workflows by **v* tag push** trigger in `.github/workflows/` (any filename). Skips repos without such a workflow (console today). Default `bom` clears registry pins for failed publishes and falls back to `repos.*.commit`. A `*-wl` package whose npm scope is not listed under `registries` is pinned the same way: latest stable commit, not a package version. `--require-verify` refuses to write the BOM when verify fails.
 
 ## Cycles (see README)
 
 - **1–2:** features and local release branches — git only (Full optional). `train check` reports tag conflicts before a train exists. `train cut` runs that check and refuses before creating release branches.
 - **Ops ship:** `git convoy ops prs`, merge into develop, then `git convoy ops publish`. Does not write `renglo.yaml`.
 - **3:** `train tag-rc` syncs develop from stable for participants, copies any `v*` publish workflow that exists only on the release branch onto `main` (and `develop`) and pushes `main` before the tag, then push → `train verify` (Full) or manual Actions → `bom` → push BOM (staging). GitHub does not start a tag workflow until that file is on the default branch.
-- **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM.
+- **4:** `train publish` (merge to `main`, tag, then automatic `train mergeback` into `develop` for **all product repos**) → `train verify` (Full) or manual Actions → `bom --production` → push BOM. A BOM repo with no `bom/v*.json` yet starts at `0.0.1`.
   If publish exits non-zero after tagging, or `develop` is behind the stable tag: `git convoy --json train mergeback`.
 - **Hotfix** (parallel, not a fifth cycle): production PATCH without a new train. May touch several repos. PRs into `main`. Publish merges tagged `main` into `develop` and absorbs local `feature/*`.
 

@@ -477,6 +477,75 @@ def test_written_bom_summaries_lists_split_files(tmp_path: Path) -> None:
     assert rows["peers_bom/lab/v0.1.8.json"]["python"]["arbitium-lab"] == "0.0.7rc2"
 
 
+def _empty_renglo_bom(root: Path) -> Path:
+    bom_repo = root / "ops" / "acme-bom"
+    bom_repo.mkdir(parents=True)
+    (bom_repo / "renglo.yaml").write_text(
+        "name: acme\n"
+        "platform: 0.1.4\n"
+        "accounts:\n"
+        "  staging:\n"
+        "    id: '1'\n"
+        "    region: us-east-1\n"
+        "    enabled: true\n"
+        "  production:\n"
+        "    id: '1'\n"
+        "    region: us-east-1\n"
+        "    enabled: false\n"
+        "release:\n"
+        "  bom: 0.0.1\n"
+        "  console: 0.0.1\n"
+    )
+    return bom_repo
+
+
+def test_promote_seeds_first_bom_when_no_manifest_exists(tmp_path: Path) -> None:
+    bom_repo = _empty_renglo_bom(tmp_path)
+    _seed_train_packages(tmp_path)
+    state = _train()
+    data = adopt_cmd.promote(tmp_path, state, bom=str(bom_repo))
+    assert data["version"] == "v0.0.1"
+    assert data["seeded"] is True
+    assert data["description"] == "Production. Release 2026-W34."
+    assert "Created the first BOM at 0.0.1." in data["note"]
+    assert not (bom_repo / "bom" / "v0.0.2.json").exists()
+    dest = json.loads((bom_repo / "bom" / "v0.0.1.json").read_text())
+    assert dest["python"]["renglo-lib"] == "1.2.4"
+    assert dest["python"]["renglo-schd"] == "1.2.0"
+    assert dest["train"] == "2026-W34"
+    text = (bom_repo / "renglo.yaml").read_text()
+    assert "bom: 0.0.1" in text
+    assert "enabled: false" not in text
+
+
+def test_seed_writes_split_files_when_console_layout_is_already_present(
+    tmp_path: Path,
+) -> None:
+    bom_repo = _empty_renglo_bom(tmp_path)
+    (bom_repo / "console_bom").mkdir()
+    _seed_train_packages(tmp_path)
+    state = _train()
+    data = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    assert data["version"] == "v0.0.1"
+    assert data["seeded"] is True
+    assert (bom_repo / "bom" / "v0.0.1.json").is_file()
+    assert (bom_repo / "console_bom" / "v0.0.1.json").is_file()
+    assert not (bom_repo / "bom" / "v0.0.2.json").exists()
+
+
+def test_take_still_requires_the_pointed_manifest_when_another_exists(
+    tmp_path: Path,
+) -> None:
+    bom_repo = _bom_repo(tmp_path)
+    text = (bom_repo / "deploy_targets.yml").read_text().replace(
+        "bom: 1.4.0", "bom: 9.9.9", 1
+    )
+    (bom_repo / "deploy_targets.yml").write_text(text)
+    _seed_train_packages(tmp_path)
+    with pytest.raises(GitConvoyError, match="missing"):
+        adopt_cmd.take(tmp_path, _train(), bom=str(bom_repo))
+
+
 def test_promote_enables_production_on_current_bom(tmp_path: Path) -> None:
     bom_repo = _bom_repo(tmp_path)
     _seed_train_packages(tmp_path)
@@ -728,6 +797,11 @@ def test_take_prunes_pins_not_in_catalog(tmp_path: Path) -> None:
         + "  renglo-api:\n    python: renglo-api\n"
         + "  schd:\n    python: renglo-schd\n    npm: \"@renglo/schd\"\n"
         + "  skbrk-wl:\n    npm: \"@skbrk/wl\"\n"
+        + "registries:\n"
+        + "- domain: skbrk\n"
+        + "  scopes:\n"
+        + "  - \"@skbrk\"\n"
+        + "  - \"@renglo\"\n"
     )
     wl = tmp_path / "dev" / "skbrk-wl"
     wl.mkdir(parents=True)
@@ -1111,6 +1185,11 @@ accounts:
 placement:
   hub: []
   peers: {}
+registries:
+- domain: apollo
+  scopes:
+  - '@apollo'
+  - '@renglo'
 packages:
   renglo-lib:
     python: renglo-lib
@@ -1155,3 +1234,120 @@ release:
     assert console["npm"]["@apollo/wl"] == "0.0.2-rc.1"
     assert "  console:\n    npm: '@renglo/console'" in yaml_text
     assert "release:\n  bom: 0.1.1\n  console: 0.1.1" in yaml_text
+
+
+def test_unregistered_wl_is_pinned_by_stable_commit(tmp_path: Path) -> None:
+    """A -wl pack whose scope is not in registries is pinned by commit, not version."""
+    from conftest import git, init_repo
+
+    bom_repo = tmp_path / "ops" / "liga-bom"
+    (bom_repo / "bom").mkdir(parents=True)
+    (bom_repo / "console_bom").mkdir()
+    (bom_repo / "bom" / "v0.0.1.json").write_text(
+        json.dumps(
+            {
+                "version": "v0.0.1",
+                "train": "2026-W34",
+                "python": {"renglo-lib": "0.0.16", "renglo-api": "0.0.17"},
+                "npm": {},
+                "repos": {},
+            }
+        )
+        + "\n"
+    )
+    (bom_repo / "console_bom" / "v0.0.1.json").write_text(
+        json.dumps(
+            {
+                "version": "v0.0.1",
+                "train": "2026-W34",
+                "npm": {"@renglo/console": "0.0.21"},
+                "repos": {},
+            }
+        )
+        + "\n"
+    )
+    (bom_repo / "renglo.yaml").write_text(
+        """
+name: liga
+accounts:
+  staging:
+    id: "1"
+    region: us-east-1
+    enabled: true
+  production:
+    id: "1"
+    region: us-east-1
+    enabled: false
+placement:
+  hub:
+  - renglo-lib
+  peers: {}
+registries:
+- domain: renglo
+  scopes:
+  - '@renglo'
+packages:
+  renglo-lib:
+    python: renglo-lib
+  renglo-api:
+    python: renglo-api
+  console:
+    npm: '@renglo/console'
+  liga-wl:
+    python: liga-wl
+    npm: '@liga/wl'
+release:
+  bom: 0.0.1
+  console: 0.0.1
+""",
+        encoding="utf-8",
+    )
+    lib = tmp_path / "dev" / "renglo-lib"
+    lib.mkdir(parents=True)
+    (lib / "pyproject.toml").write_text(
+        '[project]\nname = "renglo-lib"\nversion = "0.0.16"\n'
+    )
+    _write_tag_workflow(lib)
+    wl = init_repo(tmp_path / "dev" / "liga-wl", develop=False)
+    (wl / "package.json").write_text('{"name":"@liga/wl","version":"0.0.2"}\n')
+    (wl / "pyproject.toml").write_text(
+        '[project]\nname = "liga-wl"\nversion = "0.0.2"\n'
+    )
+    wf = wl / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "publish-npm.yml").write_text("on:\n  push:\n    tags:\n      - 'v*'\n")
+    git(wl, "add", "-A")
+    git(wl, "commit", "-m", "Release 0.0.2")
+    git(wl, "tag", "v0.0.2")
+    git(wl, "remote", "add", "origin", "https://github.com/Ligaajusco/liga-wl.git")
+    sha = git(wl, "rev-parse", "v0.0.2").stdout.strip()
+
+    state = State(current_train="2026-W34")
+    train = Train(name="2026-W34", branch="release/2026-W34", status="published")
+    train.add_repo(
+        TrainRepo(
+            id="liga-wl",
+            path="dev/liga-wl",
+            from_version="0.0.1",
+            to="0.0.2",
+            stable_tag="v0.0.2",
+        )
+    )
+    state.trains["2026-W34"] = train
+    data = adopt_cmd.take(tmp_path, state, bom=str(bom_repo))
+    hub = json.loads((bom_repo / "bom" / "v0.0.1.json").read_text())
+    console = json.loads((bom_repo / "console_bom" / "v0.0.1.json").read_text())
+    assert "liga-wl" not in hub.get("python", {})
+    assert "@liga/wl" not in console.get("npm", {})
+    assert hub["repos"]["Ligaajusco/liga-wl"]["commit"] == sha
+    assert hub["repos"]["Ligaajusco/liga-wl"]["pipelines"] == ["backend"]
+    assert hub["repos"]["Ligaajusco/liga-wl"]["path"] == "dev/liga-wl"
+    assert console["repos"]["Ligaajusco/liga-wl"]["commit"] == sha
+    assert console["repos"]["Ligaajusco/liga-wl"]["pipelines"] == ["console"]
+    assert console["npm"]["@renglo/console"] == "0.0.21"
+    git_rows = [
+        row
+        for row in data["pins"]
+        if row.get("kind") == "git" and row.get("package") == "Ligaajusco/liga-wl"
+    ]
+    assert git_rows and git_rows[0]["pin"] == sha

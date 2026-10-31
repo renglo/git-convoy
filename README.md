@@ -713,7 +713,7 @@ Fast path (one command):
 git convoy bom --production --bom ops/acme-bom
 ```
 
-Refreshes **stable** pins in the current BOM file, sets `Production. Release <train>.`, and sets `production.enabled: true`. Refuses if the train is not **published** or pins are still rc.
+Refreshes **stable** pins in the current BOM file, sets `Production. Release <train>.`, and sets `production.enabled: true`. Refuses if the train is not **published** or pins are still rc. A repository with no `bom/v*.json` yet is not copied forward: the first manifest is `bom/v0.0.1.json`.
 
 ```bash
 cd ops/acme-bom

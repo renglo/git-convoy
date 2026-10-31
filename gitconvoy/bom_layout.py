@@ -261,6 +261,63 @@ def _filter_repos(repos: dict[str, Any], repo_keys: set[str]) -> dict[str, Any]:
     return {key: value for key, value in repos.items() if key in repo_keys}
 
 
+def _is_wl_repo_key(key: str) -> bool:
+    short = str(key).split("/")[-1]
+    return short == "wl" or short.endswith("-wl")
+
+
+def _slot_for_wl_key(catalog: list[PackageSlot] | None, key: str) -> PackageSlot | None:
+    if not catalog:
+        return None
+    short = str(key).split("/")[-1]
+    for slot in catalog:
+        if slot.repo == key or slot.id == short or slot.python == short:
+            return slot
+    return None
+
+
+def _git_only_wl_repos(
+    all_repos: dict[str, Any],
+    all_python: dict[str, str],
+    all_npm: dict[str, str],
+    catalog: list[PackageSlot] | None,
+) -> dict[str, Any]:
+    """White-label repos pinned by commit because no package version exists."""
+    selected: dict[str, Any] = {}
+    for key, entry in all_repos.items():
+        if not _is_wl_repo_key(str(key)):
+            continue
+        if not isinstance(entry, dict) or not str(entry.get("commit") or "").strip():
+            continue
+        slot = _slot_for_wl_key(catalog, str(key))
+        if slot and slot.python and slot.python in all_python:
+            continue
+        if slot and slot.npm and slot.npm in all_npm:
+            continue
+        selected[str(key)] = entry
+    return selected
+
+
+def _wl_checkout_entry(key: str, entry: Any, *, pipeline: str) -> dict[str, Any]:
+    raw = dict(entry) if isinstance(entry, dict) else {}
+    short = str(key).split("/")[-1]
+    raw.setdefault("path", f"dev/{short}")
+    raw["pipelines"] = [pipeline]
+    return raw
+
+
+def _with_wl_checkouts(
+    selected: dict[str, Any],
+    git_wl: dict[str, Any],
+    *,
+    pipeline: str,
+) -> dict[str, Any]:
+    merged = dict(selected)
+    for key, entry in git_wl.items():
+        merged[key] = _wl_checkout_entry(key, entry, pipeline=pipeline)
+    return merged
+
+
 def required_master_pins(
     placement: Placement,
     catalog: list[PackageSlot] | None,
@@ -338,7 +395,16 @@ def split_master_bom(
         repo = _repo_for_python(dist, catalog)
         if repo:
             hub_repo_keys.add(repo)
-    hub = {**meta, "python": hub_python, "repos": _filter_repos(all_repos, hub_repo_keys)}
+    git_wl = _git_only_wl_repos(all_repos, all_python, all_npm, catalog)
+    hub = {
+        **meta,
+        "python": hub_python,
+        "repos": _with_wl_checkouts(
+            _filter_repos(all_repos, hub_repo_keys),
+            git_wl,
+            pipeline="backend",
+        ),
+    }
 
     console_npm = console_npm_for_placement(all_npm, placement=placement, catalog=catalog)
     console_repo_keys: set[str] = set()
@@ -346,7 +412,15 @@ def split_master_bom(
         repo = _repo_for_npm(npm_name, catalog)
         if repo and repo in all_repos:
             console_repo_keys.add(repo)
-    console = {**meta, "npm": console_npm, "repos": _filter_repos(all_repos, console_repo_keys)}
+    console = {
+        **meta,
+        "npm": console_npm,
+        "repos": _with_wl_checkouts(
+            _filter_repos(all_repos, console_repo_keys),
+            git_wl,
+            pipeline="console",
+        ),
+    }
 
     peer_boms: dict[str, dict[str, Any]] = {}
     target_peers = {peer_id: placement.peers[peer_id]} if peer_id else placement.peers
@@ -366,7 +440,11 @@ def split_master_bom(
         peer_boms[pid] = {
             **peer_meta,
             "python": peer_python,
-            "repos": _filter_repos(all_repos, peer_repo_keys),
+            "repos": _with_wl_checkouts(
+                _filter_repos(all_repos, peer_repo_keys),
+                git_wl,
+                pipeline="peers",
+            ),
         }
 
     return hub, console, peer_boms

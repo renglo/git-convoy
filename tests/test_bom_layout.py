@@ -306,6 +306,40 @@ staging:
         self.assertNotIn("python", console)
         self.assertNotIn("npm", hub)
 
+    def test_split_copies_unregistered_wl_commit_into_hub_and_console(self) -> None:
+        catalog = [
+            PackageSlot(id="console", npm="@renglo/console"),
+            PackageSlot(id="liga-wl", python="liga-wl", npm="@liga/wl"),
+        ]
+        placement = Placement(hub_python=("renglo-lib",))
+        commit = "fb141c02b6d3de8038880760fa0aa2e69f03194d"
+        hub, console, _peers = split_master_bom(
+            {
+                "version": "v0.0.1",
+                "python": {"renglo-lib": "0.0.16", "renglo-api": "0.0.17"},
+                "npm": {"@renglo/console": "0.0.21"},
+                "repos": {
+                    "Ligaajusco/liga-wl": {
+                        "url": "https://github.com/Ligaajusco/liga-wl.git",
+                        "commit": commit,
+                        "branch": "main",
+                        "path": "dev/liga-wl",
+                    }
+                },
+            },
+            placement=placement,
+            catalog=catalog,
+        )
+        self.assertNotIn("liga-wl", hub["python"])
+        self.assertNotIn("@liga/wl", console["npm"])
+        hub_entry = hub["repos"]["Ligaajusco/liga-wl"]
+        console_entry = console["repos"]["Ligaajusco/liga-wl"]
+        self.assertEqual(hub_entry["commit"], commit)
+        self.assertEqual(hub_entry["pipelines"], ["backend"])
+        self.assertEqual(hub_entry["path"], "dev/liga-wl")
+        self.assertEqual(console_entry["commit"], commit)
+        self.assertEqual(console_entry["pipelines"], ["console"])
+
     def test_console_keeps_npm_when_python_moves_to_a_renamed_peer(self) -> None:
         root = Path(self._tmp()) / "bom"
         root.mkdir()
