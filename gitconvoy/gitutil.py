@@ -124,6 +124,46 @@ def fetch(repo: Path) -> None:
     run(repo, "fetch", "origin", "--tags", "--prune", check=False)
 
 
+_STASH_AUTO = "git-convoy-auto-stash"
+
+
+def _checkout_blocked_by_local_changes(stderr: str) -> bool:
+    text = stderr.lower()
+    return "would be overwritten" in text or "please commit your changes" in text
+
+
+def _run_checkout(repo: Path, *args: str) -> None:
+    """Checkout while keeping an in-progress working tree when possible."""
+    if not is_dirty(repo):
+        run(repo, "checkout", *args)
+        return
+    result = run(repo, "checkout", *args, check=False)
+    if result.returncode == 0:
+        return
+    err = (result.stderr or result.stdout or "").strip()
+    if not _checkout_blocked_by_local_changes(err):
+        raise GitConvoyError(f"git checkout {' '.join(args)} failed in {repo}: {err}")
+    run(repo, "stash", "push", "-m", _STASH_AUTO)
+    try:
+        run(repo, "checkout", *args)
+    except GitConvoyError:
+        run(repo, "stash", "pop", check=False)
+        raise
+    pop = run(repo, "stash", "pop", check=False)
+    if pop.returncode != 0:
+        detail = (pop.stderr or pop.stdout or "stash pop failed").strip()
+        lowered = detail.lower()
+        if "conflict" in lowered or "could not apply" in lowered:
+            raise GitConvoyError(
+                f"{repo}: checked out the target branch but your local changes "
+                "conflict with that branch. Resolve the conflicts in the working "
+                "tree, then re-run. The stash entry was kept (git stash list)."
+            )
+        raise GitConvoyError(
+            f"git stash pop failed in {repo} after checkout: {detail}"
+        )
+
+
 def checkout(repo: Path, branch: str, create: bool = False, force: bool = False) -> None:
     if create:
         run(repo, "checkout", "-b", branch)
@@ -131,16 +171,16 @@ def checkout(repo: Path, branch: str, create: bool = False, force: bool = False)
     if force:
         run(repo, "checkout", "-f", branch)
         return
-    run(repo, "checkout", branch)
+    _run_checkout(repo, branch)
 
 
 def checkout_branch(repo: Path, branch: str) -> None:
     """Check out branch, creating it from HEAD if it does not exist locally."""
     if rev_parse(repo, f"refs/heads/{branch}"):
-        checkout(repo, branch)
+        _run_checkout(repo, branch)
         return
     if rev_parse(repo, f"refs/remotes/origin/{branch}"):
-        run(repo, "checkout", "-B", branch, f"origin/{branch}")
+        _run_checkout(repo, "-B", branch, f"origin/{branch}")
         return
     checkout(repo, branch, create=True)
 

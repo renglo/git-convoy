@@ -40,13 +40,17 @@ def start(workspace: Path, state: State, name: str, *, bootstrap: bool = False) 
         if exists:
             if current != branch:
                 if dirty:
+                    integration = gitutil.integration_branch(repo.path)
+                    if current != integration:
+                        gitutil.checkout_integration(repo.path)
                     checked.append(
                         {
                             "id": repo.id,
                             "path": repo.rel,
                             "skipped": "dirty",
-                            "branch": current,
+                            "branch": gitutil.current_branch(repo.path),
                             "existing_branch": branch,
+                            "note": "run git convoy ops adopt to join this repo",
                         }
                     )
                     continue
@@ -81,12 +85,16 @@ def start(workspace: Path, state: State, name: str, *, bootstrap: bool = False) 
             checked.append(row)
             continue
         if dirty:
+            integration = gitutil.integration_branch(repo.path)
+            if current != integration:
+                gitutil.checkout_integration(repo.path)
             checked.append(
                 {
                     "id": repo.id,
                     "path": repo.rel,
                     "skipped": "dirty",
-                    "branch": current,
+                    "branch": gitutil.current_branch(repo.path),
+                    "note": "run git convoy ops adopt to join this repo",
                 }
             )
             continue

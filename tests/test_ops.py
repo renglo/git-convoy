@@ -112,6 +112,22 @@ def test_ops_adopt_fishes_dirty_work_from_develop(workspace: Path) -> None:
     assert (svc / "SERVICE.md").read_text() == "develop-side change\n"
 
 
+def test_ops_start_moves_dirty_main_to_develop(workspace: Path) -> None:
+    _ops_workspace(workspace)
+    launcher = workspace / "ops" / "launcher"
+    git(launcher, "checkout", "main")
+    git(launcher, "merge", "develop", "--no-edit")
+    (launcher / "WIP.txt").write_text("flat workspace discovery\n")
+
+    state = State()
+    data = ops_cmd.start(workspace, state, "readworkspaceroot")
+    assert data["ops"] == "readworkspaceroot"
+    assert git(launcher, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
+    assert (launcher / "WIP.txt").read_text() == "flat workspace discovery\n"
+    dirty_rows = [row for row in data["workspace"] if row.get("id") == "launcher"]
+    assert dirty_rows and dirty_rows[0].get("skipped") == "dirty"
+
+
 def test_ops_start_creates_missing_develop(workspace: Path) -> None:
     helper = init_repo(workspace / "ops" / "bom-helper", develop=False)
     (helper / "gitconvoy.toml").write_text('role = "ops"\n')

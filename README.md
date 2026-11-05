@@ -136,7 +136,7 @@ git convoy init
 
 That command:
 
-- Discovers git repos under `console/`, `dev/`, `extensions/`, and `ops/`, plus workspace-root clones marked `role = "ops"` in `gitconvoy.toml` (e.g. `renglo-dev/`)
+- Discovers git repos under `console/`, `dev/`, `extensions/`, and `ops/`, plus workspace-root clones marked `role = "ops"` in `gitconvoy.toml` (e.g. `renglo-dev/`). A flat folder (no `dev/` or `extensions/`) also includes that folder when it is a git repo, and every sibling clone next to it.
 - Writes `.gitconvoy/state.json`
 - Adds `.gitconvoy/` to the workspace `.gitignore`
 - Writes `.cursor/skills/gitconvoy/SKILL.md` so Cursor agents know to call `git convoy`
