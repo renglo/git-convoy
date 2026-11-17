@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gitconvoy.errors import GitConvoyError
-from gitconvoy.gitutil import is_git_repo
 from gitconvoy import membership
 from gitconvoy.state import STATE_DIRNAME, state_path
 
@@ -54,6 +53,11 @@ def find_workspace(start: Path | None = None) -> Path:
             return candidate
         if _looks_like_workspace(candidate):
             return candidate
+    # A fresh clone of this tool has neither state nor dev/extensions.
+    # The workspace is the parent that holds the sibling clones.
+    for candidate in [here, *here.parents]:
+        if _contains_repo_root(candidate):
+            return candidate
     return here
 
 
@@ -87,11 +91,40 @@ def _looks_like_workspace(path: Path) -> bool:
     return (path / "dev").is_dir() and (path / "extensions").is_dir()
 
 
+def _is_flat_workspace(path: Path) -> bool:
+    """A checkout of sibling clones, with no dev/ or extensions/ containers."""
+    return not (path / "dev").is_dir() and not (path / "extensions").is_dir()
+
+
+def _is_repo_root(path: Path) -> bool:
+    """True only for a clone of its own, not a folder inside a parent work tree."""
+    return path.is_dir() and (path / ".git").exists()
+
+
+def _contains_repo_root(path: Path) -> bool:
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if child.name in SKIP_DIR_NAMES or child.name.startswith("."):
+            continue
+        if _is_repo_root(child):
+            return True
+    return False
+
+
+def _kind_for_root_role(role: str) -> str:
+    if role in {"ops", "bom", "registry"}:
+        return "ops"
+    return "core"
+
+
 def discover_repos(workspace: Path) -> list[Repo]:
     found: list[Repo] = []
     seen: set[Path] = set()
     console = workspace / "console"
-    if is_git_repo(console):
+    if _is_repo_root(console):
         found.append(Repo("console", console.resolve(), "console", "console"))
         seen.add(console.resolve())
     for kind, folder in (
@@ -104,7 +137,7 @@ def discover_repos(workspace: Path) -> list[Repo]:
         for child in sorted(folder.iterdir()):
             if child.name in SKIP_DIR_NAMES or not child.is_dir():
                 continue
-            if not is_git_repo(child):
+            if not _is_repo_root(child):
                 continue
             resolved = child.resolve()
             if resolved in seen:
@@ -118,18 +151,36 @@ def discover_repos(workspace: Path) -> list[Repo]:
                     kind=kind,
                 )
             )
+    flat = _is_flat_workspace(workspace)
+    if flat and _is_repo_root(workspace):
+        resolved = workspace.resolve()
+        role = membership.repo_role_if_valid(workspace)
+        if resolved not in seen and role is not None:
+            seen.add(resolved)
+            found.append(
+                Repo(
+                    id=workspace.name,
+                    path=resolved,
+                    rel=".",
+                    kind=_kind_for_root_role(role),
+                )
+            )
     for child in sorted(workspace.iterdir()):
         if not child.is_dir():
             continue
         if child.name in ROOT_CONTAINER_NAMES or child.name in SKIP_DIR_NAMES:
             continue
-        if not is_git_repo(child):
+        if not _is_repo_root(child):
             continue
         resolved = child.resolve()
         if resolved in seen:
             continue
         role = membership.repo_role_if_valid(child)
-        if role != "ops":
+        if role is None:
+            continue
+        # Standard installations keep product clones under dev/ and extensions/.
+        # A root clone joins only when it is ops, unless this checkout is flat.
+        if role != "ops" and not flat:
             continue
         seen.add(resolved)
         found.append(
@@ -137,7 +188,7 @@ def discover_repos(workspace: Path) -> list[Repo]:
                 id=child.name,
                 path=resolved,
                 rel=str(child.relative_to(workspace)),
-                kind="ops",
+                kind=_kind_for_root_role(role),
             )
         )
     return found

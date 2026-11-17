@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from gitconvoy import gitutil
+from gitconvoy.errors import GitConvoyError
+
+from conftest import git, init_repo
 
 
 def test_github_slug_ssh_alias(tmp_path: Path, monkeypatch) -> None:
@@ -28,6 +33,32 @@ def test_github_slug_standard_forms(tmp_path: Path, monkeypatch) -> None:
     for url, expected in cases:
         monkeypatch.setattr(gitutil, "origin_url", lambda _r, u=url: u)
         assert gitutil.github_slug(repo) == expected, url
+
+
+def test_checkout_branch_reports_stash_pop_conflicts(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path / "r")
+    git(repo, "checkout", "develop")
+    (repo / "README.md").write_text("develop tip\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "develop readme")
+    git(repo, "checkout", "main")
+    (repo / "README.md").write_text("dirty main\n")
+
+    with pytest.raises(GitConvoyError, match="conflict with that branch"):
+        gitutil.checkout_branch(repo, "develop")
+
+    assert gitutil.current_branch(repo) == "develop"
+
+
+def test_checkout_branch_keeps_untracked_dirty_work(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path / "r")
+    git(repo, "checkout", "main")
+    (repo / "WIP.txt").write_text("in progress\n")
+
+    gitutil.checkout_branch(repo, "develop")
+
+    assert gitutil.current_branch(repo) == "develop"
+    assert (repo / "WIP.txt").read_text() == "in progress\n"
 
 
 def test_push_branch_and_tag_one_git_push(tmp_path: Path, monkeypatch) -> None:

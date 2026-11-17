@@ -3,8 +3,10 @@
 Roles are declared in each repo's ``gitconvoy.toml``
 (``role = "ops"|"bom"|"incubating"|"registry"``). ``git convoy init`` writes local
 ``.gitconvoy/ops.toml``. Without that file, BOM falls back to ``*-bom`` ids;
-unmarked repos are product. Workspace-root git clones are discovered only when
-marked ``role = "ops"`` (e.g. ``renglo-dev/``). ``incubating`` and ``registry`` are
+unmarked repos are product. In a dev/extensions installation, workspace-root
+git clones are discovered only when marked ``role = "ops"`` (e.g. ``renglo-dev/``).
+A flat checkout (no ``dev/`` or ``extensions/``) also includes the workspace git
+root and every sibling clone. ``incubating`` and ``registry`` are
 valid but not listed in ops.toml — trains skip both; registry is a CodeArtifact
 publisher checkout, not a BOM.
 """

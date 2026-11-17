@@ -130,6 +130,35 @@ def test_discover_root_repo_without_ops_marker_is_skipped(workspace: Path) -> No
     assert "renglo-dev" not in {repo.id for repo in discover_repos(workspace)}
 
 
+def test_flat_workspace_discovers_root_and_sibling_repos(tmp_path: Path) -> None:
+    root = tmp_path / "azure_poc"
+    init_repo(root)
+    init_repo(root / "renglo-lib")
+    tool = init_repo(root / "git-convoy")
+    (tool / "gitconvoy.toml").write_text('role = "ops"\n')
+    (root / "app").mkdir()
+
+    found = {repo.id: repo for repo in discover_repos(root)}
+    assert set(found) == {"azure_poc", "renglo-lib", "git-convoy"}
+    assert found["azure_poc"].rel == "."
+    assert found["renglo-lib"].kind == "core"
+    assert found["git-convoy"].kind == "ops"
+    product = {repo.id for repo in product_repos(root)}
+    assert product == {"azure_poc", "renglo-lib"}
+    assert {repo.id for repo in ops_repos(root)} == {"git-convoy"}
+
+
+def test_find_workspace_from_nested_clone_uses_sibling_parent(tmp_path: Path) -> None:
+    root = tmp_path / "azure_poc"
+    root.mkdir()
+    init_repo(root / "renglo-lib")
+    tool = init_repo(root / "git-convoy")
+    nested = tool / "gitconvoy"
+    nested.mkdir()
+    assert find_workspace(nested) == root.resolve()
+    assert "renglo-lib" in {repo.id for repo in discover_repos(find_workspace(nested))}
+
+
 def test_discover_root_product_marker_is_skipped(workspace: Path) -> None:
     launcher = init_repo(workspace / "renglo-dev")
     (launcher / "gitconvoy.toml").write_text('role = "product"\n')
