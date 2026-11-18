@@ -540,6 +540,35 @@ def released_platform(repos: Any) -> str:
     return ""
 
 
+def checked_out_platform_version(workspace: Path) -> str:
+    """``renglo-ops`` version in the workspace checkout, or empty when unreadable."""
+    from gitconvoy.versions import read_version
+
+    checkout = _renglo_ops_checkout(workspace)
+    if checkout is None:
+        return ""
+    version = _normalize_platform(str(read_version(checkout).get("python") or ""))
+    if not version or _platform_rank(version) is None:
+        return ""
+    return version
+
+
+def resolve_bom_platform(workspace: Path, root: Path, repos: Any) -> str:
+    """Platform line used for BOM writes and platform check.
+
+    When this train releases ``renglo-ops``, that version wins. Otherwise the
+    synced checkout is authoritative: product repos were stabilized against it.
+    Fall back to pins in ``renglo.yaml`` only when no checkout is available.
+    """
+    released = released_platform(repos)
+    if released:
+        return released
+    checkout = checked_out_platform_version(workspace)
+    if checkout:
+        return checkout
+    return load_staging_platform(root) or load_platform(root)
+
+
 def set_platform(root: Path, version: str) -> None:
     """Write the top-level ``platform`` pin in renglo.yaml."""
     path = root / "renglo.yaml"
@@ -630,24 +659,24 @@ def _renglo_ops_checkout(workspace: Path) -> Path | None:
 
 
 def elevate_checked_out_platform(workspace: Path, root: Path) -> str:
-    """Point staging at the renglo-ops checkout when that version is newer.
+    """Record the checkout platform on the BOM staging pin when it is newer.
 
-    Sync updates the checkout. Features are built against that tree. The BOM
-    pin has to follow it, including when renglo-ops itself is not on the train.
-    A train that releases renglo-ops has already set the pin; this does not
-    replace that version with an older checkout. The production pin stays put.
-    Returns the version written, or empty when the pin did not move.
+    ``git convoy bom`` calls this before writing pins so ``renglo.yaml`` matches
+    what ``resolve_bom_platform`` already uses for platform check. Production
+    ``platform:`` stays put until promote. Does not downgrade staging when the
+    checkout is older than the current pin.
+    Returns the version written, or empty when staging did not change.
     """
-    from gitconvoy.versions import read_version
-
-    checkout = _renglo_ops_checkout(workspace)
-    if checkout is None:
+    version = checked_out_platform_version(workspace)
+    if not version:
         return ""
-    version = _normalize_platform(str(read_version(checkout).get("python") or ""))
-    if not version or _platform_rank(version) is None:
+    current = load_staging_platform(root)
+    if current == version:
         return ""
-    current = load_staging_platform(root) or load_platform(root)
     if current and not _platform_is_newer(version, current):
+        return ""
+    baseline = current or load_platform(root)
+    if baseline and not _platform_is_newer(version, baseline):
         return ""
     set_staging_platform(root, version)
     return version

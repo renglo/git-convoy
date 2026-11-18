@@ -11,7 +11,9 @@ from gitconvoy.adopt import _pointed_version, point
 from gitconvoy.bom_layout import (
     Placement,
     apply_released_platform,
+    checked_out_platform_version,
     elevate_checked_out_platform,
+    resolve_bom_platform,
     load_placement,
     load_platform,
     load_staging_platform,
@@ -189,6 +191,24 @@ release:
         self.assertEqual(untouched, "")
         self.assertEqual(load_platform(root), "0.1.4")
         self.assertEqual(load_staging_platform(root), "0.1.5rc1")
+
+    def test_resolve_bom_platform_uses_checkout_when_ops_not_on_train(self) -> None:
+        workspace = Path(self._tmp())
+        root = workspace / "ops" / "tenant-bom"
+        root.mkdir(parents=True)
+        (root / "renglo.yaml").write_text(
+            "name: apollo\nplatform: 0.1.15\n",
+            encoding="utf-8",
+        )
+        ops = workspace / "ops" / "renglo-ops" / "lib"
+        ops.mkdir(parents=True)
+        (ops / "pyproject.toml").write_text(
+            '[project]\nname = "renglo-ops"\nversion = "0.1.16"\n',
+            encoding="utf-8",
+        )
+        repos = [SimpleNamespace(id="data", path="extensions/data", to="0.0.14rc1")]
+        self.assertEqual(checked_out_platform_version(workspace), "0.1.16")
+        self.assertEqual(resolve_bom_platform(workspace, root, repos), "0.1.16")
 
     def test_checked_out_renglo_ops_elevates_staging_platform(self) -> None:
         workspace = Path(self._tmp())

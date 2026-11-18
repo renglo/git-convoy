@@ -24,7 +24,7 @@ from gitconvoy.bom_layout import (
     load_platform,
     load_staging_platform,
     merge_union_bom,
-    released_platform,
+    resolve_bom_platform,
 )
 from gitconvoy.catalog import catalog_allowlist, load_package_catalog, slot_for_repo
 from gitconvoy.errors import GitConvoyError
@@ -105,11 +105,7 @@ def report_for_take(
         to_version=None,
     )
     source = _load_source_bom(root, src)
-    platform = (
-        released_platform(train.repos)
-        or load_staging_platform(root)
-        or load_platform(root)
-    )
+    platform = resolve_bom_platform(workspace, root, train.repos)
     rows = _comparisons(workspace, train, source, platform, root)
     warnings = [row for row in rows if row["status"] not in _PASSING]
     return {
