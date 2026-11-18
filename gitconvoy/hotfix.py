@@ -371,6 +371,10 @@ def bom(
             "hotfix has no versions to pin for: " + ", ".join(missing)
         )
     root = adopt_cmd.find_bom_repo(workspace, bom)
+    from gitconvoy.bom_layout import apply_released_platform, elevate_checked_out_platform
+
+    if not apply_released_platform(root, hotfix.repos):
+        elevate_checked_out_platform(workspace, root)
     pointed = adopt_cmd._pointed_version(root)
     src = from_version or pointed
     dest = to_version or versions.bump(adopt_cmd._strip_v(src), "patch")

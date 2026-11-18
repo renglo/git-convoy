@@ -1554,6 +1554,10 @@ def _adopt_text(data: dict, *, production: bool = False) -> str:
             lines.append(
                 f"  platform {data['platform']} from renglo-ops on this train"
             )
+        elif data.get("platform_source") == "checkout" and data.get("platform"):
+            lines.append(
+                f"  platform {data['platform']} from the renglo-ops checkout"
+            )
     lines.extend(format_warning_lines(data.get("platform_warnings") or []))
     publish_ci = _format_publish_ci(data.get("verify"))
     if publish_ci:

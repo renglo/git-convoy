@@ -25,6 +25,7 @@ from gitconvoy import membership
 from gitconvoy.bom_layout import (
     CONSOLE_NPM_HOST,
     apply_released_platform,
+    elevate_checked_out_platform,
     copy_split_bom_draft,
     load_placement,
     load_platform,
@@ -410,13 +411,16 @@ def take(
     root = find_bom_repo(workspace, bom)
     from gitconvoy.platform_check import report_for_take
 
+    released_platform = apply_released_platform(root, train_obj.repos)
+    checked_out_platform = ""
+    if not released_platform:
+        checked_out_platform = elevate_checked_out_platform(workspace, root)
     platform_report = report_for_take(
         workspace,
         train_obj,
         root,
         from_version=from_version,
     )
-    released_platform = apply_released_platform(root, train_obj.repos)
     src, dest, refresh = _resolve_take_target(
         root,
         train_obj,
@@ -553,8 +557,19 @@ def take(
         "pins": pinned,
         "files": _written_bom_summaries(root, dest),
         "point": pointed,
-        "platform": load_platform(root),
-        "platform_source": "renglo-ops" if released_platform else "renglo.yaml",
+        "platform": (
+            released_platform
+            or checked_out_platform
+            or load_staging_platform(root)
+            or load_platform(root)
+        ),
+        "platform_source": (
+            "renglo-ops"
+            if released_platform
+            else "checkout"
+            if checked_out_platform
+            else "renglo.yaml"
+        ),
         "platform_warnings": platform_report["platform_warnings"],
         "seeded": seeded,
         "note": note,

@@ -11,6 +11,7 @@ from gitconvoy.adopt import _pointed_version, point
 from gitconvoy.bom_layout import (
     Placement,
     apply_released_platform,
+    elevate_checked_out_platform,
     load_placement,
     load_platform,
     load_staging_platform,
@@ -188,6 +189,47 @@ release:
         self.assertEqual(untouched, "")
         self.assertEqual(load_platform(root), "0.1.4")
         self.assertEqual(load_staging_platform(root), "0.1.5rc1")
+
+    def test_checked_out_renglo_ops_elevates_staging_platform(self) -> None:
+        workspace = Path(self._tmp())
+        root = workspace / "ops" / "tenant-bom"
+        root.mkdir(parents=True)
+        (root / "renglo.yaml").write_text(
+            """
+name: arbitium0813
+platform: 0.1.10
+staging:
+  platform: 0.1.11
+  bom: 0.1.17
+  console: 0.1.17
+  peers:
+    lab: 0.1.17
+release:
+  bom: 0.1.15
+  console: 0.1.15
+""".lstrip(),
+            encoding="utf-8",
+        )
+        ops = workspace / "ops" / "renglo-ops" / "lib"
+        ops.mkdir(parents=True)
+        (ops / "pyproject.toml").write_text(
+            '[project]\nname = "renglo-ops"\nversion = "0.1.15"\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(elevate_checked_out_platform(workspace, root), "0.1.15")
+        text = (root / "renglo.yaml").read_text(encoding="utf-8")
+        self.assertIn("platform: 0.1.10\n", text)
+        self.assertEqual(load_staging_platform(root), "0.1.15")
+        self.assertIn("  bom: 0.1.17\n", text)
+        self.assertIn("    lab: 0.1.17\n", text)
+        self.assertEqual(elevate_checked_out_platform(workspace, root), "")
+
+        (ops / "pyproject.toml").write_text(
+            '[project]\nname = "renglo-ops"\nversion = "0.1.14"\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(elevate_checked_out_platform(workspace, root), "")
+        self.assertEqual(load_staging_platform(root), "0.1.15")
 
     def test_staging_block_holds_peer_pins_until_promote(self) -> None:
         root = Path(self._tmp()) / "bom"

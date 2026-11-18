@@ -580,6 +580,79 @@ def apply_released_platform(root: Path, repos: Any) -> str:
     return version
 
 
+_PLATFORM_RC = re.compile(
+    r"^(?P<base>\d+(?:\.\d+)*)(?:rc|\.rc\.|-rc\.?)(?P<rc>\d+)$",
+    re.IGNORECASE,
+)
+_PLATFORM_FINAL = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+def _platform_rank(version: str) -> tuple[tuple[int, ...], int, int] | None:
+    """Order platform versions. A final release sorts after its own rc."""
+    text = _normalize_platform(version)
+    rc = _PLATFORM_RC.fullmatch(text)
+    if rc:
+        numbers = tuple(int(part) for part in rc.group("base").split("."))
+        return (numbers, 0, int(rc.group("rc")))
+    if _PLATFORM_FINAL.fullmatch(text):
+        numbers = tuple(int(part) for part in text.split("."))
+        return (numbers, 1, 0)
+    return None
+
+
+def _platform_is_newer(candidate: str, current: str) -> bool:
+    new = _platform_rank(candidate)
+    if new is None:
+        return False
+    old = _platform_rank(current)
+    if old is None:
+        return True
+    width = max(len(new[0]), len(old[0]))
+    new_nums = new[0] + (0,) * (width - len(new[0]))
+    old_nums = old[0] + (0,) * (width - len(old[0]))
+    return (new_nums, new[1], new[2]) > (old_nums, old[1], old[2])
+
+
+def _renglo_ops_checkout(workspace: Path) -> Path | None:
+    from gitconvoy.workspace import discover_repos
+
+    try:
+        repos = discover_repos(workspace)
+    except OSError:
+        repos = []
+    for repo in repos:
+        if repo.id == "renglo-ops" or Path(repo.rel).name == "renglo-ops":
+            return repo.path
+    candidate = workspace / "ops" / "renglo-ops"
+    if candidate.is_dir():
+        return candidate
+    return None
+
+
+def elevate_checked_out_platform(workspace: Path, root: Path) -> str:
+    """Point staging at the renglo-ops checkout when that version is newer.
+
+    Sync updates the checkout. Features are built against that tree. The BOM
+    pin has to follow it, including when renglo-ops itself is not on the train.
+    A train that releases renglo-ops has already set the pin; this does not
+    replace that version with an older checkout. The production pin stays put.
+    Returns the version written, or empty when the pin did not move.
+    """
+    from gitconvoy.versions import read_version
+
+    checkout = _renglo_ops_checkout(workspace)
+    if checkout is None:
+        return ""
+    version = _normalize_platform(str(read_version(checkout).get("python") or ""))
+    if not version or _platform_rank(version) is None:
+        return ""
+    current = load_staging_platform(root) or load_platform(root)
+    if current and not _platform_is_newer(version, current):
+        return ""
+    set_staging_platform(root, version)
+    return version
+
+
 def _staging_section(text: str) -> re.Match[str] | None:
     """Match the full ``staging:`` block, including a last line with no trailing newline."""
     # Do not use DOTALL: '.' would run from the first indented line to EOF.
