@@ -227,6 +227,16 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
         and on_integration
         and gitutil.ahead_of(repo.path, "HEAD", f"origin/{integration}")
     )
+    carried_from = _carry_dirty_main_onto_develop(
+        repo, current=current, integration=integration
+    )
+    if carried_from:
+        current = integration
+        on_integration = True
+        ahead = bool(
+            origin_int
+            and gitutil.ahead_of(repo.path, "HEAD", f"origin/{integration}")
+        )
     exists = gitutil.has_branch(repo.path, branch)
     unique = exists and not gitutil.branch_merged_into(repo.path, branch)
 
@@ -295,7 +305,7 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
                 gitutil.reset_hard(repo.path, f"origin/{integration}")
             gitutil.checkout(repo.path, branch)
 
-    return {
+    result = {
         "id": repo.id,
         "path": repo.rel,
         "adopted": True,
@@ -304,6 +314,43 @@ def _adopt_one(repo: Repo, feature: Feature) -> dict:
         "reset_integration": bool(ahead),
         "integration_branch": integration,
     }
+    if carried_from:
+        result["carried_from"] = carried_from
+    return result
+
+
+def _carry_dirty_main_onto_develop(
+    repo: Repo, *, current: str, integration: str
+) -> str | None:
+    """Move uncommitted files from ``main`` onto ``develop``.
+
+    Feature branches are cut from ``develop``. A dirty ``main`` at the same
+    commits as ``develop`` (or behind it) can change branches without losing
+    those files. Commits that exist only on ``main`` stay put — adopt refuses
+    rather than leaving them behind.
+    """
+    if not gitutil.is_dirty(repo.path):
+        return None
+    if current != "main" or integration != "develop":
+        return None
+    develop_ref = (
+        "refs/heads/develop"
+        if gitutil.has_local_branch(repo.path, "develop")
+        else "origin/develop"
+    )
+    main_tip = gitutil.rev_parse(repo.path, "HEAD")
+    if main_tip and not gitutil.is_ancestor(repo.path, main_tip, develop_ref):
+        raise GitConvoyError(
+            f"{repo.id} has commits on main that are not in develop. "
+            "Uncommitted files move onto develop only when main has no commits of its own."
+        )
+    try:
+        gitutil.checkout(repo.path, integration)
+    except GitConvoyError as exc:
+        raise GitConvoyError(
+            f"{repo.id}: could not move uncommitted work from main onto develop. {exc}"
+        ) from exc
+    return "main"
 
 
 def abandon(

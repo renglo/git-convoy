@@ -54,9 +54,9 @@ Treat workspace clones as three kinds. Do not mix them on one sheet.
 
 | Kind | Where | Rides trains / hotfixes / feature PRs onto `develop`? |
 | ---- | ----- | ----------------------------------------------------- |
-| **Product** | `console/`, `dev/*`, `extensions/*`, tenant ops such as `bootstrap` or `<tenant>-wl` | Yes |
-| **Ops** | Operator tooling: `publisher`, `launcher`, `git-convoy`, `bom-helper`, `bootstrap`, … | No. Own lifecycle: `ops/<name>` PRs into **`develop`** (same integration model as product features). |
-| **BOM** | `<name>-bom` | No. Pins land on `main` of that repo. **That push deploys.** Never put `*-bom` on a feature, train, or hotfix branch. |
+| **Product** | Any git clone under the workspace with no role, or `role = "product"`. In a renglo tree that is `console/`, `dev/*`, `extensions/*`, and unmarked repos such as `bootstrap` or `<tenant>-wl`. | Yes |
+| **Ops** | `role = "ops"` in that repo's `gitconvoy.toml` (publisher, launcher, git-convoy, bom-helper, …) | No. Own lifecycle: `ops/<name>` PRs into **`develop`** (same integration model as product features). |
+| **BOM** | `role = "bom"`, or an id ending in `-bom` when the repo has no marker | No. Pins land on `main` of that repo. **That push deploys.** Never put `*-bom` on a feature, train, or hotfix branch. |
 
 A repo with no `develop` branch uses `main` as its integration branch for feature work. Release trains still only cut **product** repos that have a version file (`pyproject.toml` and/or `package.json`).
 
