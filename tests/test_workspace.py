@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -125,12 +126,14 @@ def test_discover_root_ops_repo_with_marker(workspace: Path) -> None:
     assert "renglo-dev" not in {repo.id for repo in product_repos(workspace)}
 
 
-def test_discover_root_repo_without_ops_marker_is_skipped(workspace: Path) -> None:
+def test_discover_root_repo_without_marker_is_product(workspace: Path) -> None:
     init_repo(workspace / "renglo-dev")
-    assert "renglo-dev" not in {repo.id for repo in discover_repos(workspace)}
+    found = {repo.id: repo.kind for repo in discover_repos(workspace)}
+    assert found["renglo-dev"] == "product"
+    assert "renglo-dev" in {repo.id for repo in product_repos(workspace)}
 
 
-def test_flat_workspace_discovers_root_and_sibling_repos(tmp_path: Path) -> None:
+def test_flat_workspace_discovers_sibling_repos_not_the_root(tmp_path: Path) -> None:
     root = tmp_path / "azure_poc"
     init_repo(root)
     init_repo(root / "renglo-lib")
@@ -139,12 +142,11 @@ def test_flat_workspace_discovers_root_and_sibling_repos(tmp_path: Path) -> None
     (root / "app").mkdir()
 
     found = {repo.id: repo for repo in discover_repos(root)}
-    assert set(found) == {"azure_poc", "renglo-lib", "git-convoy"}
-    assert found["azure_poc"].rel == "."
-    assert found["renglo-lib"].kind == "core"
+    assert set(found) == {"renglo-lib", "git-convoy"}
+    assert found["renglo-lib"].kind == "product"
     assert found["git-convoy"].kind == "ops"
     product = {repo.id for repo in product_repos(root)}
-    assert product == {"azure_poc", "renglo-lib"}
+    assert product == {"renglo-lib"}
     assert {repo.id for repo in ops_repos(root)} == {"git-convoy"}
 
 
@@ -159,12 +161,74 @@ def test_find_workspace_from_nested_clone_uses_sibling_parent(tmp_path: Path) ->
     assert "renglo-lib" in {repo.id for repo in discover_repos(find_workspace(nested))}
 
 
-def test_discover_root_product_marker_is_skipped(workspace: Path) -> None:
+def test_discover_root_product_marker_is_product(workspace: Path) -> None:
     launcher = init_repo(workspace / "renglo-dev")
     (launcher / "gitconvoy.toml").write_text('role = "product"\n')
     git(launcher, "add", "gitconvoy.toml")
     git(launcher, "commit", "-m", "marker")
-    assert "renglo-dev" not in {repo.id for repo in discover_repos(workspace)}
+    assert "renglo-dev" in {repo.id for repo in discover_repos(workspace)}
+    assert "renglo-dev" in {repo.id for repo in product_repos(workspace)}
+
+
+def test_discover_nested_clones_anywhere(workspace: Path) -> None:
+    init_repo(workspace / "console")
+    init_repo(workspace / "ops" / "publisher")
+    init_repo(workspace / "gadgets" / "air")
+    init_repo(workspace / "mesh")
+    found = {repo.rel: repo.kind for repo in discover_repos(workspace)}
+    assert found["console"] == "console"
+    assert found["dev/renglo-lib"] == "core"
+    assert found["extensions/schd"] == "extension"
+    assert found["ops/publisher"] == "ops"
+    assert found["gadgets/air"] == "product"
+    assert found["mesh"] == "product"
+    assert "air" in {repo.id for repo in product_repos(workspace)}
+
+
+def test_nested_ops_marker_stays_off_the_product_sheet(workspace: Path) -> None:
+    tool = init_repo(workspace / "tools" / "launcher")
+    _mark_aux(tool)
+    membership.refresh_membership(workspace, discover_repos(workspace))
+    found = {repo.id: repo.kind for repo in discover_repos(workspace)}
+    assert found["launcher"] == "ops"
+    assert "launcher" in {repo.id for repo in ops_repos(workspace)}
+    assert "launcher" not in {repo.id for repo in product_repos(workspace)}
+
+
+def test_discover_does_not_enter_a_clone(workspace: Path) -> None:
+    mesh = init_repo(workspace / "mesh")
+    init_repo(mesh / "nested")
+    ids = {repo.id for repo in discover_repos(workspace)}
+    assert "mesh" in ids
+    assert "nested" not in ids
+
+
+def test_discover_skips_dependency_directories(workspace: Path) -> None:
+    init_repo(workspace / "vendor" / "node_modules" / "leftpad")
+    init_repo(workspace / "vendor" / "kept")
+    ids = {repo.id for repo in discover_repos(workspace)}
+    assert "kept" in ids
+    assert "leftpad" not in ids
+
+
+def test_discover_duplicate_folder_names_use_relative_ids(workspace: Path) -> None:
+    init_repo(workspace / "gadgets" / "air")
+    init_repo(workspace / "labs" / "air")
+    ids = {repo.id for repo in discover_repos(workspace)}
+    assert ids >= {"gadgets/air", "labs/air"}
+    assert "air" not in ids
+
+
+def test_discover_ignores_the_workspace_directory_itself(workspace: Path) -> None:
+    subprocess.run(
+        ["git", "init", "-b", "main", str(workspace)],
+        check=True,
+        capture_output=True,
+    )
+    init_repo(workspace / "mesh")
+    ids = {repo.id for repo in discover_repos(workspace)}
+    assert "mesh" in ids
+    assert workspace.name not in ids
 
 
 def test_bom_suffix_excluded_when_ops_toml_lists_another_bom(

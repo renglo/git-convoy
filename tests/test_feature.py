@@ -30,6 +30,32 @@ def test_adopt_repos_only_moves_listed_dirty_repos(workspace: Path) -> None:
     assert load(workspace).features["api-only"].repo_ids() == ["renglo-lib"]
 
 
+def test_adopt_carries_dirty_main_onto_develop(workspace: Path) -> None:
+    feature_cmd.start(workspace, State(), "blast-radius")
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "main")
+    (schd / "handler.py").write_text("print('from main')\n")
+    data = feature_cmd.adopt(workspace, load(workspace))
+    assert [row["id"] for row in data["adopted"]] == ["schd"]
+    assert data["adopted"][0]["carried_from"] == "main"
+    assert gitutil.current_branch(schd) == "feature/blast-radius"
+    assert (schd / "handler.py").read_text() == "print('from main')\n"
+    assert gitutil.rev_parse(schd, "HEAD") == gitutil.rev_parse(schd, "develop")
+
+
+def test_adopt_refuses_main_commits_missing_from_develop(workspace: Path) -> None:
+    feature_cmd.start(workspace, State(), "blast-radius")
+    schd = workspace / "extensions" / "schd"
+    git(schd, "checkout", "main")
+    (schd / "ONLY_ON_MAIN.md").write_text("committed\n")
+    git(schd, "add", "ONLY_ON_MAIN.md")
+    git(schd, "commit", "-m", "only on main")
+    (schd / "handler.py").write_text("print('dirty')\n")
+    with pytest.raises(GitConvoyError, match="commits on main that are not in develop"):
+        feature_cmd.adopt(workspace, load(workspace))
+    assert gitutil.current_branch(schd) == "main"
+
+
 def test_adopt_repos_rejects_ops_id(workspace: Path) -> None:
     launcher = init_repo(workspace / "ops" / "launcher")
     (launcher / "gitconvoy.toml").write_text('role = "ops"\n')

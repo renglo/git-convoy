@@ -60,7 +60,7 @@ HELP_SECTIONS: list[HelpSection] = [
         "commands": [
             {
                 "cmd": "git convoy init",
-                "summary": "Create local state, ops.toml membership, gitignore, and Cursor skill.",
+                "summary": "Discover every git clone in the workspace, then write local state, ops.toml, gitignore, and the Cursor skill.",
             },
         ],
     },
@@ -972,7 +972,7 @@ HELP_TOPICS: dict[str, list[HelpSection]] = {
             "commands": [
                 {
                     "cmd": "git convoy init",
-                    "summary": "Create local state, ops.toml membership, gitignore, and Cursor skill.",
+                    "summary": "Discover every git clone in the workspace, then write local state, ops.toml, gitignore, and the Cursor skill.",
                 },
             ],
         },

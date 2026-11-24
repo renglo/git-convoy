@@ -8,9 +8,7 @@ from gitconvoy.errors import GitConvoyError
 from gitconvoy import membership
 from gitconvoy.state import STATE_DIRNAME, state_path
 
-SCAN_ROOTS = ("console", "dev", "extensions", "ops")
-# Workspace-root siblings that are containers, not single-repo clones.
-ROOT_CONTAINER_NAMES = frozenset(SCAN_ROOTS)
+# Directory names that are never clones and are not worth walking.
 SKIP_DIR_NAMES = {
     ".git",
     ".gitconvoy",
@@ -36,7 +34,7 @@ class Repo:
     id: str
     path: Path
     rel: str
-    kind: str  # console | core | extension | ops
+    kind: str  # console | core | extension | ops | product | bom | incubating | registry
 
 
 def is_bom_repo_id(repo_id: str, workspace: Path | None = None) -> bool:
@@ -91,14 +89,15 @@ def _looks_like_workspace(path: Path) -> bool:
     return (path / "dev").is_dir() and (path / "extensions").is_dir()
 
 
-def _is_flat_workspace(path: Path) -> bool:
-    """A checkout of sibling clones, with no dev/ or extensions/ containers."""
-    return not (path / "dev").is_dir() and not (path / "extensions").is_dir()
-
-
 def _is_repo_root(path: Path) -> bool:
-    """True only for a clone of its own, not a folder inside a parent work tree."""
-    return path.is_dir() and (path / ".git").exists()
+    """True when ``path`` is a clone, not a folder inside one.
+
+    ``git rev-parse --is-inside-work-tree`` is true for every subdirectory of a
+    clone, so discovery keys off a ``.git`` entry (directory, or file for a
+    linked worktree).
+    """
+    git_entry = path / ".git"
+    return git_entry.is_dir() or git_entry.is_file()
 
 
 def _contains_repo_root(path: Path) -> bool:
@@ -114,84 +113,97 @@ def _contains_repo_root(path: Path) -> bool:
     return False
 
 
-def _kind_for_root_role(role: str) -> str:
-    if role in {"ops", "bom", "registry"}:
+def _kind_for(rel: str, role: str | None) -> str:
+    """Display kind. Classic renglo folders keep their old names; other clones follow role."""
+    parts = Path(rel).parts
+    if parts == ("console",):
+        return "console"
+    if len(parts) >= 2 and parts[0] == "dev":
+        return "core"
+    if len(parts) >= 2 and parts[0] == "extensions":
+        return "extension"
+    if len(parts) >= 2 and parts[0] == "ops":
         return "ops"
-    return "core"
+    if role in {"ops", "bom", "incubating", "registry"}:
+        return role
+    return "product"
 
 
 def discover_repos(workspace: Path) -> list[Repo]:
-    found: list[Repo] = []
+    """Every git clone under ``workspace``, at any depth.
+
+    The workspace directory itself is not a participant. Once a directory has
+    its own ``.git``, its contents are not scanned. Hidden directories and
+    ``SKIP_DIR_NAMES`` (``node_modules``, virtualenvs, build output) are not
+    entered. Two clones with the same folder name get ids of their relative
+    paths (``gadgets/air``); unique names stay the folder name.
+    """
+    root = workspace.resolve()
+    found: list[tuple[Path, str, str | None]] = []
     seen: set[Path] = set()
-    console = workspace / "console"
-    if _is_repo_root(console):
-        found.append(Repo("console", console.resolve(), "console", "console"))
-        seen.add(console.resolve())
-    for kind, folder in (
-        ("core", workspace / "dev"),
-        ("extension", workspace / "extensions"),
-        ("ops", workspace / "ops"),
-    ):
-        if not folder.is_dir():
-            continue
-        for child in sorted(folder.iterdir()):
-            if child.name in SKIP_DIR_NAMES or not child.is_dir():
+    visited: set[Path] = set()
+
+    def walk(directory: Path) -> None:
+        try:
+            resolved_dir = directory.resolve()
+        except OSError:
+            return
+        if resolved_dir in visited:
+            return
+        try:
+            resolved_dir.relative_to(root)
+        except ValueError:
+            return
+        visited.add(resolved_dir)
+        try:
+            children = sorted(directory.iterdir(), key=lambda item: item.name)
+        except OSError:
+            return
+        for child in children:
+            if child.name in SKIP_DIR_NAMES or child.name.startswith("."):
                 continue
-            if not _is_repo_root(child):
+            if not child.is_dir():
                 continue
-            resolved = child.resolve()
-            if resolved in seen:
+            try:
+                resolved = child.resolve()
+            except OSError:
                 continue
-            seen.add(resolved)
-            found.append(
-                Repo(
-                    id=child.name,
-                    path=resolved,
-                    rel=str(child.relative_to(workspace)),
-                    kind=kind,
-                )
-            )
-    flat = _is_flat_workspace(workspace)
-    if flat and _is_repo_root(workspace):
-        resolved = workspace.resolve()
-        role = membership.repo_role_if_valid(workspace)
-        if resolved not in seen and role is not None:
-            seen.add(resolved)
-            found.append(
-                Repo(
-                    id=workspace.name,
-                    path=resolved,
-                    rel=".",
-                    kind=_kind_for_root_role(role),
-                )
-            )
-    for child in sorted(workspace.iterdir()):
-        if not child.is_dir():
-            continue
-        if child.name in ROOT_CONTAINER_NAMES or child.name in SKIP_DIR_NAMES:
-            continue
-        if not _is_repo_root(child):
-            continue
-        resolved = child.resolve()
-        if resolved in seen:
-            continue
-        role = membership.repo_role_if_valid(child)
-        if role is None:
-            continue
-        # Standard installations keep product clones under dev/ and extensions/.
-        # A root clone joins only when it is ops, unless this checkout is flat.
-        if role != "ops" and not flat:
-            continue
-        seen.add(resolved)
-        found.append(
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                continue
+            if resolved == root or resolved in seen:
+                continue
+            if _is_repo_root(child):
+                seen.add(resolved)
+                try:
+                    rel = str(child.relative_to(workspace))
+                except ValueError:
+                    rel = str(resolved.relative_to(root))
+                found.append((resolved, rel, membership.repo_role_if_valid(child)))
+                continue
+            walk(child)
+
+    walk(workspace)
+    return _repos_with_ids(found)
+
+
+def _repos_with_ids(found: list[tuple[Path, str, str | None]]) -> list[Repo]:
+    counts: dict[str, int] = {}
+    for path, _rel, _role in found:
+        counts[path.name] = counts.get(path.name, 0) + 1
+    repos: list[Repo] = []
+    for path, rel, role in sorted(found, key=lambda item: item[1]):
+        repo_id = path.name if counts[path.name] == 1 else rel
+        repos.append(
             Repo(
-                id=child.name,
-                path=resolved,
-                rel=str(child.relative_to(workspace)),
-                kind=_kind_for_root_role(role),
+                id=repo_id,
+                path=path,
+                rel=rel,
+                kind=_kind_for(rel, role),
             )
         )
-    return found
+    return repos
 
 
 def product_repos(workspace: Path) -> list[Repo]:

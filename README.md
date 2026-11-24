@@ -136,7 +136,8 @@ git convoy init
 
 That command:
 
-- Discovers git repos under `console/`, `dev/`, `extensions/`, and `ops/`, plus workspace-root clones marked `role = "ops"` in `gitconvoy.toml` (e.g. `renglo-dev/`). A flat folder (no `dev/` or `extensions/`) also includes that folder when it is a git repo, and every sibling clone next to it.
+- Discovers every git clone under the workspace, at any depth. A directory with its own `.git` is one repo; the walk does not enter that clone, hidden directories, `node_modules`, virtualenvs, or build output. The workspace directory itself is not a participant
+- Unmarked clones are **product**. `role = "ops"` / `"bom"` / `"incubating"` / `"registry"` in the repo's `gitconvoy.toml` is what keeps a clone off feature sheets and trains. A renglo tree still displays the old kinds (`console`, `dev/*` as core, `extensions/*` as extension, `ops/*` as ops)
 - Writes `.gitconvoy/state.json`
 - Adds `.gitconvoy/` to the workspace `.gitignore`
 - Writes `.cursor/skills/gitconvoy/SKILL.md` so Cursor agents know to call `git convoy`
@@ -218,7 +219,7 @@ Creates an empty feature sheet, sets it current, and checks out the integration 
 
 If `feature/blast-radius` already exists locally or on origin (you created it yourself, another machine, or a previous `start`/`adopt`), `feature start` checks that branch out and adds the repo to the sheet **only when it has work**: uncommitted files on that branch, or commits not already in `develop`. Empty leftover branches (created and then emptied) are left off the sheet; a clean checkout is returned to `develop`. Dirty work already on `feature/blast-radius` is kept. Dirty work on another branch is skipped (the existing feature branch is left as-is). It does **not** create `feature/blast-radius` in repos that have no such branch yet — that is `feature adopt`.
 
-Feature repos are `console/`, `dev/*`, `extensions/*`, and tenant ops under `ops/` (`bootstrap`, `<tenant>-wl`, …). **`*-bom` is not a feature repo** — BOM pins land via `git convoy bom` / `hotfix bom` on `main` (that push deploys). Operator tooling in `ops/` (`publisher`, `launcher`, `bom-helper`, `git-convoy`) is also excluded. Release trains still only cut product repos.
+Feature repos are every discovered clone whose role is product (the default when `gitconvoy.toml` is absent). In a renglo tree that is still `console/`, `dev/*`, `extensions/*`, and unmarked repos under `ops/` (`bootstrap`, `<tenant>-wl`, …). The same rule applies to clones in any other folder. **`*-bom` is not a feature repo** — BOM pins land via `git convoy bom` / `hotfix bom` on `main` (that push deploys). Operator tooling marked `role = "ops"` (`publisher`, `launcher`, `bom-helper`, `git-convoy`) is also excluded. Release trains still only cut product repos.
 
 ### 2. Implement
 
@@ -233,7 +234,7 @@ git convoy feature adopt --repos renglo-lib,renglo-api
 
 Without `--repos`, every dirty product repo is adopted. With `--repos`, only the listed ids move onto `feature/<name>`; other dirty product repos stay on `develop` so you can start another feature and adopt them there. `feature commit`, `feature prs`, and `feature push` only touch repos on the sheet; other dirty clones do not block them.
 
-For each adopted feature repo that is dirty, has local commits on its integration branch that are not on `origin/<integration>`, or already has `feature/<name>` with unique commits:
+For each adopted feature repo that is dirty, has local commits on its integration branch that are not on `origin/<integration>`, or already has `feature/<name>` with unique commits. Uncommitted files left on `main` are carried onto `develop` when `main` has no commits of its own, and the feature branch is created from that `develop`:
 
 - Creates or checks out `feature/<name>`
 - If you committed on `develop` (and did not push it), resets local `develop` to `origin/develop`
