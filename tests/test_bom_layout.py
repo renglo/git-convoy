@@ -17,6 +17,7 @@ from gitconvoy.bom_layout import (
     load_placement,
     load_platform,
     load_staging_platform,
+    copy_python_constraints,
     promote_staging_pins,
     split_master_bom,
     staging_release_pin,
@@ -490,6 +491,57 @@ release:
         )
         placement = load_placement(root)
         self.assertEqual(placement.hub_python, ("renglo-data", "skbrk-breakdown"))
+
+    def test_draft_copies_the_python_lock_into_constraints(self) -> None:
+        root = Path(self._tmp()) / "bom"
+        root.mkdir()
+        src = root / "constraints" / "v0.1.17.txt"
+        src.parent.mkdir()
+        src.write_text("cognitojwt==1.4.1\n", encoding="utf-8")
+        peer = root / "constraints" / "peers" / "lab" / "v0.1.17.txt"
+        peer.parent.mkdir(parents=True)
+        peer.write_text("wheel==0.48.0\n", encoding="utf-8")
+        console = root / "constraints" / "console" / "v0.1.17.package-lock.json"
+        console.parent.mkdir(parents=True)
+        console.write_text("{}\n", encoding="utf-8")
+        copy_python_constraints(root, "0.1.17", "0.1.18")
+        copied = (root / "constraints" / "v0.1.18.txt").read_text(encoding="utf-8")
+        self.assertEqual(copied, "cognitojwt==1.4.1\n")
+        self.assertEqual(
+            (root / "constraints" / "peers" / "lab" / "v0.1.18.txt").read_text(encoding="utf-8"),
+            "wheel==0.48.0\n",
+        )
+        self.assertEqual(
+            (root / "constraints" / "console" / "v0.1.18.package-lock.json").read_text(encoding="utf-8"),
+            "{}\n",
+        )
+
+    def test_lock_python_skips_when_the_compiler_is_not_in_the_workspace(self) -> None:
+        root = Path(self._tmp()) / "bom"
+        root.mkdir()
+        (root / "deploy_targets.yml").write_text(
+            "packages:\n  console:\n    npm: \"@renglo/console\"\nhub:\n  python:\n    - renglo-gro\n",
+            encoding="utf-8",
+        )
+        catalog = [
+            PackageSlot(id="console", npm="@renglo/console"),
+            PackageSlot(id="gro", python="renglo-gro", npm="@renglo/gro"),
+        ]
+        placement = Placement(hub_python=("renglo-gro",))
+        master = {
+            "version": "v2.0.0",
+            "python": {"renglo-gro": "3.0.0"},
+            "npm": {"@renglo/console": "9.0.0"},
+        }
+        write_split_boms(
+            root,
+            "2.0.0",
+            master,
+            catalog=catalog,
+            placement=placement,
+            lock_python=True,
+        )
+        self.assertFalse((root / "constraints").exists())
 
     def _tmp(self) -> str:
         import tempfile

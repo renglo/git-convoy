@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ from gitconvoy.catalog import (
     parse_package_catalog,
     tenant_config_path,
 )
+from gitconvoy.errors import GitConvoyError
 
 HUB_PYTHON_CORE = ("renglo-lib", "renglo-api")
 PEER_PYTHON_CORE = ("renglo-lib",)
@@ -884,6 +887,144 @@ def _peer_bom_file(root: Path, peer_id: str, version: str) -> Path:
     return root / "peers_bom" / peer_id / f"{_v(version)}.json"
 
 
+def python_constraints_file(root: Path, version: str) -> Path:
+    """``constraints/v0.1.17.txt`` for hub BOM ``bom/v0.1.17.json``."""
+    return root / "constraints" / f"{_v(version)}.txt"
+
+
+def _release_script(start: Path, name: str) -> Path | None:
+    for candidate in (start, *start.resolve().parents):
+        script = (
+            candidate
+            / "ops"
+            / "renglo-ops"
+            / "lib"
+            / "renglo_ops"
+            / "release"
+            / name
+        )
+        if script.is_file():
+            return script
+    return None
+
+
+def _compile_script(start: Path) -> Path | None:
+    return _release_script(start, "compile_python_constraints.py")
+
+
+def peer_constraints_file(root: Path, peer_id: str, version: str) -> Path:
+    """``constraints/peers/<id>/v0.1.17.txt`` for one peer BOM."""
+    return root / "constraints" / "peers" / peer_id / f"{_v(version)}.txt"
+
+
+def console_lock_file(root: Path, version: str) -> Path:
+    """``constraints/console/v0.1.17.package-lock.json`` for a console BOM."""
+    return root / "constraints" / "console" / f"{_v(version)}.package-lock.json"
+
+
+def _run_lock(script: Path, args: list[str], *, label: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(script), *args],
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise GitConvoyError(f"{label} failed: {detail}")
+
+
+def compile_hub_constraints(root: Path, hub_path: Path) -> Path | None:
+    """Resolve the hub BOM's python closure into ``constraints/<version>.txt``.
+
+    An empty python block writes nothing.
+    """
+    payload = json.loads(hub_path.read_text(encoding="utf-8"))
+    python_pins = payload.get("python")
+    if not isinstance(python_pins, dict) or not python_pins:
+        return None
+    script = _compile_script(root)
+    if script is None:
+        # A checkout without renglo-ops cannot resolve the closure. The image
+        # build still refuses a hub BOM that has python pins and no lock file.
+        return None
+    _run_lock(script, [str(hub_path)], label=f"python constraint lock for {hub_path.name}")
+    return python_constraints_file(root, hub_path.stem)
+
+
+def compile_peer_constraints(root: Path, peer_path: Path, peer_id: str) -> Path | None:
+    """Resolve one peer BOM, including the setuptools and wheel used to build sdists."""
+    payload = json.loads(peer_path.read_text(encoding="utf-8"))
+    python_pins = payload.get("python")
+    if not isinstance(python_pins, dict) or not python_pins:
+        return None
+    script = _compile_script(root)
+    if script is None:
+        return None
+    dest = peer_constraints_file(root, peer_id, peer_path.stem)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _run_lock(
+        script,
+        [
+            str(peer_path),
+            "--output",
+            str(dest),
+            "--also",
+            "setuptools>=40.8.0",
+            "--also",
+            "wheel",
+        ],
+        label=f"python constraint lock for peer {peer_id}",
+    )
+    return dest
+
+
+def compile_console_lock(root: Path, console_path: Path) -> Path | None:
+    """Resolve the console BOM's npm closure into ``constraints/console/``."""
+    payload = json.loads(console_path.read_text(encoding="utf-8"))
+    npm_pins = payload.get("npm")
+    if not isinstance(npm_pins, dict) or not npm_pins:
+        return None
+    script = _release_script(root, "compile_console_lock.py")
+    if script is None:
+        return None
+    dest = console_lock_file(root, console_path.stem)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _run_lock(
+        script,
+        [str(console_path), "--output", str(dest)],
+        label=f"console lock for {console_path.name}",
+    )
+    return dest
+
+
+def _copy_lock(src: Path, dest: Path) -> None:
+    if not src.is_file() or src.resolve() == dest.resolve():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def copy_python_constraints(root: Path, from_version: str, to_version: str) -> None:
+    """Carry hub, peer, and console locks onto a drafted BOM until pins are resolved again."""
+    _copy_lock(
+        python_constraints_file(root, from_version),
+        python_constraints_file(root, to_version),
+    )
+    _copy_lock(
+        console_lock_file(root, from_version),
+        console_lock_file(root, to_version),
+    )
+    peers = root / "constraints" / "peers"
+    if peers.is_dir():
+        for peer_dir in peers.iterdir():
+            if not peer_dir.is_dir():
+                continue
+            _copy_lock(
+                peer_dir / f"{_v(from_version)}.txt",
+                peer_dir / f"{_v(to_version)}.txt",
+            )
+
+
 def write_split_boms(
     root: Path,
     version: str,
@@ -891,7 +1032,14 @@ def write_split_boms(
     *,
     catalog: list[PackageSlot] | None = None,
     placement: Placement | None = None,
+    lock_python: bool = True,
+    lock_npm: bool = True,
 ) -> dict[str, Any]:
+    """Write the hub, console, and peer BOM files, and the lock next to each.
+
+    Draft, pin, and adopt use this. A description-only rewrite passes
+    ``lock_python=False`` and ``lock_npm=False`` so it does not resolve again.
+    """
     placement = placement or load_placement(root)
     catalog = catalog if catalog is not None else load_package_catalog(root)
     hub, console, peer_boms = split_master_bom(master, placement=placement, catalog=catalog)
@@ -913,6 +1061,13 @@ def write_split_boms(
         peer_path = peer_dir / file_name
         write_bom_file(root, peer_path, payload)
         peer_paths[peer_id] = str(peer_path)
+
+    if lock_python:
+        compile_hub_constraints(root, hub_path)
+        for peer_id, peer_path in peer_paths.items():
+            compile_peer_constraints(root, Path(peer_path), peer_id)
+    if lock_npm:
+        compile_console_lock(root, console_path)
 
     return {
         "hub": str(hub_path),
@@ -1008,6 +1163,8 @@ def copy_split_bom_draft(root: Path, from_version: str, to_version: str) -> None
     src_name = f"{src_ver}.json"
     dest_name = f"{dest_ver}.json"
 
+    copy_python_constraints(root, from_version, to_version)
+
     hub_src = root / "bom" / src_name
     hub_dest = root / "bom" / dest_name
     if hub_src.is_file():
@@ -1046,4 +1203,4 @@ def copy_split_bom_draft(root: Path, from_version: str, to_version: str) -> None
 
     if hub_dest.is_file() and console_dest.is_file():
         master = merge_union_bom(root, dest_ver)
-        write_split_boms(root, dest_ver, master)
+        write_split_boms(root, dest_ver, master, lock_python=False, lock_npm=False)

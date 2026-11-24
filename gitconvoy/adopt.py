@@ -305,7 +305,12 @@ def pin(
     master[section][package] = pin_value
     write_bom_file(root, path, master)
     if split and _uses_three_bom_layout(root):
-        write_split_boms(root, version, master, catalog=load_package_catalog(root))
+        write_split_boms(
+            root,
+            version,
+            master,
+            catalog=load_package_catalog(root),
+        )
     return {"ok": True, "file": str(path), "section": section, "package": package, "pin": pin_value}
 
 
@@ -529,7 +534,9 @@ def take(
     if _uses_three_bom_layout(root):
         master = json.loads(_bom_file(root, dest).read_text())
         master = _merge_master_from_bom_data(master, bom_data)
-        write_split_boms(root, dest, master, catalog=catalog)
+        write_split_boms(
+            root, dest, master, catalog=catalog, lock_python=True, lock_npm=True
+        )
     # Plain bom always points staging and leaves production.enabled false.
     # Production pins move only in promote(), via bom --production.
     pointed = point(
@@ -783,7 +790,14 @@ def _set_bom_description(root: Path, version: str, description: str) -> None:
     if _uses_three_bom_layout(root):
         master = merge_union_bom(root, version)
         master["description"] = description
-        write_split_boms(root, version, master, catalog=load_package_catalog(root))
+        write_split_boms(
+            root,
+            version,
+            master,
+            catalog=load_package_catalog(root),
+            lock_python=False,
+            lock_npm=False,
+        )
         return
     path = _bom_file(root, version)
     data = json.loads(path.read_text())
